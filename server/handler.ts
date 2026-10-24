@@ -214,7 +214,12 @@ export async function handle(body: Row, auth: string | undefined): Promise<unkno
 async function handleOne(body: Row, auth: string | undefined): Promise<unknown> {
   const pool = await getPool();
   try { await ensureSchema(pool); }
-  catch (e) { console.error(e); throw new HttpError(503, 'Cannot connect to the database. Check DATABASE_URL in Vercel and that your Neon database is running.'); }
+  catch (e) {
+    console.error(e);
+    // the database's own reason helps fix the setting; connection strings and passwords are never shown
+    const why = String((e as Error)?.message || e).replace(/postgres(ql)?:\/\/\S+/gi, '[connection string]').replace(/password=\S+/gi, 'password=[hidden]').slice(0, 200);
+    throw new HttpError(503, 'Cannot connect to the database. Check DATABASE_URL in Vercel and that your Neon database is running. (' + why + ')');
+  }
   for (let attempt = 0; attempt < 5; attempt++) {
     const base = await loadSnapshot(pool);
     const S = open(base);
