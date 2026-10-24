@@ -696,7 +696,8 @@ export function rpcCall(fn: string, a: Row): unknown {
         const p = T('profiles').find(x => x.id === i.investor_id) || {} as Row;
         const r = [Number(i.admin_bonus_rate || 0) > 0 && !p.introduced_by ? 'Has an IB bonus but no IB' : '', '',
           !p.branch_id ? 'Investor has no branch' : '', ['active', 'matured'].includes(i.status) && !i.start_date ? 'Missing start date' : '',
-          i.accrual_mode === 'anniversary_review' ? 'Returns were approved or paid before the switch to calendar months: check this investment’s returns' : ''].filter(Boolean);
+          i.accrual_mode === 'anniversary_review' ? 'Returns were approved or paid before the switch to calendar months: check this investment’s returns' : '',
+          i.bonus_review ? 'IB bonus was taken out of the ROI and returns were already approved or paid: check this investment' : ''].filter(Boolean);
         return r.length ? { investment_id: i.id, code: i.code, investor: p.full_name || p.email, reason: r.join('; ') } : null;
       }).filter(Boolean).sort((x: any, y: any) => x.code.localeCompare(y.code));
     }
@@ -1403,7 +1404,35 @@ function parvaProperties(by: string | null): Row[] {
 export function attach(store: Store) { S = store; TABLES.forEach(t => { S.tables[t] ||= []; }); }
 export const current = () => S;
 /** Monthly returns that have fallen due since the last request. */
-export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); runAllAccruals(); } finally { currentUid = prev; } }
+export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); runAllAccruals(); } finally { currentUid = prev; } }
+
+/** Removes an investment's calculated returns (accruals, their payouts, bonuses, ledger lines and notifications) so the
+ *  next accrual run recreates them. Only used while none of them has been approved or paid. */
+const moneyMoved = (i: Row) => T('payouts').some(p => p.investment_id === i.id && ['approved', 'processing', 'paid'].includes(p.status))
+  || T('admin_bonuses').some(b => b.investment_id === i.id && b.status === 'paid');
+function resetReturns(i: Row): number {
+  const accIds = new Set(T('accruals').filter(a => a.investment_id === i.id).map(a => a.id));
+  S.tables.accruals = T('accruals').filter(a => !accIds.has(a.id));
+  S.tables.payouts = T('payouts').filter(p => p.investment_id !== i.id);
+  S.tables.admin_bonuses = T('admin_bonuses').filter(b => b.investment_id !== i.id);
+  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'accruals' && accIds.has(l.source_id)));
+  S.tables.notifications = T('notifications').filter(n => !(n.source_table === 'accruals' && accIds.has(n.source_id)));
+  return accIds.size;
+}
+/** One-time switch: investments recorded directly (not on a plan) with an IB bonus taken out of the ROI now get the bonus
+ *  on top: the investor keeps the whole ROI and the IB gets the bonus in addition. Returns are recalculated while nothing
+ *  has been approved or paid; otherwise the investment is left as it was and flagged for review. */
+function bonusOnTop() {
+  T('investments').forEach(i => {
+    if (i.bonus_on_top || i.bonus_review || i.plan_id || !(Number(i.admin_bonus_rate || 0) > 0)) return;
+    if (['cancelled', 'redeemed'].includes(i.status)) return;
+    if (moneyMoved(i)) { i.bonus_review = true; audit('investment.bonus_mode', 'investment', i.id, i.code, 'IB bonus is now paid on top of the ROI; this investment already had approved or paid returns, so it was left unchanged for review', null, null); return; }
+    const before = { investor_rate: i.investor_rate, monthly_return: i.monthly_return, admin_bonus: i.admin_bonus };
+    const removed = resetReturns(i);
+    i.bonus_on_top = true; applySplit(i); i.updated_at = nowIso();
+    audit('investment.bonus_mode', 'investment', i.id, i.code, 'IB bonus moved on top of the ROI: the investor keeps the whole ROI' + (removed ? '; returns recalculated' : ''), before, { investor_rate: i.investor_rate, monthly_return: i.monthly_return, admin_bonus: i.admin_bonus });
+  });
+}
 
 /** One-time switch of investments recorded before returns followed calendar months (they used start-date-to-start-date months).
  *  While none of an investment's returns or bonuses have been approved or paid, its returns are recalculated by calendar month
