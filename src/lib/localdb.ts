@@ -2,7 +2,7 @@
 // The PMS data engine. It runs on the server (api/db.ts): every request loads the company's data from Neon,
 // runs one query or action here with the signed-in user's rights, and saves what changed.
 // Every money-moving action below follows the original database rules.
-import { splitRate, investorPlanName, defaultBonus, STANDARD_PLANS } from './format';
+import { splitRate, investorPlanName, defaultBonus, STANDARD_PLANS } from './format.js';
 
 type Row = Record<string, any>;
 export interface Store { v: number; tables: Record<string, Row[]>; seq: Record<string, number>; users: { id: string; email: string; pw: string }[] }

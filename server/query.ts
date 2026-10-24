@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Runs one table query from the browser against the data engine, with the signed-in user's read rules.
-import * as db from '../src/lib/localdb';
-import type { FilterSpec, QuerySpec, Res } from '../src/lib/wire';
+import * as db from '../src/lib/localdb.js';
+import type { FilterSpec, QuerySpec, Res } from '../src/lib/wire.js';
 
 const ok = <T,>(data: T, count?: number | null): Res<T> => ({ data, error: null, count });
 const err = (m: string): Res<any> => ({ data: null, error: { message: m } });

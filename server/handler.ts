@@ -5,10 +5,10 @@
 //   3. saves the tables that changed, in one transaction. If someone else saved in between, it reloads and runs again.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import * as db from '../src/lib/localdb';
-import { runQuery } from './query';
-import { getPool, type PoolLike } from './pool';
-import { appUrl, sendMail } from './mail';
+import * as db from '../src/lib/localdb.js';
+import { runQuery } from './query.js';
+import { getPool, type PoolLike } from './pool.js';
+import { appUrl, sendMail } from './mail.js';
 
 type Row = Record<string, any>;
 class HttpError extends Error { constructor(public status: number, msg: string) { super(msg); } }
