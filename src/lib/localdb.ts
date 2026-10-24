@@ -212,6 +212,7 @@ export function canWrite(table: string): boolean { return isAdmin() && ['documen
 /* ---------- accrual engine ---------- */
 function runAccrualsFor(i: Row, asOf: string): number {
   if (!i.start_date || !LIVE.includes(i.status)) return 0;
+  if (i.accrual_mode === 'anniversary_review') return 0; // recorded before calendar months with returns already paid: flagged for the Super Admin
   let n = 0;
   // calendar months: started 10 Oct → 11–31 Oct (pro-rata), then 1–30 Nov, 1–31 Dec …; a month is accrued once it has ended
   for (const p of periodsOf(i, asOf)) {
@@ -318,7 +319,7 @@ function recordInvestment(a: Row, byIntroducer = false) {
   T('investments').push(applySplit({ admin_bonus_rate: Number(pv.bonus_rate || 0), id, code, investor_id: inv!.id, plan_id: plan.id, plan_version_id: pv.id, plan_name: plan.name, plan_version: pv.version, monthly_rate: pv.monthly_rate,
     lockin_months: lock, early_redemption: pv.early_redemption, early_fee_pct: pv.early_fee_pct, payout_lag_days: pv.payout_lag_days,
     terms: pv.terms || s.default_terms, risk_disclosure: pv.risk_disclosure || s.default_risk_disclosure, principal, monthly_return: monthlyReturn(principal, pv.monthly_rate),
-    status: 'pending_funding', expected_start: a.p_expected_start || null, start_date: null, lockin_end_date: null, maturity_date: null, request_from_date: null,
+    accrual_mode: 'calendar', status: 'pending_funding', expected_start: a.p_expected_start || null, start_date: null, lockin_end_date: null, maturity_date: null, request_from_date: null,
     agreement_ref: str(a.p_agreement_ref), deposit_ref: str(a.p_deposit_ref), notes: str(a.p_notes), cancelled_reason: null, created_by: currentUid, created_at: nowIso(),
     activated_by: null, activated_at: null, updated_at: nowIso() }));
   ledger({ investment_id: id, investor_id: inv!.id, type: 'deposit', amount: principal, status: 'pending', occurred_on: a.p_expected_start || today(), reference: str(a.p_deposit_ref), note: 'Awaiting bank confirmation', source_table: 'investments', source_id: id });
@@ -686,7 +687,8 @@ export function rpcCall(fn: string, a: Row): unknown {
       return T('investments').filter(i => !['cancelled', 'redeemed'].includes(i.status)).map(i => {
         const p = T('profiles').find(x => x.id === i.investor_id) || {} as Row;
         const r = [Number(i.admin_bonus_rate || 0) > 0 && !p.introduced_by ? 'Has an IB bonus but no IB' : '', '',
-          !p.branch_id ? 'Investor has no branch' : '', ['active', 'matured'].includes(i.status) && !i.start_date ? 'Missing start date' : ''].filter(Boolean);
+          !p.branch_id ? 'Investor has no branch' : '', ['active', 'matured'].includes(i.status) && !i.start_date ? 'Missing start date' : '',
+          i.accrual_mode === 'anniversary_review' ? 'Returns were approved or paid before the switch to calendar months: check this investment’s returns' : ''].filter(Boolean);
         return r.length ? { investment_id: i.id, code: i.code, investor: p.full_name || p.email, reason: r.join('; ') } : null;
       }).filter(Boolean).sort((x: any, y: any) => x.code.localeCompare(y.code));
     }
@@ -884,7 +886,7 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   const maturity = lock > 0 ? addMonths(start, lock) : null;
   const v = applySplit({ admin_bonus_rate: bonus, id, code, investor_id: person.id, plan_id: null, plan_version_id: null, plan_name: rate + '% Monthly', plan_version: 1, monthly_rate: rate,
     lockin_months: lock, early_redemption: 'not_permitted', early_fee_pct: 0, payout_lag_days: s.default_payout_lag_days, terms: s.default_terms, risk_disclosure: s.default_risk_disclosure,
-    principal, original_principal: principal, principal_changes: [], monthly_return: monthlyReturn(principal, rate), status: 'active', expected_start: start, start_date: start, lockin_end_date: maturity || start, maturity_date: maturity,
+    principal, original_principal: principal, principal_changes: [], monthly_return: monthlyReturn(principal, rate), accrual_mode: 'calendar', status: 'active', expected_start: start, start_date: start, lockin_end_date: maturity || start, maturity_date: maturity,
     request_from_date: maturity ? addDays(maturity, -s.request_window_days) : null, agreement_ref: str(a.p_reference), deposit_ref: str(a.p_reference), notes: str(a.p_notes), cancelled_reason: null,
     created_by: currentUid, created_at: nowIso(), activated_by: currentUid, activated_at: nowIso(), updated_at: nowIso() });
   T('investments').push(v);
@@ -1394,5 +1396,30 @@ function parvaProperties(by: string | null): Row[] {
 export function attach(store: Store) { S = store; TABLES.forEach(t => { S.tables[t] ||= []; }); }
 export const current = () => S;
 /** Monthly returns that have fallen due since the last request. */
-export function catchUp() { const prev = currentUid; currentUid = null; try { runAllAccruals(); } finally { currentUid = prev; } }
+export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); runAllAccruals(); } finally { currentUid = prev; } }
+
+/** One-time switch of investments recorded before returns followed calendar months (they used start-date-to-start-date months).
+ *  While none of an investment's returns or bonuses have been approved or paid, its returns are recalculated by calendar month
+ *  (the next accrual run recreates them). If money has already moved, nothing is changed and the investment is flagged for review. */
+function toCalendarMonths() {
+  T('investments').forEach(i => {
+    if (i.accrual_mode) return;
+    const accIds = new Set(T('accruals').filter(a => a.investment_id === i.id).map(a => a.id));
+    const moved = T('payouts').some(p => p.investment_id === i.id && ['approved', 'processing', 'paid'].includes(p.status))
+      || T('admin_bonuses').some(b => b.investment_id === i.id && b.status === 'paid');
+    if (moved) {
+      i.accrual_mode = 'anniversary_review';
+      audit('investment.accrual_mode', 'investment', i.id, i.code, 'Returns follow calendar months from now on; this investment already had approved or paid returns, so it was left unchanged for review', null, { accrual_mode: i.accrual_mode });
+      return;
+    }
+    const removed = accIds.size;
+    S.tables.accruals = T('accruals').filter(a => !accIds.has(a.id));
+    S.tables.payouts = T('payouts').filter(p => p.investment_id !== i.id);
+    S.tables.admin_bonuses = T('admin_bonuses').filter(b => b.investment_id !== i.id);
+    S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'accruals' && accIds.has(l.source_id)));
+    S.tables.notifications = T('notifications').filter(n => !(n.source_table === 'accruals' && accIds.has(n.source_id)));
+    i.accrual_mode = 'calendar'; i.updated_at = nowIso();
+    if (removed) audit('investment.accrual_mode', 'investment', i.id, i.code, 'Returns recalculated by calendar month (from the day after the start date to month end, then whole months)', { periods: removed }, { accrual_mode: 'calendar' });
+  });
+}
 export { brochureVisible };
