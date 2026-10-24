@@ -6,7 +6,7 @@ import { useAuth, useSettings } from '../lib/auth';
 import { uploadDocument, openDocument, deleteDocument, uploadAttachment } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
 import { recordInvestmentFull } from '../lib/adminApi';
-import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE } from '../lib/format';
+import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText } from '../lib/format';
 import type { Investment, Balance, Branch, Profile, Plan, Accrual, Payout, LedgerEntry } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, InvBadge, PayBadge, LedgerBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
@@ -16,11 +16,6 @@ import { FilePicker } from '../ui/Attach';
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 type Lite = Pick<Profile, 'id' | 'full_name' | 'code' | 'email'> & { branch_id?: string | null; introduced_by?: string | null; role?: string };
 
-function addDays(iso: string, n: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
 const outstandingOf = (b?: Balance) => (b ? Number(b.unapproved) + Number(b.approved) + Number(b.processing) : 0);
 
 async function namesFor(ids: (string | null | undefined)[]): Promise<Record<string, Lite>> {
@@ -471,7 +466,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                 <dt>Monthly ROI</dt><dd>{r > 0 ? rate(r) : '—'}</dd>
                 <dt>Investor gets</dt><dd>{invRate ? <>{rate(invRate)}{amt > 0 && <> · <b>{money(mine)}</b> / month</>}</> : '—'}</dd>
                 <dt>IB bonus</dt><dd>{withSub && b > 0 ? <>{rate(b)}{amt > 0 && <> · <b>{money(upMonthly)}</b> / month</>} <span className="muted">to {ibName}</span></> : <span className="muted">None</span>}</dd>
-                <dt>First return</dt><dd>{start ? date(addMonths(start, 1)) : '—'}</dd>
+                <dt>First return</dt><dd>{start ? firstPeriodText(start, Number.isInteger(months) ? months : 0) : '—'}</dd>
                 <dt>Lock-in ends</dt><dd>{start && months > 0 ? date(addMonths(start, months)) : months === 0 ? 'No lock-in' : '—'}</dd>
               </dl>
             </div>
@@ -539,17 +534,19 @@ export function InvestmentDetail() {
 
   /* accrual schedule: every period 1..lock-in */
   const base = i.start_date || i.expected_start;
-  const periods = i.lockin_months > 0 ? i.lockin_months : accruals.filter(a => a.kind === 'regular').length + 1; // no lock-in: what has accrued plus the next month
-  const schedule = base ? Array.from({ length: periods }, (_, n) => {
-    const k = n + 1;
+  // calendar months: from the day after the start date to month end, then whole months; the maturity month runs to the maturity date
+  const cal = base ? calendarPeriods(base, i.lockin_months > 0 ? i.maturity_date || addMonths(base, i.lockin_months) : null, addMonths(t.slice(0, 7) + '-01', 1)) : [];
+  const ks = [...new Set([...cal.map(p => p.k), ...accruals.filter(a => a.kind !== 'reversal').map(a => a.period_no)])].sort((x, y) => x - y);
+  const schedule = ks.map(k => {
+    const p = cal.find(x => x.k === k);
     const acc = accruals.find(a => a.period_no === k && a.kind !== 'reversal');
     const rev = acc ? accruals.find(a => a.reverses_id === acc.id) : undefined;
-    const pay = acc ? payouts.find(p => p.accrual_id === acc.id) : undefined;
-    const from = acc ? acc.period_start : addMonths(base, k - 1);
-    const to = acc ? acc.period_end : addDays(addMonths(base, k), -1);
-    const on = acc ? acc.accrual_date : addMonths(base, k);
-    return { k, acc, rev, pay, from, to, on };
-  }) : [];
+    const pay = acc ? payouts.find(x => x.accrual_id === acc.id) : undefined;
+    const days = acc ? acc.days : p!.days, dim = acc ? acc.days_in_period : p!.daysInMonth;
+    return { k, acc, rev, pay, from: acc ? acc.period_start : p!.start, to: acc ? acc.period_end : p!.end, on: acc ? acc.accrual_date : p!.end, days, dim,
+      amount: acc ? Number(acc.amount) : Math.round(Number(i.monthly_return) * days / dim * 100) / 100 };
+  });
+  const lockinTotal = Math.round(cal.reduce((x, p) => x + Number(i.monthly_return) * p.days / p.daysInMonth, 0) * 100) / 100;
   const shownSchedule = closed ? schedule.filter(r => r.acc) : schedule;
 
   const openAmendDoc = (path: string) => act.run(() => openDocument(path));
@@ -583,7 +580,7 @@ export function InvestmentDetail() {
         <Kpi label="Principal" value={money(i.principal)} sub="Original, never changes" />
         <Kpi label="Investor monthly return" value={money(i.monthly_return)}
           sub={Number(i.admin_bonus || 0) > 0 ? `${rate(i.investor_rate ?? i.monthly_rate)} · + ${money(i.admin_bonus)} (${rate(i.admin_bonus_rate || 0)}) to ${introducedBy ? nm(introducedBy) : 'nobody'}` : `${rate(i.monthly_rate)} × principal`} />
-        <Kpi label="Accrued to date" value={money(bal?.accrued || 0)} sub={i.lockin_months ? `${bal?.periods_accrued || 0} of ${i.lockin_months} periods` : `${bal?.periods_accrued || 0} months so far`} tip="Sum of accrual entries, net of reversals." />
+        <Kpi label="Accrued to date" value={money(bal?.accrued || 0)} sub={i.lockin_months ? `${bal?.periods_accrued || 0} of ${cal.length} months` : `${bal?.periods_accrued || 0} months so far`} tip="Sum of accrual entries, net of reversals." />
         <Kpi label="Paid (confirmed)" value={money(bal?.paid || 0)} cls="pos" sub={`${paidCount} payout${paidCount === 1 ? '' : 's'}`} />
         <Kpi label="Outstanding" value={money(outstanding)} sub={Number(bal?.processing || 0) ? `${money(bal!.processing)} processing` : 'Accrued, not yet paid'} subCls={outstanding ? 'warn' : ''} />
       </div>
@@ -611,7 +608,7 @@ export function InvestmentDetail() {
           </div>
 
           <div className="card">
-            <div className="card-h"><h3>Monthly accruals and payouts</h3><div className="r">Period = start-date anniversary</div></div>
+            <div className="card-h"><h3>Monthly accruals and payouts</h3><div className="r">Calendar months · first and last month by days</div></div>
             <div className="tbl">
               {shownSchedule.length ? (
                 <table>
@@ -619,8 +616,8 @@ export function InvestmentDetail() {
                   <tbody>{shownSchedule.map(r => (
                     <tr key={r.k}>
                       <td className="m">{r.k}</td>
-                      <td>{dateShort(r.from)} – {dateShort(r.to)}{r.acc?.kind === 'stub' && <span className="sub">{r.acc.days} of {r.acc.days_in_period} days (pro-rata)</span>}</td>
-                      <td className={'n ' + (r.acc ? '' : 'muted')}>{money(r.acc ? r.acc.amount : i.monthly_return)}{r.rev && <span className="sub neg">{money(r.rev.amount)} reversed</span>}</td>
+                      <td>{dateShort(r.from)} – {dateShort(r.to)}{r.days < r.dim && <span className="sub">{r.days} of {r.dim} days (pro-rata)</span>}</td>
+                      <td className={'n ' + (r.acc ? '' : 'muted')}>{money(r.amount)}{r.rev && <span className="sub neg">{money(r.rev.amount)} reversed</span>}</td>
                       <td>{r.rev ? <Badge cls="b-red">Reversed</Badge> : r.acc ? <Badge cls="b-green">Accrued</Badge> : pending ? <Badge cls="b-grey">Projected</Badge> : <Badge cls="b-grey">Scheduled</Badge>}</td>
                       <td>{date(r.on)}</td>
                       <td>{r.pay ? <><PayBadge s={r.pay.status} /><span className="sub">{r.pay.status === 'paid' ? 'paid ' + dateShort(r.pay.paid_on) : 'due ' + dateShort(r.pay.due_date)}</span></> : <span className="muted">—</span>}</td>
@@ -665,7 +662,7 @@ export function InvestmentDetail() {
                 <dt>Lock-in</dt><dd>{lockinText(i.lockin_months)}</dd>
                 <dt>Principal</dt><dd>{money(i.principal)}</dd>
                 <dt>Investor monthly return</dt><dd>{money(i.monthly_return)}</dd>
-                {i.lockin_months > 0 && <><dt>Total over lock-in</dt><dd>{money(Math.round(Number(i.monthly_return) * i.lockin_months * 100) / 100)}</dd></>}
+                {i.lockin_months > 0 && <><dt>Total over lock-in</dt><dd>{money(lockinTotal)}</dd></>}
                 <dt>Payout lag</dt><dd>{i.payout_lag_days} day{i.payout_lag_days === 1 ? '' : 's'} after accrual</dd>
                 <dt>Agreement</dt><dd className="mono">{i.agreement_ref || '—'}</dd>
                 <dt>Deposit reference</dt><dd className="mono">{i.deposit_ref || '—'}</dd>
@@ -721,7 +718,7 @@ function FundDialog({ i, meId, onClose }: { i: Investment; meId?: string; onClos
   const [note, setNote] = useState('');
   const [tried, setTried] = useState(false);
   const errs = { start: !start ? 'Choose the date funds were received.' : start > t ? 'Start date must be today or earlier.' : null, ref: !ref.trim() ? 'Enter the bank reference for the deposit.' : null };
-  const back = start && start < t ? Math.max(0, (() => { let k = 0; while (k < i.lockin_months && addMonths(start, k + 1) <= t) k++; return k; })()) : 0;
+  const back = start && start < t ? calendarPeriods(start, addMonths(start, i.lockin_months), t).filter(p => p.end < t).length : 0;
   const go = async () => {
     setTried(true); if (errs.start || errs.ref) return;
     const r = await act.run(() => rpc('admin_activate_investment', { p_id: i.id, p_start_date: start, p_deposit_ref: ref.trim(), p_reason: note.trim() }),

@@ -78,6 +78,45 @@ export function addMonths(iso: string, n: number): string {
 export function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
 }
+/** One return period. Returns follow calendar months: an investment that starts on 10 October earns from 11 October
+ *  to 31 October (21 of 31 days, pro-rata), then 1–30 November, 1–31 December and so on. With a lock-in, the last period
+ *  runs from the 1st of the maturity month to the maturity date (pro-rata). The start date itself does not earn. */
+export interface CalPeriod { k: number; start: string; end: string; days: number; daysInMonth: number; full: boolean }
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+const addDay = (iso: string, n: number) => { const d = new Date(iso.slice(0, 10) + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return isoDay(d); };
+/** Calendar-month periods from the day after `start` up to `maturity` (inclusive), or, without a lock-in, up to the month of `upTo`. */
+export function calendarPeriods(start: string, maturity: string | null, upTo?: string, max = 1200): CalPeriod[] {
+  const out: CalPeriod[] = [];
+  if (!start) return out;
+  const first = addDay(start, 1);
+  const stop = maturity || (upTo ? isoDay(new Date(Date.UTC(+upTo.slice(0, 4), +upTo.slice(5, 7), 0))) : null);
+  if (!stop || stop < first) return out;
+  let y = +first.slice(0, 4), m = +first.slice(5, 7);
+  for (let n = 0; n < max; n++) {
+    const monthFirst = `${y}-${String(m).padStart(2, '0')}-01`;
+    const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const monthLast = `${y}-${String(m).padStart(2, '0')}-${String(dim).padStart(2, '0')}`;
+    if (monthFirst > stop) break;
+    const s = first > monthFirst ? first : monthFirst, e = stop < monthLast ? stop : monthLast;
+    const days = daysBetween(s, e) + 1;
+    if (days > 0) out.push({ k: out.length + 1, start: s, end: e, days, daysInMonth: dim, full: days === dim });
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+/** The return for one period at a monthly rate: a full month earns the whole monthly return, a part month its share of days. */
+export const periodAmount = (principal: number, ratePct: number, p: Pick<CalPeriod, 'days' | 'daysInMonth'>) =>
+  Math.round((principal * ratePct / 100) * (p.days / p.daysInMonth) * 100 + 1e-9) / 100;
+
+/** A short description of the first return period, e.g. "11 Oct – 31 Oct 2026 (21 of 31 days)". */
+export function firstPeriodText(start: string, lockinMonths: number): string {
+  if (!start) return '—';
+  const p = calendarPeriods(start, lockinMonths > 0 ? addMonths(start, lockinMonths) : null, addMonths(start.slice(0, 7) + '-01', 1))[0];
+  if (!p) return '—';
+  const d = (x: string) => +x.slice(8, 10) + ' ' + MONTHS[+x.slice(5, 7) - 1];
+  return `${d(p.start)} – ${d(p.end)} ${p.end.slice(0, 4)}${p.full ? '' : ` (${p.days} of ${p.daysInMonth} days)`}`;
+}
+
 /** Simple interest per month on the original principal, rounded half away from zero to 2 decimals. */
 export function monthlyReturn(principal: number, ratePct: number): number {
   const x = (principal * ratePct) / 100;

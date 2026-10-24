@@ -4,12 +4,12 @@ import { api, must } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery } from '../lib/useQuery';
 import { openDocument } from '../lib/docs';
-import { date, dateShort, addMonths, investmentLabel, isUnlocked, LEDGER_TYPE, lockinText, money, ordinal, pct, rate, rateShort } from '../lib/format';
+import { date, dateShort, investmentLabel, isUnlocked, LEDGER_TYPE, lockinText, money, pct, rate, rateShort } from '../lib/format';
 import { Badge, Empty, ErrorNote, InvBadge, Kpi, LedgerBadge, Loading, PageHead, PayBadge, useAction } from '../ui/kit';
 import { DataTable } from '../ui/DataTable';
 import { Icon } from '../ui/Icon';
 import type { Accrual, DocumentRow, Investment, Payout } from '../lib/types';
-import { addDays, bal, codeMap, daysLeft, isLive, loadLedger, loadPortfolio, nextAccrual, projectedRemaining, unpaid } from './data';
+import { bal, codeMap, daysLeft, isLive, loadLedger, loadPortfolio, nextAccrual, periodReturn, periodsFor, projectedRemaining, unpaid } from './data';
 import { BackLink, maturityText, Prose, Steps, Tracker, useApproaching } from './parts';
 
 const VIEWS: [string, string][] = [['All', 'all'], ['Unlocked', 'unlocked'], ['Locked', 'locked'], ['Pending funding', 'pending_funding'], ['Closed', 'closed']];
@@ -116,7 +116,7 @@ export function Investments() {
   );
 }
 
-interface Row { k: number; from: string; to: string; on: string; amount: number; acc: Accrual | null; pay: Payout | null; reversed: boolean }
+interface Row { k: number; from: string; to: string; on: string; amount: number; days: number; dim: number; acc: Accrual | null; pay: Payout | null; reversed: boolean }
 
 /** Month-by-month schedule: real accruals and payouts where they exist, otherwise the scheduled month. */
 function schedule(i: Investment, accruals: Accrual[], payouts: Payout[]): Row[] {
@@ -125,12 +125,17 @@ function schedule(i: Investment, accruals: Accrual[], payouts: Payout[]): Row[] 
   const reversedIds = new Set(mine.filter(a => a.kind === 'reversal' && a.reverses_id).map(a => a.reverses_id!));
   const payBy = Object.fromEntries(payouts.filter(p => p.investment_id === i.id).map(p => [p.accrual_id, p]));
   const rows: Row[] = [];
-  for (let k = 1; k <= i.lockin_months; k++) {
+  // calendar months: the first and the last (maturity) month are pro-rata by days
+  for (const p of periodsFor(i)) {
+    const k = p.k;
     const acc = mine.find(a => a.period_no === k && a.kind !== 'reversal') || null;
-    const from = acc ? acc.period_start : addMonths(i.start_date, k - 1);
-    const end = addMonths(i.start_date, k);
-    rows.push({ k, from, to: acc ? acc.period_end : addDays(end, -1), on: acc ? acc.accrual_date : end, amount: acc ? Number(acc.amount) : Number(i.monthly_return), acc, pay: acc ? payBy[acc.id] || null : null, reversed: acc ? reversedIds.has(acc.id) : false });
+    rows.push({ k, from: acc ? acc.period_start : p.start, to: acc ? acc.period_end : p.end, on: acc ? acc.accrual_date : p.end, amount: acc ? Number(acc.amount) : periodReturn(Number(i.monthly_return), p),
+      days: acc ? acc.days : p.days, dim: acc ? acc.days_in_period : p.daysInMonth, acc, pay: acc ? payBy[acc.id] || null : null, reversed: acc ? reversedIds.has(acc.id) : false });
   }
+  // periods accrued beyond the schedule shown (e.g. no lock-in) still appear
+  mine.filter(a => a.kind !== 'reversal' && !rows.some(r => r.k === a.period_no)).forEach(acc => rows.push({ k: acc.period_no, from: acc.period_start, to: acc.period_end, on: acc.accrual_date, amount: Number(acc.amount),
+    days: acc.days, dim: acc.days_in_period, acc, pay: payBy[acc.id] || null, reversed: reversedIds.has(acc.id) }));
+  rows.sort((a, b) => a.k - b.k);
   return rows;
 }
 
@@ -203,7 +208,7 @@ export function InvestmentDetail() {
 
       <div className="kpis">
         <Kpi label="Monthly return" value={money(i.monthly_return)} sub={`${pct(i.monthly_rate)} × ${money(i.principal)}`} />
-        <Kpi label="Returns accrued" value={money(b.accrued)} sub={`${b.periods_accrued} of ${i.lockin_months} months`} />
+        <Kpi label="Returns accrued" value={money(b.accrued)} sub={i.lockin_months ? `${b.periods_accrued} of ${rows.length} months` : `${b.periods_accrued} months so far`} />
         <Kpi label="Returns received" value={money(b.paid)} cls="pos" sub="Confirmed payments" />
         <Kpi label="Accrued, not yet paid" value={money(unpaid(b))} sub={Number(b.processing) ? money(b.processing) + ' processing' : Number(b.approved) ? money(b.approved) + ' approved' : 'Awaiting payout'} subCls="warn" />
         <Kpi label="Projected remaining" value={money(projectedRemaining(i, b))} sub={next ? `Projected · next accrual ${dateShort(next.date)}` : 'Projected'} subCls="warn" tip="Months not yet accrued at your contract's monthly return. An estimate, not a guarantee." />
@@ -211,7 +216,7 @@ export function InvestmentDetail() {
 
       <div className="grid g-2-1">
         <div className="card">
-          <div className="card-h"><h3>Month-by-month schedule</h3><div className="r">Payout day: {i.start_date ? ordinal(+i.start_date.slice(8, 10)) + ' of each month*' : 'set at activation'}</div></div>
+          <div className="card-h"><h3>Month-by-month schedule</h3><div className="r">Calendar months · first and last month by days</div></div>
           <div className="tbl">
             {rows.length ? (
               <table>
@@ -220,7 +225,7 @@ export function InvestmentDetail() {
                   {rows.map(r => (
                     <tr key={r.k}>
                       <td className="m">{r.k}</td>
-                      <td>{dateShort(r.from)} – {dateShort(r.to)}</td>
+                      <td>{dateShort(r.from)} – {dateShort(r.to)}{r.days < r.dim && <span className="sub">{r.days} of {r.dim} days (pro-rata)</span>}</td>
                       <td className={'n ' + (r.acc ? '' : 'muted')}>{money(r.amount)}</td>
                       <td>{date(r.on)}</td>
                       <td>{r.reversed ? <Badge cls="b-grey">Reversed</Badge> : r.pay ? <PayBadge s={r.pay.status} /> : r.acc ? <Badge cls="b-grey">Accrued</Badge>
@@ -228,14 +233,14 @@ export function InvestmentDetail() {
                       <td className="m">{r.pay?.status === 'paid' ? <>{r.pay.payment_ref}<span className="sub">{date(r.pay.paid_on)}</span></> : r.pay ? <span className="sub">Due {date(r.pay.due_date)}</span> : '—'}</td>
                     </tr>
                   ))}
-                  {stub.filter(s => s.period_no > i.lockin_months).map(s => (
+                  {stub.filter(s => !rows.some(r => r.k === s.period_no)).map(s => (
                     <tr key={s.id}><td className="m">{s.period_no}</td><td>{dateShort(s.period_start)} – {dateShort(s.period_end)}</td><td className="n">{money(s.amount)}</td><td>{date(s.accrual_date)}</td><td><Badge cls="b-grey">Pro-rata</Badge></td><td className="m">—</td></tr>
                   ))}
                 </tbody>
               </table>
             ) : <div className="card-b"><Empty title="No schedule yet">The monthly schedule appears once your deposit is confirmed and the investment starts.</Empty></div>}
           </div>
-          {rows.length > 0 && <div className="card-b"><p className="hint">Scheduled rows are projections from your contract terms; they become accruals on the date shown and are paid after confirmation. *Or the last day of shorter months.</p></div>}
+          {rows.length > 0 && <div className="card-b"><p className="hint">Scheduled rows are projections from your contract terms; they are credited once the month ends and paid after confirmation. Returns are counted from the day after the start date to the end of that month, then for each full calendar month; the first and last month are paid for the days invested.</p></div>}
         </div>
 
         <div style={{ display: 'grid', gap: 16, alignContent: 'start' }}>

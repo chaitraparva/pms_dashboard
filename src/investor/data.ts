@@ -1,7 +1,7 @@
 // Data loading and small date helpers shared by the investor portal pages.
 // Every figure shown comes from rows the signed-in investor can read (RLS).
 import { api, must, fetchAll, rpc } from '../lib/api';
-import { addMonths, daysBetween, today } from '../lib/format';
+import { addMonths, calendarPeriods, daysBetween, today, type CalPeriod } from '../lib/format';
 import type { Accrual, Balance, Investment, LedgerEntry, MyAccount, Payout } from '../lib/types';
 
 /** The signed-in investor: whether they are an IB, their IB (if any), their sub-investors and bank details. */
@@ -54,18 +54,26 @@ export function addDays(iso: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Next regular accrual date (start + k months) for an investment that is still earning, otherwise null. */
-export function nextAccrual(i: Investment, b: Balance): { period: number; date: string } | null {
+/** Return periods follow calendar months: started 10 Oct → 11–31 Oct (pro-rata), then 1–30 Nov, 1–31 Dec …
+ *  With a lock-in they run to the maturity date; without one, up to next month. */
+export function periodsFor(i: Pick<Investment, 'start_date' | 'lockin_months' | 'maturity_date'>, t = today()): CalPeriod[] {
+  if (!i.start_date) return [];
+  return calendarPeriods(i.start_date, i.lockin_months > 0 ? i.maturity_date || addMonths(i.start_date, i.lockin_months) : null, addMonths(t.slice(0, 7) + '-01', 1));
+}
+/** The monthly return for a period: whole for a full month, by days for a part month. */
+export const periodReturn = (monthly: number, p: Pick<CalPeriod, 'days' | 'daysInMonth'>) => Math.round(monthly * p.days / p.daysInMonth * 100) / 100;
+
+/** The next return period not yet accrued (credited once the period ends), for an investment that is still earning. */
+export function nextAccrual(i: Investment, b: Balance): { period: number; date: string; start: string } | null {
   if (!i.start_date || i.status !== 'active') return null;
-  const k = Number(b.periods_accrued) + 1;
-  if (k > i.lockin_months) return null;
-  return { period: k, date: addMonths(i.start_date, k) };
+  const p = periodsFor(i).find(x => x.k === Number(b.periods_accrued) + 1);
+  return p ? { period: p.k, date: p.end, start: p.start } : null;
 }
 
-/** Projected (not guaranteed) returns for months not yet accrued, at the contract's monthly return. */
+/** Projected (not guaranteed) returns for the lock-in periods not yet accrued, at the contract's monthly return. */
 export function projectedRemaining(i: Investment, b: Balance): number {
-  if (!i.start_date || i.status !== 'active') return 0;
-  return Math.max(0, i.lockin_months - Number(b.periods_accrued)) * Number(i.monthly_return);
+  if (!i.start_date || i.status !== 'active' || !(i.lockin_months > 0)) return 0;
+  return Math.round(periodsFor(i).filter(p => p.k > Number(b.periods_accrued)).reduce((s, p) => s + periodReturn(Number(i.monthly_return), p), 0) * 100) / 100;
 }
 
 /** Share of the time from start to maturity that has elapsed (0–100). */

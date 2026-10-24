@@ -9,7 +9,7 @@ import { BarChart, Donut, monthLabel } from '../ui/Charts';
 import { Icon } from '../ui/Icon';
 import { RoiReleased } from './Overview';
 import type { Accrual, Payout } from '../lib/types';
-import { bal, codeMap, isLive, lastMonths, loadPortfolio, projectedRemaining, unpaid } from './data';
+import { bal, codeMap, isLive, lastMonths, loadPortfolio, periodsFor, projectedRemaining, unpaid } from './data';
 
 interface Row { a: Accrual; code: string; pay: Payout | null }
 
@@ -85,7 +85,7 @@ export function Returns() {
                   return (
                     <tr key={i.id} className="click" onClick={() => nav('/portal/investments/' + i.code)}>
                       <td className="m">{i.code}</td><td>{rate(i.monthly_rate)}</td><td className="n">{money(i.principal)}</td><td className="n">{money(i.monthly_return)}</td>
-                      <td className="n">{b.periods_accrued} / {i.lockin_months}</td><td className="n">{money(b.accrued)}</td><td className="n pos">{money(b.paid)}</td>
+                      <td className="n">{b.periods_accrued}{i.lockin_months ? ' / ' + periodsFor(i).length : ''}</td><td className="n">{money(b.accrued)}</td><td className="n pos">{money(b.paid)}</td>
                       <td className="n">{money(unpaid(b))}</td><td className="n muted">{money(projectedRemaining(i, b))}</td>
                       <td className="n">{pct((Number(b.accrued) / Number(i.principal)) * 100)}</td>
                     </tr>

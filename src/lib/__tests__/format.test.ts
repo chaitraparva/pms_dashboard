@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addMonths, daysBetween, investmentLabel, isUnlocked, monthlyReturn, rateShort } from '../format';
+import { addMonths, calendarPeriods, daysBetween, investmentLabel, isUnlocked, monthlyReturn, periodAmount, rateShort } from '../format';
 import { toCsv } from '../csv';
 import type { Investment } from '../types';
 
@@ -47,5 +47,21 @@ describe('investment label', () => {
 describe('csv export', () => {
   it('quotes and neutralises formulas', () => {
     expect(toCsv(['a', 'b'], [['x,y', '=HYPERLINK("bad")'], [-5, 2.5]])).toBe('a,b\r\n"x,y","\'=HYPERLINK(""bad"")"\r\n-5,2.5');
+  });
+});
+
+describe('calendar-month return periods', () => {
+  it('starts the day after the start date and follows calendar months to maturity', () => {
+    const p = calendarPeriods('2026-10-10', '2027-04-10');
+    expect(p.map(x => [x.start, x.end, x.days, x.daysInMonth])).toEqual([
+      ['2026-10-11', '2026-10-31', 21, 31], ['2026-11-01', '2026-11-30', 30, 30], ['2026-12-01', '2026-12-31', 31, 31],
+      ['2027-01-01', '2027-01-31', 31, 31], ['2027-02-01', '2027-02-28', 28, 28], ['2027-03-01', '2027-03-31', 31, 31], ['2027-04-01', '2027-04-10', 10, 30]]);
+  });
+  it('skips the start month when the investment starts on its last day', () => {
+    expect(calendarPeriods('2026-10-31', null, '2026-11-15')[0].start).toBe('2026-11-01');
+  });
+  it('pays a part month by days', () => {
+    expect(periodAmount(100000, 6, { days: 21, daysInMonth: 31 })).toBe(4064.52);
+    expect(periodAmount(100000, 6, { days: 30, daysInMonth: 30 })).toBe(6000);
   });
 });

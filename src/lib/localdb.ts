@@ -2,7 +2,7 @@
 // The PMS data engine. It runs on the server (api/db.ts): every request loads the company's data from Neon,
 // runs one query or action here with the signed-in user's rights, and saves what changed.
 // Every money-moving action below follows the original database rules.
-import { splitRate, investorPlanName, defaultBonus, STANDARD_PLANS } from './format.js';
+import { splitRate, investorPlanName, defaultBonus, STANDARD_PLANS, calendarPeriods, type CalPeriod } from './format.js';
 
 type Row = Record<string, any>;
 export interface Store { v: number; tables: Record<string, Row[]>; seq: Record<string, number>; users: { id: string; email: string; pw: string }[] }
@@ -53,13 +53,17 @@ function principalOn(i: Row, d: string): number {
 }
 /** Return for a period [start, end) at a monthly rate. A withdrawal inside the period splits it by days:
  *  the old principal earns until the request date, the new principal from that date. */
-function periodReturn(i: Row, start: string, end: string, rate: number): number {
-  const cuts = (i.principal_changes || []).map((c: Row) => String(c.date)).filter((d: string) => d > start && d < end).sort();
-  if (!cuts.length) return monthlyReturn(principalOn(i, start), rate);
-  const total = diffDays(start, end); let amt = 0, from = start;
-  for (const to of [...cuts, end]) { amt += principalOn(i, from) * rate / 100 * diffDays(from, to) / total; from = to; }
+/** Return for one calendar-month period at a monthly rate: each earning day gets 1/(days in that month) of the monthly
+ *  return on that day's principal. A full month with no withdrawal is exactly principal × rate. */
+function periodReturn(i: Row, p: CalPeriod, rate: number): number {
+  const cuts = (i.principal_changes || []).some((c: Row) => String(c.date) > p.start && String(c.date) <= p.end);
+  if (!cuts) return round2(principalOn(i, p.start) * rate / 100 * p.days / p.daysInMonth);
+  let amt = 0;
+  for (let d = p.start; d <= p.end; d = addDays(d, 1)) amt += principalOn(i, d) * rate / 100 / p.daysInMonth;
   return round2(amt);
 }
+/** The calendar-month periods of an investment (to maturity, or with no lock-in up to `upTo`). */
+const periodsOf = (i: Row, upTo: string) => calendarPeriods(i.start_date, i.lockin_months > 0 ? i.maturity_date : null, upTo);
 const nextSeq = (k: string, start: number) => { S.seq[k] = (S.seq[k] ?? start - 1) + 1; return S.seq[k]; };
 const blank = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
 const str = (v: unknown, d = '') => (blank(v) ? d : String(v));
@@ -125,6 +129,7 @@ function fmtMoney(v: number): string {
   const c = ({ INR: '₹', AED: 'AED ', USD: '$', EUR: '€', GBP: '£' } as Record<string, string>)[settings()?.currency] ?? '';
   return c + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const fmtDate = (s: string) => { const d = parse(s); return pad(d.getUTCDate()) + ' ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()] + ' ' + d.getUTCFullYear(); };
 
 function audit(action: string, entity: string, id: string | null, label: string, reason: string, before: unknown, after: unknown) {
@@ -208,23 +213,24 @@ export function canWrite(table: string): boolean { return isAdmin() && ['documen
 function runAccrualsFor(i: Row, asOf: string): number {
   if (!i.start_date || !LIVE.includes(i.status)) return 0;
   let n = 0;
-  const last = i.lockin_months > 0 ? i.lockin_months : 1200; // no lock-in: a return every month until the investment is closed
-  for (let k = 1; k <= last; k++) {
-    const end = addMonths(i.start_date, k); if (end > asOf) break;
+  // calendar months: started 10 Oct → 11–31 Oct (pro-rata), then 1–30 Nov, 1–31 Dec …; a month is accrued once it has ended
+  for (const p of periodsOf(i, asOf)) {
+    if (p.end >= asOf) break;
+    const k = p.k, end = p.end;
     if (T('accruals').some(a => a.investment_id === i.id && a.period_no === k && (a.kind === 'regular' || a.kind === 'stub'))) continue;
-    const start = addMonths(i.start_date, k - 1);
-    // the investor's share and the bonus for this month, on the principal of each day (withdrawals lower it from their date)
-    const mineAmt = periodReturn(i, start, end, investorRate(i)), bonusAmt = round2(periodReturn(i, start, end, Number(i.monthly_rate)) - mineAmt);
-    if (mineAmt <= 0 && principalOn(i, start) <= 0) { closeIfEmpty(i); break; }
-    const acc = { id: uuid(), investment_id: i.id, period_no: k, kind: 'regular', period_start: start, period_end: addDays(end, -1), accrual_date: end, days: diffDays(start, end), days_in_period: diffDays(start, end), amount: mineAmt, reverses_id: null, reason: null, created_by: null, created_at: nowIso() };
+    // the investor's share and the bonus for this period, on the principal of each day (withdrawals lower it from their date)
+    const mineAmt = periodReturn(i, p, investorRate(i)), bonusAmt = round2(periodReturn(i, p, Number(i.monthly_rate)) - mineAmt);
+    if (mineAmt <= 0 && principalOn(i, p.start) <= 0) { closeIfEmpty(i); break; }
+    const acc = { id: uuid(), investment_id: i.id, period_no: k, kind: 'regular', period_start: p.start, period_end: end, accrual_date: end, days: p.days, days_in_period: p.daysInMonth, amount: mineAmt, reverses_id: null, reason: null, created_by: null, created_at: nowIso() };
     T('accruals').push(acc); n++;
     T('payouts').push({ id: uuid(), code: 'PAY-' + pad(nextSeq('payout', 1), 6), accrual_id: acc.id, investment_id: i.id, investor_id: i.investor_id, amount: mineAmt, due_date: addDays(end, i.payout_lag_days), status: 'accrued',
       batch_ref: null, payment_ref: null, failure_reason: null, approved_by: null, approved_at: null, sent_by: null, sent_at: null, confirmed_by: null, confirmed_at: null, paid_on: null, updated_at: nowIso() });
-    ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_accrual', amount: mineAmt, status: 'posted', occurred_on: end, reference: i.code + ' · period ' + k,
-      note: 'Monthly return ' + investorRate(i).toFixed(2) + '% on ' + fmtMoney(principalOn(i, start)), source_table: 'accruals', source_id: acc.id, created_by: null });
-    notify(i.investor_id, 'accrual', 'Return accrued on ' + i.code + ': ' + fmtMoney(mineAmt), 'Month ' + k + (i.lockin_months > 0 ? ' of ' + i.lockin_months : '') + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
+    const span = fmtDate(p.start) + ' – ' + fmtDate(end) + (p.full ? '' : ' (' + p.days + ' of ' + p.daysInMonth + ' days)');
+    ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_accrual', amount: mineAmt, status: 'posted', occurred_on: end, reference: i.code + ' · ' + MONTH_NAMES[+end.slice(5, 7) - 1] + ' ' + end.slice(0, 4),
+      note: 'Monthly return ' + investorRate(i).toFixed(2) + '% on ' + fmtMoney(principalOn(i, p.start)) + ' · ' + span, source_table: 'accruals', source_id: acc.id, created_by: null });
+    notify(i.investor_id, 'accrual', 'Return accrued on ' + i.code + ': ' + fmtMoney(mineAmt), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
     if (bonusAmt > 0) T('admin_bonuses').push({ id: uuid(), code: 'BON-' + pad(nextSeq('bonus', 1), 6), investment_id: i.id, investor_id: i.investor_id,
-      admin_id: T('profiles').find(p => p.id === i.investor_id)?.introduced_by ?? null, accrual_id: acc.id, period_no: k, accrual_date: end, rate: Number(i.admin_bonus_rate),
+      admin_id: T('profiles').find(p2 => p2.id === i.investor_id)?.introduced_by ?? null, accrual_id: acc.id, period_no: k, accrual_date: end, rate: Number(i.admin_bonus_rate),
       amount: bonusAmt, status: 'accrued', payment_ref: null, paid_on: null, paid_by: null, created_at: nowIso(), updated_at: nowIso() });
   }
   closeIfEmpty(i);
@@ -242,9 +248,10 @@ function closeIfEmpty(i: Row) {
   if (Number(i.principal) > 0 || !LIVE.includes(i.status) || !i.start_date) return;
   const d = [...(i.principal_changes || [])].map((c: Row) => String(c.date)).sort().pop();
   if (!d) return;
-  let k = 1; while (addMonths(i.start_date, k) <= d) k++;          // month k contains the request date
-  const owed = addMonths(i.start_date, k - 1) < d ? k : k - 1;       // the last month that still earns something
-  if (owed > 0 && !T('accruals').some(ac => ac.investment_id === i.id && ac.period_no === owed && ac.kind === 'regular')) return;
+  // principal is 0 from the request date, so the last earning day is the day before it; close once that month is accrued
+  const last = addDays(d, -1);
+  const owed = last >= i.start_date ? periodsOf(i, last).filter(p => p.start <= last).pop() : undefined;
+  if (owed && !T('accruals').some(ac => ac.investment_id === i.id && ac.period_no === owed.k && ac.kind === 'regular')) return;
   i.status = 'redeemed'; i.updated_at = nowIso();
 }
 /** The hourly job of the old server: run on load and every hour while the app is open. */

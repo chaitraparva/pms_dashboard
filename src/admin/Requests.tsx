@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { approveInvestmentRequest } from '../lib/adminApi';
-import { money, date, dateTime, lockinText, rate, rateShort, addMonths } from '../lib/format';
+import { money, date, dateTime, lockinText, rate, rateShort, addMonths, firstPeriodText } from '../lib/format';
 import { downloadCsv } from '../lib/csv';
 import type { InvestmentRequest, Profile } from '../lib/types';
 import { Badge, Drawer, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -163,7 +163,7 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
           </Field>
         )}
         <Field label="Note to the investor (optional)"><input className="input" value={note} onChange={ev => setNote(ev.target.value)} /></Field>
-        {rr > 0 && amt > 0 && <div className="note info">{rate(rr)} on {money(amt)}{underIb && b > 0 ? ` · ${rateShort(b)} to ${ibName}` : ''} · first return {date(addMonths(start, 1))}{months > 0 ? ` · lock-in ends ${date(addMonths(start, months))}` : ' · no lock-in'}.</div>}
+        {rr > 0 && amt > 0 && <div className="note info">{rate(rr)} on {money(amt)}{underIb && b > 0 ? ` · ${rateShort(b)} to ${ibName}` : ''} · first return {firstPeriodText(start, months)}{months > 0 ? ` · lock-in ends ${date(addMonths(start, months))}` : ' · no lock-in'}.</div>}
       </div>
     </Drawer>
   );
