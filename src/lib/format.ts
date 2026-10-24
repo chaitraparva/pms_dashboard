@@ -150,7 +150,7 @@ export const lockinText = (m: number) => (!m ? 'No lock-in' : m === 12 ? '1 year
 /** Monthly rate as a short label: 2%, 3.3%, 4%, 5%, 6%. */
 export const rateShort = (r: number | string) => String(Number(Number(r).toFixed(4))) + '%';
 export const PAY_BADGE: Record<string, [string, string]> = {
-  accrued: ['Accrued', 'b-grey'], approved: ['Approved', 'b-blue'], processing: ['Processing', 'b-amber'], paid: ['Paid', 'b-green'], failed: ['Failed', 'b-red'], cancelled: ['Reversed', 'b-grey']
+  accrued: ['Accrued', 'b-grey'], approved: ['Approved', 'b-blue'], processing: ['Payment processed', 'b-amber'], paid: ['Payment fulfilled', 'b-green'], failed: ['Failed', 'b-red'], cancelled: ['Reversed', 'b-grey']
 };
 export const LEDGER_BADGE: Record<string, [string, string]> = {
   confirmed: ['Confirmed', 'b-green'], pending: ['Pending', 'b-amber'], posted: ['Posted', 'b-grey'], failed: ['Failed', 'b-red'], reversed: ['Reversed', 'b-grey']

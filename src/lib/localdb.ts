@@ -373,11 +373,11 @@ function payoutsTransition(ids: string[], to: string, ref: string | null, reason
       const ex = ledgerFor('payouts', p.id, 'return_payout')[0];
       if (ex) Object.assign(ex, { status: 'pending', reference: r, occurred_on: today(), updated_at: nowIso() });
       else ledger({ investment_id: p.investment_id, investor_id: p.investor_id, type: 'return_payout', amount: p.amount, status: 'pending', occurred_on: today(), reference: r, note: p.code, source_table: 'payouts', source_id: p.id });
-      notify(p.investor_id, 'payout_processing', 'Payout for ' + code + ' is being processed', fmtMoney(p.amount), '/portal/investments/' + code, 'payouts', p.id);
+      notify(p.investor_id, 'payout_processing', 'Payment processed for ' + code, fmtMoney(p.amount), '/portal/investments/' + code, 'payouts', p.id);
     } else if (to === 'paid') {
       Object.assign(p, { status: 'paid', payment_ref: r, confirmed_by: currentUid, confirmed_at: nowIso(), paid_on: today() });
       ledgerFor('payouts', p.id, 'return_payout').forEach(l => Object.assign(l, { status: 'confirmed', reference: r, occurred_on: today(), updated_at: nowIso() }));
-      notify(p.investor_id, 'payout_paid', 'Return paid: ' + fmtMoney(p.amount) + ' for ' + code, 'Reference ' + r, '/portal/investments/' + code, 'payouts', p.id);
+      notify(p.investor_id, 'payout_paid', 'Payment fulfilled: ' + fmtMoney(p.amount) + ' for ' + code, 'Reference ' + r, '/portal/investments/' + code, 'payouts', p.id);
     } else {
       Object.assign(p, { status: 'failed', failure_reason: reason });
       ledgerFor('payouts', p.id, 'return_payout').forEach(l => Object.assign(l, { status: 'failed', note: reason, updated_at: nowIso() }));
@@ -698,6 +698,34 @@ export function rpcCall(fn: string, a: Row): unknown {
       rows.forEach(b => Object.assign(b, { status: 'paid', payment_ref: r, paid_on: today(), paid_by: currentUid, updated_at: nowIso() }));
       audit('bonus.paid', 'admin_bonus', null, rows.length + ' admin bonuses', r, { ids: a.p_ids }, { status: 'paid', reference: r, total: round2(rows.reduce((x, b) => x + Number(b.amount), 0)) });
       touched('admin_bonuses'); return rows.length;
+    }
+    case 'admin_update_payout': {
+      // Super Admin correction: set any status (accrued, approved, payment processed, payment fulfilled, failed), reference and date
+      requireAdmin(); const p = T('payouts').find(x => x.id === a.p_id) || fail('Payout not found.');
+      if (p.status === 'cancelled') fail('This payout was reversed and cannot be edited.');
+      const to = String(a.p_status), before = { status: p.status, payment_ref: p.payment_ref, batch_ref: p.batch_ref, paid_on: p.paid_on, failure_reason: p.failure_reason };
+      if (!['accrued', 'approved', 'processing', 'paid', 'failed'].includes(to)) fail('Choose a status.');
+      const ref = str(a.p_ref).trim(), on = str(a.p_paid_on, today());
+      if (to === 'paid' && !ref) fail('Enter the bank reference for this payment.');
+      if (to === 'failed' && blank(a.p_reason)) fail('Enter why the payment failed.');
+      const code = T('investments').find(i => i.id === p.investment_id)?.code || '';
+      Object.assign(p, { status: to, updated_at: nowIso(),
+        approved_by: to === 'accrued' ? null : p.approved_by || currentUid, approved_at: to === 'accrued' ? null : p.approved_at || nowIso(),
+        batch_ref: to === 'processing' ? ref || p.batch_ref : ['accrued', 'approved'].includes(to) ? null : p.batch_ref,
+        sent_by: ['processing', 'paid', 'failed'].includes(to) ? p.sent_by || currentUid : null, sent_at: ['processing', 'paid', 'failed'].includes(to) ? p.sent_at || nowIso() : null,
+        payment_ref: to === 'paid' ? ref : null, paid_on: to === 'paid' ? on : null, confirmed_by: to === 'paid' ? currentUid : null, confirmed_at: to === 'paid' ? nowIso() : null,
+        failure_reason: to === 'failed' ? str(a.p_reason).trim() : null });
+      // the ledger line for the payment follows the status
+      const led = ledgerFor('payouts', p.id, 'return_payout');
+      if (to === 'accrued' || to === 'approved') S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'payouts' && l.source_id === p.id && l.type === 'return_payout'));
+      else {
+        const st = to === 'paid' ? 'confirmed' : to === 'failed' ? 'failed' : 'pending';
+        if (led.length) led.forEach(l => Object.assign(l, { status: st, reference: p.payment_ref || p.batch_ref || l.reference, occurred_on: to === 'paid' ? on : l.occurred_on, note: to === 'failed' ? p.failure_reason : l.note, updated_at: nowIso() }));
+        else ledger({ investment_id: p.investment_id, investor_id: p.investor_id, type: 'return_payout', amount: p.amount, status: st, occurred_on: to === 'paid' ? on : today(), reference: p.payment_ref || p.batch_ref || '', note: p.code, source_table: 'payouts', source_id: p.id });
+      }
+      if (to === 'paid' && before.status !== 'paid') notify(p.investor_id, 'payout_paid', 'Payment fulfilled: ' + fmtMoney(p.amount) + ' for ' + code, 'Reference ' + ref, '/portal/investments/' + code, 'payouts', p.id);
+      audit('payout.edit', 'payout', p.id, p.code, str(a.p_reason, 'Payout edited'), before, { status: to, payment_ref: p.payment_ref, batch_ref: p.batch_ref, paid_on: p.paid_on });
+      touched('payouts', 'ledger_entries', 'notifications'); return null;
     }
     case 'admin_payouts_transition': { const n = payoutsTransition(a.p_ids, a.p_to, a.p_ref ?? null, a.p_reason ?? null); touched('payouts', 'ledger_entries', 'notifications'); return n; }
     case 'admin_save_announcement': {

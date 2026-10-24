@@ -223,7 +223,7 @@ export function InvestorDetail() {
           {p.role === 'super_admin' && <Badge cls="b-navy">Super Admin</Badge>}
           {p.role === 'investor' && (p.is_ib || brought.length > 0 ? <Badge cls="b-navy">IB</Badge> : introducer ? <Badge cls="b-grey">Sub-investor</Badge> : <Badge cls="b-grey">Individual</Badge>)}
           {p.has_login && <Badge cls="b-blue">Login: {p.phone}</Badge>}
-          <button className="btn" onClick={() => setDlg('edit')}>Edit details</button>
+          <button className="btn" onClick={() => setDlg('edit')}>Edit account</button>
           {p.role === 'investor' && !brought.length && <button className="btn" disabled={act.busy} onClick={async () => {
             const r = await act.run(() => rpc('admin_set_ib', { p_id: p.id, p_value: !p.is_ib }), [p.is_ib ? 'IB status removed' : 'Marked as IB', p.full_name]);
             if (r !== undefined) refreshAll();
@@ -232,7 +232,7 @@ export function InvestorDetail() {
           {(p.has_login || p.role === 'super_admin') && <button className="btn" onClick={() => setDlg('password')}>Reset password</button>}
           <button className="btn" onClick={() => nav('/admin/announcements?to=' + p.id)}><Icon name="announce" />Send notice</button>
           {!self && <button className={'btn ' + (p.account_status === 'active' ? 'danger' : '')} onClick={() => setDlg('status')}>{p.account_status === 'active' ? 'Suspend account' : 'Reactivate account'}</button>}
-          {p.role === 'investor' && <button className="btn danger" onClick={() => setDlg('delete')}>Delete investor</button>}
+          {p.role === 'investor' && <button className="btn danger" onClick={() => setDlg('delete')}>Delete account</button>}
           {p.role === 'investor' && <button className="btn accent" disabled={p.account_status !== 'active'}
             title={p.account_status !== 'active' ? 'Account is suspended' : undefined}
             onClick={() => nav('/admin/investments?new=1&investor=' + encodeURIComponent(p.code || ''))}><Icon name="plus" />Record investment</button>}
@@ -412,7 +412,7 @@ function DeleteInvestor({ p, subs, invs, onClose }: { p: Profile; subs: number; 
   };
   return (
     <Modal title={`Delete ${p.full_name || p.email}?`} sub={subs ? `${p.full_name} has ${subs} sub-investor${subs === 1 ? '' : 's'}. Delete them or place them under someone else first.` : `Removes ${p.full_name}, their ${invs} investment${invs === 1 ? '' : 's'} with all returns and payouts, their withdrawals, requests, documents and login. This cannot be undone.`} onClose={onClose}
-      foot={<><button className="btn ghost" onClick={onClose}>Keep</button><button className="btn danger" onClick={go} disabled={act.busy || !!subs || confirm.trim().toUpperCase() !== 'DELETE'}>{act.busy ? 'Deleting…' : 'Delete investor'}</button></>}>
+      foot={<><button className="btn ghost" onClick={onClose}>Keep</button><button className="btn danger" onClick={go} disabled={act.busy || !!subs || confirm.trim().toUpperCase() !== 'DELETE'}>{act.busy ? 'Deleting…' : 'Delete account'}</button></>}>
       {!subs && <>
         <Field label="Reason (saved to the history)"><input className="input" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Added by mistake" /></Field>
         <Field label="Type DELETE to confirm"><input className="input mono" value={confirm} onChange={e => setConfirm(e.target.value)} /></Field>
@@ -446,7 +446,7 @@ function IntroduceDialog({ p, onClose }: { p: Profile; count: number; onClose: (
   const act = useAction();
   const [pw, setPw] = useState('');
   const [tried, setTried] = useState(false);
-  const bad = pw.length < 8 ? 'At least 8 characters.' : !p.phone ? 'Add a phone number first (Edit details).' : null;
+  const bad = pw.length < 8 ? 'At least 8 characters.' : !p.phone ? 'Add a phone number first (Edit account).' : null;
   const go = async () => {
     setTried(true); if (bad) return;
     const r = await act.run(() => createIbLogin({ person_id: p.id, phone: p.phone, password: pw }), ['Login created', `${p.full_name} signs in with ${p.phone}`]);

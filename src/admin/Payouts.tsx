@@ -16,10 +16,10 @@ type AccLite = { id: string; period_no: number; kind: string };
 interface Row extends Payout { inv?: Inv; investor?: Person; acc?: AccLite }
 
 type Tab = 'accrued' | 'approved' | 'processing' | 'paid' | 'failed' | 'all';
-const TABS: [Tab, string][] = [['accrued', 'Due / accrued'], ['approved', 'Approved'], ['processing', 'Processing'], ['paid', 'Paid'], ['failed', 'Failed'], ['all', 'All']];
+const TABS: [Tab, string][] = [['accrued', 'Due / accrued'], ['approved', 'Approved'], ['processing', 'Payment processed'], ['paid', 'Payment fulfilled'], ['failed', 'Failed'], ['all', 'All']];
 type Op = 'approved' | 'processing' | 'paid' | 'failed';
 const OP_FROM: Record<Op, PayoutStatus[]> = { approved: ['accrued', 'failed'], processing: ['approved'], paid: ['processing'], failed: ['processing'] };
-const OP_DONE: Record<Op, string> = { approved: 'Payouts approved', processing: 'Sent to bank', paid: 'Payouts confirmed as paid', failed: 'Payouts marked failed' };
+const OP_DONE: Record<Op, string> = { approved: 'Payouts approved', processing: 'Marked payment processed', paid: 'Marked payment fulfilled', failed: 'Payouts marked failed' };
 const nameOf = (p?: Person) => (p ? p.full_name || p.email : '—');
 
 async function load() {
@@ -45,6 +45,7 @@ export function Payouts() {
   const [dueOnly, setDueOnly] = useState(false);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [op, setOp] = useState<Op | null>(null);
+  const [editing, setEditing] = useState<Row | null>(null);
   const [ref, setRef] = useState('');
   const [reason, setReason] = useState('');
   const [err, setErr] = useState<string | null>(null);
@@ -96,7 +97,8 @@ export function Payouts() {
         : r.status === 'failed' || r.status === 'cancelled' ? <span className="muted">{r.failure_reason || '—'}</span>
           : r.batch_ref ? <span className="mono muted">{r.batch_ref}</span> : <span className="muted">—</span>
     },
-    { h: 'Status', v: r => r.status, r: r => <PayBadge s={r.status} /> }
+    { h: 'Status', v: r => r.status, r: r => <PayBadge s={r.status} /> },
+    { h: '', r: r => r.status !== 'cancelled' ? <button className="btn sm" onClick={e => { e.stopPropagation(); setEditing(r); }}>Edit</button> : null }
   ];
 
   const by = q.data?.dash.payouts_by_status || {};
@@ -116,10 +118,10 @@ export function Payouts() {
       {!q.data && !q.error ? <Loading /> : q.data && (
         <>
           <div className="kpis k4">
-            {tile('accrued', 'Due / accrued')}{tile('approved', 'Approved')}{tile('processing', 'Processing')}{tile('paid', 'Paid', 'pos')}
+            {tile('accrued', 'Due / accrued')}{tile('approved', 'Approved')}{tile('processing', 'Payment processed')}{tile('paid', 'Payment fulfilled', 'pos')}
           </div>
           <div className="note info">
-            Workflow: <b>Accrued</b> (accrual job) → <b>Approved</b> (admin) → <b>Processing</b> (sent to bank) → <b>Paid</b> (confirmed with the bank / UTR reference).
+            Workflow: <b>Accrued</b> (accrual job) → <b>Approved</b> (admin) → <b>Payment processed</b> (sent to bank) → <b>Payment fulfilled</b> (confirmed with the bank / UTR reference).
             A failed transfer is marked <b>Failed</b> and can be approved again for retry.
             {settings?.four_eyes && <> Four-eyes is on: another Super Admin must confirm payment of a batch you sent to the bank.</>}
           </div>
@@ -137,9 +139,9 @@ export function Payouts() {
                 <label className="check"><input type="checkbox" checked={dueOnly} onChange={e => { setDueOnly(e.target.checked); setSel(new Set()); }} /> Due on or before today</label>
                 {ops.length > 0 && <span className="muted" style={{ alignSelf: 'center', fontSize: 13 }}>{chosen.length ? `${chosen.length} selected · ${money(chosenSum)}` : 'None selected'}</span>}
                 {ops.includes('approved') && <button className="btn primary sm" disabled={!chosen.length} onClick={() => openOp('approved')}>{tab === 'failed' ? 'Approve for retry' : 'Approve selected'}</button>}
-                {ops.includes('processing') && <button className="btn primary sm" disabled={!chosen.length} onClick={() => openOp('processing')}>Send to bank</button>}
+                {ops.includes('processing') && <button className="btn primary sm" disabled={!chosen.length} onClick={() => openOp('processing')}>Mark payment processed</button>}
                 {ops.includes('failed') && <button className="btn danger sm" disabled={!chosen.length} onClick={() => openOp('failed')}>Mark failed</button>}
-                {ops.includes('paid') && <button className="btn primary sm" disabled={!chosen.length} onClick={() => openOp('paid')}>Confirm paid</button>}
+                {ops.includes('paid') && <button className="btn primary sm" disabled={!chosen.length} onClick={() => openOp('paid')}>Mark payment fulfilled</button>}
               </>}
               emptyTitle={all.length ? `No ${tab === 'all' ? '' : TABS.find(x => x[0] === tab)![1].toLowerCase() + ' '}payouts` : 'No payouts yet'}
               empty={!all.length ? 'A payout is created for every monthly accrual. They appear here after the accrual job posts the first returns.'
@@ -147,18 +149,19 @@ export function Payouts() {
           </div>
         </>
       )}
+      {editing && <EditPayout p={editing} onClose={() => setEditing(null)} />}
       {op && (
         <Modal
-          title={op === 'approved' ? `Approve ${chosen.length} payout${chosen.length === 1 ? '' : 's'}?` : op === 'processing' ? `Send ${chosen.length} payout${chosen.length === 1 ? '' : 's'} to the bank?`
-            : op === 'paid' ? `Confirm ${chosen.length} payout${chosen.length === 1 ? '' : 's'} as paid?` : `Mark ${chosen.length} payout${chosen.length === 1 ? '' : 's'} as failed?`}
+          title={op === 'approved' ? `Approve ${chosen.length} payout${chosen.length === 1 ? '' : 's'}?` : op === 'processing' ? `Mark ${chosen.length} payout${chosen.length === 1 ? '' : 's'} as payment processed?`
+            : op === 'paid' ? `Mark ${chosen.length} payout${chosen.length === 1 ? '' : 's'} as payment fulfilled?` : `Mark ${chosen.length} payout${chosen.length === 1 ? '' : 's'} as failed?`}
           sub={op === 'approved' ? 'Approved payouts are queued for the next bank batch.'
-            : op === 'processing' ? 'Upload the transfers to your bank. Investors see these payouts as "Processing" until you confirm them.'
-              : op === 'paid' ? 'Only confirm after the bank shows these transfers as completed. Investors are notified that they have been paid.'
+            : op === 'processing' ? 'Upload the transfers to your bank. Investors see these payouts as "Payment processed" until you mark them fulfilled.'
+              : op === 'paid' ? 'Only confirm after the bank shows these transfers as completed. Investors are notified that the payment is fulfilled.'
                 : 'The ledger entries are marked failed. You can approve the payouts again to retry; investors still see them as unpaid.'}
           onClose={() => setOp(null)}
           foot={<><button className="btn ghost" onClick={() => setOp(null)}>Cancel</button>
             <button className={'btn ' + (op === 'failed' ? 'danger' : 'primary')} onClick={submit} disabled={busy}>
-              {busy ? 'Saving…' : op === 'approved' ? 'Approve' : op === 'processing' ? 'Send to bank' : op === 'paid' ? 'Confirm paid' : 'Mark failed'}
+              {busy ? 'Saving…' : op === 'approved' ? 'Approve' : op === 'processing' ? 'Mark payment processed' : op === 'paid' ? 'Mark payment fulfilled' : 'Mark failed'}
             </button></>}>
           <div className="form">
             <dl className="kv">
@@ -193,5 +196,30 @@ export function Payouts() {
         </Modal>
       )}
     </>
+  );
+}
+
+/** Super Admin: correct one payout's status, bank reference or payment date (the ledger follows). */
+function EditPayout({ p, onClose }: { p: Row; onClose: () => void }) {
+  const act = useAction();
+  const [status, setStatus] = useState<PayoutStatus>(p.status);
+  const [ref, setRef] = useState(p.payment_ref || p.batch_ref || '');
+  const [paidOn, setPaidOn] = useState(p.paid_on || today());
+  const [reason, setReason] = useState(p.failure_reason || '');
+  const STATUSES: [PayoutStatus, string][] = [['accrued', 'Accrued'], ['approved', 'Approved'], ['processing', 'Payment processed'], ['paid', 'Payment fulfilled'], ['failed', 'Failed']];
+  const go = async () => {
+    const r = await act.run(() => rpc('admin_update_payout', { p_id: p.id, p_status: status, p_ref: ref.trim(), p_paid_on: paidOn, p_reason: reason.trim() }), ['Payout updated', `${p.code} · ${money(p.amount)}`]);
+    if (r !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`Edit ${p.code}`} sub={`${money(p.amount)} · ${nameOf(p.investor)} · ${p.inv?.code || ''}`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || (status === 'failed' && !reason.trim()) || (status === 'paid' && !ref.trim())}>Save</button></>}>
+      <div className="form">
+        <Field label="Status"><div className="chips">{STATUSES.map(([k, l]) => <button key={k} type="button" className={'chip ' + (status === k ? 'on' : '')} onClick={() => setStatus(k)}>{l}</button>)}</div></Field>
+        {(status === 'processing' || status === 'paid') && <Field label={status === 'paid' ? 'Bank reference (UTR) *' : 'Batch reference'}><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>}
+        {status === 'paid' && <Field label="Paid on"><input className="input" type="date" value={paidOn} onChange={e => setPaidOn(e.target.value)} /></Field>}
+        {status === 'failed' && <Field label="Why it failed *"><input className="input" value={reason} onChange={e => setReason(e.target.value)} /></Field>}
+      </div>
+    </Modal>
   );
 }

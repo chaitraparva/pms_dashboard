@@ -201,8 +201,8 @@ export function Reports() {
           <RangeInputs from={payFrom} to={payTo} setFrom={setPayFrom} setTo={setPayTo} />
           <div className="field"><label>Status</label>
             <select className="input" value={payStatus} onChange={e => setPayStatus(e.target.value)}>
-              <option value="">All statuses</option><option value="accrued">Accrued</option><option value="approved">Approved</option><option value="processing">Processing</option>
-              <option value="paid">Paid</option><option value="failed">Failed</option><option value="cancelled">Reversed</option>
+              <option value="">All statuses</option><option value="accrued">Accrued</option><option value="approved">Approved</option><option value="processing">Payment processed</option>
+              <option value="paid">Payment fulfilled</option><option value="failed">Failed</option><option value="cancelled">Reversed</option>
             </select>
           </div>
         </ReportCard>

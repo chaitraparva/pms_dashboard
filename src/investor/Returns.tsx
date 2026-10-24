@@ -97,7 +97,7 @@ export function Returns() {
 
           <DataTable rows={rows} rowKey={r => r.a.id} title="All accruals" searchPh="Search by investment or reference" sort={0} per={15}
             emptyTitle="No returns yet" empty="Your first monthly return accrues one month after your start date."
-            filters={[['All', 'all'], ['Accrued', 'accrued'], ['Approved', 'approved'], ['Processing', 'processing'], ['Paid', 'paid']]}
+            filters={[['All', 'all'], ['Accrued', 'accrued'], ['Approved', 'approved'], ['Payment processed', 'processing'], ['Payment fulfilled', 'paid']]}
             filterFn={(r, f) => f === 'all' || r.pay?.status === f}
             text={r => [r.pay?.payment_ref, r.pay?.code].filter(Boolean).join(' ')}
             cols={[
