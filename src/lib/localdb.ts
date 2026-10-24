@@ -40,11 +40,18 @@ const monthlyReturn = (principal: number, rate: number) => round2(principal * ra
 /** Splits the plan rate between the investor and the admin who introduced them (6% = 4% investor + 2% admin bonus).
  *  monthly_rate stays the plan rate; monthly_return is the investor's share; the total paid out never changes. */
 function applySplit(i: Row, bonusRate?: number): Row {
+  if (i.bonus_on_top) {
+    // the IB bonus is paid on top: the investor keeps the whole ROI, the IB gets the bonus rate in addition
+    const b = Math.max(0, Number(bonusRate ?? i.admin_bonus_rate ?? 0));
+    return Object.assign(i, { investor_rate: Number(i.monthly_rate), admin_bonus_rate: b, monthly_return: monthlyReturn(Number(i.principal), Number(i.monthly_rate)), admin_bonus: monthlyReturn(Number(i.principal), b) });
+  }
   const { investor, bonus } = splitRate(i.monthly_rate, bonusRate ?? i.admin_bonus_rate ?? 0);
   const total = monthlyReturn(Number(i.principal), Number(i.monthly_rate)), mine = monthlyReturn(Number(i.principal), investor);
   return Object.assign(i, { investor_rate: investor, admin_bonus_rate: bonus, monthly_return: mine, admin_bonus: round2(total - mine) });
 }
 const investorRate = (i: Row) => Number(i.investor_rate ?? i.monthly_rate);
+/** The plan name the investor sees (with a bonus taken from the ROI, the rate shown is their own share). */
+const shownPlanName = (i: Row) => (i.bonus_on_top ? i.plan_name : investorPlanName(i.plan_name, i.monthly_rate, i.admin_bonus_rate));
 /** Principal on a date: the original principal, minus withdrawals that took effect on or before that date. */
 function principalOn(i: Row, d: string): number {
   let p = Number(i.original_principal ?? i.principal);
@@ -201,7 +208,7 @@ export function redact(table: string, r: Row): Row {
   if (isAdmin() || (table !== 'investments' && table !== 'profiles')) return r;
   const c: Row = { ...r };
   if (table === 'investments') {
-    c.monthly_rate = investorRate(r); c.plan_name = investorPlanName(r.plan_name, r.monthly_rate, r.admin_bonus_rate);
+    c.monthly_rate = investorRate(r); c.plan_name = shownPlanName(r);
     delete c.investor_rate; delete c.admin_bonus_rate; delete c.admin_bonus;
   } else delete c.introduced_by;
   return c;
@@ -220,7 +227,8 @@ function runAccrualsFor(i: Row, asOf: string): number {
     const k = p.k, end = p.end;
     if (T('accruals').some(a => a.investment_id === i.id && a.period_no === k && (a.kind === 'regular' || a.kind === 'stub'))) continue;
     // the investor's share and the bonus for this period, on the principal of each day (withdrawals lower it from their date)
-    const mineAmt = periodReturn(i, p, investorRate(i)), bonusAmt = round2(periodReturn(i, p, Number(i.monthly_rate)) - mineAmt);
+    const mineAmt = periodReturn(i, p, investorRate(i));
+    const bonusAmt = i.bonus_on_top ? periodReturn(i, p, Number(i.admin_bonus_rate || 0)) : round2(periodReturn(i, p, Number(i.monthly_rate)) - mineAmt);
     if (mineAmt <= 0 && principalOn(i, p.start) <= 0) { closeIfEmpty(i); break; }
     const acc = { id: uuid(), investment_id: i.id, period_no: k, kind: 'regular', period_start: p.start, period_end: end, accrual_date: end, days: p.days, days_in_period: p.daysInMonth, amount: mineAmt, reverses_id: null, reason: null, created_by: null, created_at: nowIso() };
     T('accruals').push(acc); n++;
@@ -769,7 +777,7 @@ function myNetwork(): Row | null {
   const investors = people.map(p => ({
     id: p.id, code: p.code, name: p.full_name, email: p.email, phone: p.phone, city: p.city, kyc_status: p.kyc_status, account_status: p.account_status, created_at: p.created_at,
     investments: T('investments').filter(i => i.investor_id === p.id && i.status !== 'cancelled').sort((x, y) => String(y.created_at).localeCompare(String(x.created_at))).map(i => ({
-      id: i.id, code: i.code, plan_name: investorPlanName(i.plan_name, i.monthly_rate, i.admin_bonus_rate), principal: Number(i.principal), investor_rate: investorRate(i), bonus_rate: Number(i.admin_bonus_rate || 0),
+      id: i.id, code: i.code, plan_name: shownPlanName(i), principal: Number(i.principal), investor_rate: investorRate(i), bonus_rate: Number(i.admin_bonus_rate || 0),
       bonus_monthly: Number(i.admin_bonus || 0), status: i.status, start_date: i.start_date, maturity_date: i.maturity_date, lockin_months: i.lockin_months, created_at: i.created_at,
       bonus_earned: sumB(b => b.investment_id === i.id), bonus_paid: sumB(b => b.investment_id === i.id && b.status === 'paid')
     }))
@@ -848,7 +856,7 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   if (byId && byId.account_status !== 'active') fail(`${byId.full_name} has a suspended account.`);
   const rate = Number(a.p_rate), bonusIn = blank(a.p_bonus) ? 0 : Number(a.p_bonus), lock = Number(a.p_lockin_months || 0), principal = Number(a.p_principal);
   if (!(rate > 0 && rate <= 100) || !/^\d+(\.\d{1,4})?$/.test(String(a.p_rate).trim())) fail('Enter the monthly ROI, e.g. 0.25, 2.3 or 6 (at most 4 decimals).');
-  if (!(bonusIn >= 0)) fail('Enter the bonus as 0 or more.');
+  if (!(bonusIn >= 0 && bonusIn <= 100) || !/^\d+(\.\d{1,4})?$/.test(String(blank(a.p_bonus) ? '0' : a.p_bonus).trim())) fail('Enter the IB bonus as 0 or more (at most 4 decimals).');
   if (!(Number.isInteger(lock) && lock >= 0 && lock <= 120)) fail('Lock-in must be 0 (no lock-in) to 120 months.');
   if (!(principal > 0) || round2(principal) !== principal) fail('Enter the principal (at most 2 decimals).');
   const start = str(a.p_start_date); if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) fail('Enter the start date.');
@@ -881,10 +889,9 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   }
   const upline = person.introduced_by ? T('profiles').find(p => p.id === person!.introduced_by) : null;
   const bonus = upline ? bonusIn : 0;
-  if (bonus >= rate) fail('The bonus must be less than the monthly ROI.');
   const id = uuid(), code = 'INV-' + nextSeq('investment', 1001);
   const maturity = lock > 0 ? addMonths(start, lock) : null;
-  const v = applySplit({ admin_bonus_rate: bonus, id, code, investor_id: person.id, plan_id: null, plan_version_id: null, plan_name: rate + '% Monthly', plan_version: 1, monthly_rate: rate,
+  const v = applySplit({ bonus_on_top: true, admin_bonus_rate: bonus, id, code, investor_id: person.id, plan_id: null, plan_version_id: null, plan_name: rate + '% Monthly', plan_version: 1, monthly_rate: rate,
     lockin_months: lock, early_redemption: 'not_permitted', early_fee_pct: 0, payout_lag_days: s.default_payout_lag_days, terms: s.default_terms, risk_disclosure: s.default_risk_disclosure,
     principal, original_principal: principal, principal_changes: [], monthly_return: monthlyReturn(principal, rate), accrual_mode: 'calendar', status: 'active', expected_start: start, start_date: start, lockin_end_date: maturity || start, maturity_date: maturity,
     request_from_date: maturity ? addDays(maturity, -s.request_window_days) : null, agreement_ref: str(a.p_reference), deposit_ref: str(a.p_reference), notes: str(a.p_notes), cancelled_reason: null,
@@ -1060,7 +1067,7 @@ function mySubInvestor(id: string): Row {
   const sum = (rows: Row[]) => round2(rows.reduce((s, r) => s + Number(r.amount), 0));
   return {
     profile: { id: p.id, code: p.code, full_name: p.full_name, phone: p.phone, email: p.email, city: p.city, kyc_status: p.kyc_status, account_status: p.account_status, created_at: p.created_at, has_login: hasLogin(p.id), bank_name: p.bank_name || '', bank_account: p.bank_account_masked || '' },
-    investments: invs.map(i => ({ id: i.id, code: i.code, plan_name: investorPlanName(i.plan_name, i.monthly_rate, i.admin_bonus_rate), principal: Number(i.principal), original_principal: Number(i.original_principal ?? i.principal),
+    investments: invs.map(i => ({ id: i.id, code: i.code, plan_name: shownPlanName(i), principal: Number(i.principal), original_principal: Number(i.original_principal ?? i.principal),
       investor_rate: investorRate(i), bonus_rate: Number(i.admin_bonus_rate || 0), monthly_return: Number(i.monthly_return), bonus_monthly: Number(i.admin_bonus || 0), status: i.status, start_date: i.start_date,
       maturity_date: i.maturity_date, lockin_months: i.lockin_months, created_at: i.created_at,
       accrued: sum(acc.filter(x => x.investment_id === i.id)), paid: sum(pays.filter(x => x.investment_id === i.id && x.status === 'paid')),

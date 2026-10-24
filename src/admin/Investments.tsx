@@ -245,7 +245,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
     subName: withSub && !subName.trim() ? 'Enter the sub-investor’s name.' : null,
     subPw: needSubPw && subPw.length < 8 ? 'At least 8 characters.' : null,
     roi: !(r > 0 && r <= 100) || !DEC(roi, 4) ? 'Enter the monthly ROI, e.g. 0.25, 2.3, 4.3 or 6.' : null,
-    bonus: withSub && (!DEC(bonus || '0', 4) || (r > 0 && b >= r)) ? 'The bonus must be 0 or more and less than the ROI.' : null,
+    bonus: withSub && (!DEC(bonus || '0', 4) || b > 100) ? 'Enter the bonus as 0 or more, e.g. 1, 2.5 or 3.' : null,
     lock: !(Number.isInteger(months) && months >= 0 && months <= 120) ? 'Enter the lock-in in months (0 to 120).' : null,
     amount: !(amt > 0) || !DEC(amount, 2) ? 'Enter the principal (at most 2 decimals).' : null,
     start: !start ? 'Enter the start date.' : null,
@@ -253,9 +253,10 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   };
   const bad = Object.values(errs).some(Boolean);
   const e = (k: string) => (tried ? errs[k] : null);
-  const invRate = r > 0 && b < r ? Math.round((r - b) * 10000) / 10000 : 0;
+  // the IB bonus is paid on top of the ROI: the investor keeps the whole ROI
+  const invRate = r > 0 ? r : 0;
   const mine = amt > 0 && invRate ? Math.round(amt * invRate) / 100 : 0;
-  const upMonthly = amt > 0 && b > 0 ? Math.round((Math.round(amt * r) / 100 - mine) * 100) / 100 : 0;
+  const upMonthly = amt > 0 && b > 0 ? Math.round(amt * b) / 100 : 0;
   const investorName = type === 'individual' ? name.trim() : withSub ? subName.trim() : ibName;
   const subRow = withSub && subL.found ? all.find(x => x.id === subL.found!.id) : undefined;
   const indRow = picked || (ind.found ? all.find(x => x.id === ind.found!.id) : undefined);
@@ -437,7 +438,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             <Field label="Monthly ROI (% per month) *" err={e('roi')} hint="Any rate, e.g. 0.25, 2.3, 3.3, 4.3, 6.">
               <input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} placeholder="e.g. 6" />
             </Field>
-            <Field label={withSub && ibName ? `Bonus to ${ibName} (% per month)` : 'IB bonus (% per month)'} err={e('bonus')} hint={withSub ? (r > 0 && b < r ? `Sub-investor gets ${invRate}%${ibName ? `, ${ibName} gets ${b}%` : ''}.` : 'Taken out of the ROI.') : 'Only with a sub-investor under an IB.'}>
+            <Field label={withSub && ibName ? `Bonus to ${ibName} (% per month)` : 'IB bonus (% per month)'} err={e('bonus')} hint={withSub ? `Paid on top of the ROI. ${r > 0 ? `Sub-investor gets ${invRate}%` : 'Sub-investor gets the full ROI'}${ibName && b > 0 ? `, ${ibName} gets ${b}% in addition` : ''}.` : 'Only with a sub-investor under an IB.'}>
               <input className={'input num ' + (e('bonus') ? 'bad' : '')} inputMode="decimal" value={withSub ? bonus : ''} onChange={ev => setBonus(ev.target.value)} disabled={!withSub} placeholder={withSub ? 'e.g. 2' : '—'} />
             </Field>
           </div>
@@ -653,9 +654,9 @@ export function InvestmentDetail() {
             <div className="card-h"><h3>Contractual terms snapshot</h3><div className="r mono">{i.plan_name} v{i.plan_version}</div></div>
             <div className="card-b">
               <dl className="kv">
-                <dt>Plan rate</dt><dd>{rate(i.monthly_rate)}</dd>
+                <dt>{i.bonus_on_top ? 'Monthly ROI' : 'Plan rate'}</dt><dd>{rate(i.monthly_rate)}</dd>
                 {Number(i.admin_bonus || 0) > 0 && <><dt>Investor ROI</dt><dd>{rate(i.investor_rate ?? i.monthly_rate)} <span className="muted">(shown to the investor)</span></dd>
-                  <dt>Bonus</dt><dd>{rate(i.admin_bonus_rate || 0)} · {money(i.admin_bonus)} / month</dd>
+                  <dt>Bonus</dt><dd>{rate(i.admin_bonus_rate || 0)} · {money(i.admin_bonus)} / month <span className="muted">({i.bonus_on_top ? 'paid on top of the ROI' : 'taken from the plan rate'})</span></dd>
                   <dt>Bonus goes to</dt><dd>{introducedBy ? <b>{nm(introducedBy)}</b> : <span className="muted">Individual: no bonus.</span>}</dd></>}
                 <dt>Method</dt><dd>Simple interest</dd>
                 <dt>Plan</dt><dd>{plan ? <><Link to={'/admin/plans/' + plan.code}>{i.plan_name}</Link> · v{i.plan_version}</> : i.plan_name}</dd>

@@ -106,7 +106,7 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
   const rr = Number(roi), b = underIb ? Number(bonus || 0) : 0, amt = Number(amount), months = Number(lock);
   const errs: Record<string, string | null> = {
     roi: !(rr > 0 && rr <= 100) || !DEC(roi, 4) ? 'Enter the monthly ROI, e.g. 2.3 or 6.' : null,
-    bonus: underIb && (!DEC(bonus || '0', 4) || (rr > 0 && b >= rr)) ? 'The bonus must be 0 or more and less than the ROI.' : null,
+    bonus: underIb && (!DEC(bonus || '0', 4) || b > 100) ? 'Enter the bonus as 0 or more, e.g. 1, 2.5 or 3.' : null,
     lock: !(Number.isInteger(months) && months >= 0 && months <= 120) ? '0 to 120 months.' : null,
     amount: !(amt > 0) || !DEC(amount, 2) ? 'Enter the principal (at most 2 decimals).' : null,
     start: !start ? 'Enter the start date.' : null,
@@ -145,7 +145,7 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
         </div>
         <div className="f-row">
           <Field label="Monthly ROI (% per month) *" err={e('roi')}><input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} placeholder="e.g. 6" /></Field>
-          <Field label={underIb ? `Bonus to ${ibName} (% per month)` : 'IB bonus'} err={e('bonus')} hint={underIb ? (rr > 0 && b < rr ? `Investor gets ${Math.round((rr - b) * 10000) / 10000}%.` : 'Taken out of the ROI.') : 'Not under an IB.'}>
+          <Field label={underIb ? `Bonus to ${ibName} (% per month)` : 'IB bonus'} err={e('bonus')} hint={underIb ? `Paid on top of the ROI: the investor keeps ${rr > 0 ? rr + '%' : 'the full ROI'}${b > 0 ? `, the IB gets ${b}% in addition` : ''}.` : 'Not under an IB.'}>
             <input className={'input num ' + (e('bonus') ? 'bad' : '')} inputMode="decimal" value={underIb ? bonus : ''} onChange={ev => setBonus(ev.target.value)} disabled={!underIb} placeholder={underIb ? 'e.g. 2' : '—'} />
           </Field>
         </div>

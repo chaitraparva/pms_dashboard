@@ -57,6 +57,8 @@ export interface Investment {
   investor_rate?: number; admin_bonus_rate?: number; admin_bonus?: number;
   /** The payment proof attached when the investment was recorded (private file). */
   proof_path?: string | null;
+  /** The IB bonus is paid on top of the ROI (investor keeps the whole ROI). Older plan-based investments take it from the plan rate. */
+  bonus_on_top?: boolean;
 }
 
 export interface AdminBonus {
