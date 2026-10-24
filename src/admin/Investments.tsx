@@ -158,7 +158,7 @@ function usePhoneLookup(phone: string, enabled = true) {
  *  Individual: choose an existing investor, or find / add one by phone number (a new person gets their login now).
  *  IB: choose (or register) the IB; their details fill in. Optionally add a sub-investor: the investment is then the
  *  sub-investor's, under the IB, and the IB earns the bonus. Without a sub-investor it is the IB's own investment.
- *  A payment proof (image or document) is required. */
+ *  A payment proof (image or document) can be attached; it is optional. */
 function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: string; onClose: () => void; onDone: (code: string) => void }) {
   const act = useAction();
   const t = today();
@@ -254,7 +254,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
     lock: !(Number.isInteger(months) && months >= 0 && months <= 120) ? 'Enter the lock-in in months (0 to 120).' : null,
     amount: !(amt > 0) || !DEC(amount, 2) ? 'Enter the principal (at most 2 decimals).' : null,
     start: !start ? 'Enter the start date.' : null,
-    proof: !proof.length ? 'Attach the payment proof. It is required.' : null
+    proof: null
   };
   const bad = Object.values(errs).some(Boolean);
   const e = (k: string) => (tried ? errs[k] : null);
@@ -279,7 +279,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
         // keep the new branch selected, so sending the form again does not add it twice
         setBranch(branchId); setBranchTouched(true); opts.reload();
       }
-      const file = await uploadAttachment(proof[0], 'proofs');
+      const file = proof.length ? await uploadAttachment(proof[0], 'proofs') : null;
       try {
         return await recordInvestmentFull({
           p_type: type, p_branch: branchId || null, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(),
@@ -290,7 +290,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
               p_sub: withSub ? { name: subName.trim(), phone: subPhone.trim(), password: needSubPw ? subPw : '' } : null
             })
         });
-      } catch (err) { await api.storage.from('documents').remove([file.path]).catch(() => undefined); throw err; }
+      } catch (err) { if (file) await api.storage.from('documents').remove([file.path]).catch(() => undefined); throw err; }
     }, ['Investment recorded', `${investorName} · ${money(amt)} at ${rateShort(r)} a month`]);
     if (res) {
       refreshAll();
@@ -313,7 +313,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
           <dt>Branch</dt><dd>{branchName(branch) || (newBranch ? nbName : 'No branch')}</dd>
           <dt>Investment</dt><dd className="mono">{done.code} · {money(amt)} at {rateShort(r)}</dd>
           {withSub && b > 0 && <><dt>IB bonus</dt><dd>{ibName} · {rateShort(b)} ({money(upMonthly)} / month), shown to them now</dd></>}
-          <dt>Proof</dt><dd>{proof[0]?.name}</dd>
+          <dt>Proof</dt><dd>{proof[0]?.name || <span className="muted">None attached</span>}</dd>
         </dl>
         {done.logins.map(([who, ph, p]) => (
           <div key={who} className="ib-card"><b>{who}</b><dl className="kv" style={{ marginTop: 6 }}><dt>Login (phone)</dt><dd className="mono">{ph}</dd><dt>Password</dt><dd className="mono">{p}</dd></dl></div>
@@ -332,7 +332,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   );
 
   return (
-    <Drawer title="Record investment" sub="Choose the investor type first. A payment proof is required." onClose={onClose}
+    <Drawer title="Record investment" sub="Choose the branch and investor type first." onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={save} disabled={act.busy || !opts.data}>{act.busy ? 'Saving…' : 'Record investment'}</button></>}>
       {opts.error ? <ErrorNote msg={opts.error} retry={opts.reload} /> : !opts.data ? <Loading rows={3} /> : (
         <div className="form">
@@ -460,7 +460,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             <Field label="Reference" hint="Bank / UTR or agreement number (optional)."><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
             <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
           </div>
-          <FilePicker label="Payment proof *" files={proof} onChange={setProof} max={1} err={e('proof')} hint="Required: bank receipt, transfer screenshot or signed document (image, PDF, Word or Excel, 3 MB). The investor sees it in their documents." />
+          <FilePicker label="Payment proof (optional)" files={proof} onChange={setProof} max={1} err={e('proof')} hint="Bank receipt, transfer screenshot or signed document (image, PDF, Word or Excel, 3 MB). The investor sees it in their documents." />
           <div className="card" style={{ boxShadow: 'none' }}>
             <div className="card-h"><h3>Summary</h3></div>
             <div className="card-b">

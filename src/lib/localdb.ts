@@ -933,13 +933,12 @@ const PROOF_MIME = ATTACH_MIME;
 /** Record investment from the Super Admin form.
  *  Individual: the investor is chosen (or found / added by phone number), with a login if they have none.
  *  IB: the IB is chosen (or registered); with an optional sub-investor the investment is the sub-investor's, under the IB
- *  (the IB earns the bonus); without one it is the IB's own investment. A payment proof is always required. */
+ *  (the IB earns the bonus); without one it is the IB's own investment. A payment proof can be attached (optional). */
 export async function adminRecordInvestment(a: Row): Promise<{ id: string; code: string; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
   requireAdmin();
-  const proof = a.p_proof as Row | null;
-  if (!proof || blank(proof.path)) fail('Attach the payment proof (an image or document). It is required for every recorded investment.');
-  if (!blank(proof!.mime) && !PROOF_MIME.includes(String(proof!.mime))) fail('The proof must be an image, PDF, Word or Excel file.');
-  if (Number(proof!.size || 0) > 3 * 1024 * 1024) fail('The proof must be 3 MB or smaller.');
+  const proof = a.p_proof && !blank((a.p_proof as Row).path) ? a.p_proof as Row : null;
+  if (proof && !blank(proof.mime) && !PROOF_MIME.includes(String(proof.mime))) fail('The proof must be an image, PDF, Word or Excel file.');
+  if (proof && Number(proof.size || 0) > 3 * 1024 * 1024) fail('The proof must be 3 MB or smaller.');
   let args: Row; let ib: Row | null = null;
   if (a.p_type === 'ib') {
     if (a.p_new_ib) ib = await registerIB({ ...a.p_new_ib, branch_id: blank(a.p_new_ib.branch_id) ? a.p_branch : a.p_new_ib.branch_id });
@@ -961,9 +960,11 @@ export async function adminRecordInvestment(a: Row): Promise<{ id: string; code:
     } else args = { ...a, p_person: ib!.id, p_ib: null, p_bonus: '0', p_password: '' };
   } else args = { ...a, p_ib: null, p_bonus: '0' };
   const r = await recordWithLogin(args);
-  T('documents').push({ id: uuid(), owner_id: r.investor_id, investment_id: r.id, kind: 'proof', title: str(proof!.name, 'Payment proof') + ' · ' + r.code, storage_path: String(proof!.path),
-    mime: str(proof!.mime), size_bytes: Number(proof!.size || 0), visible_to_investor: true, uploaded_by: currentUid, created_at: nowIso() });
-  const inv = T('investments').find(i => i.id === r.id); if (inv) inv.proof_path = String(proof!.path);
+  if (proof) {
+    T('documents').push({ id: uuid(), owner_id: r.investor_id, investment_id: r.id, kind: 'proof', title: str(proof.name, 'Payment proof') + ' · ' + r.code, storage_path: String(proof.path),
+      mime: str(proof.mime), size_bytes: Number(proof.size || 0), visible_to_investor: true, uploaded_by: currentUid, created_at: nowIso() });
+    const inv = T('investments').find(i => i.id === r.id); if (inv) inv.proof_path = String(proof.path);
+  }
   persist('profiles', 'investments', 'ledger_entries', 'accruals', 'payouts', 'notifications', 'admin_bonuses', 'audit_logs', 'documents');
   return { ...r, ib: ib ? ib.full_name : null };
 }
