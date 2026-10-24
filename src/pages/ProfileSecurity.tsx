@@ -13,8 +13,11 @@ export function ProfileSecurity() {
   const [address, setAddress] = useState(p.address);
   const [city, setCity] = useState(p.city);
   const [notifyEmail, setNotifyEmail] = useState(p.notify_email);
+  const [cur, setCur] = useState('');
   const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
   const [busy, setBusy] = useState('');
+  const minPw = p.role === 'super_admin' ? 10 : 8;
   const saveProfile = async (e: FormEvent) => {
     e.preventDefault(); setBusy('profile');
     try { await rpc('update_my_profile', { p_phone: phone, p_address: address, p_city: city, p_notify_email: notifyEmail }); await reloadProfile(); toast('Profile saved'); }
@@ -22,11 +25,13 @@ export function ProfileSecurity() {
   };
   const changePw = async (e: FormEvent) => {
     e.preventDefault();
-    if (pw.length < 10) { toast('Password too short', 'Use at least 10 characters.', 'warn'); return; }
+    if (!cur) { toast('Enter your current password', undefined, 'warn'); return; }
+    if (pw.length < minPw) { toast('Password too short', `Use at least ${minPw} characters.`, 'warn'); return; }
+    if (pw !== pw2) { toast('Passwords do not match', 'Type the new password twice.', 'warn'); return; }
     setBusy('pw');
-    const { error } = await api.auth.updateUser({ password: pw });
+    const { error } = await api.auth.updateUser({ password: pw, current: cur });
     setBusy('');
-    if (error) toast('Could not change password', friendly(error.message), 'err'); else { setPw(''); toast('Password changed'); }
+    if (error) toast('Could not change password', friendly(error.message), 'err'); else { setCur(''); setPw(''); setPw2(''); toast('Password changed', 'Use the new password next time you sign in.'); }
   };
   return (
     <>
@@ -51,7 +56,9 @@ export function ProfileSecurity() {
         <div style={{ display: 'grid', gap: 18, alignContent: 'start' }}>
           <div className="card"><div className="card-h"><h3>Change password</h3></div><div className="card-b">
             <form className="form" onSubmit={changePw}>
-              <div className="field"><label htmlFor="np">New password</label><input className="input" id="np" type="password" autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} /><p className="hint">At least 10 characters.</p></div>
+              <div className="field"><label htmlFor="cp">Current password</label><input className="input" id="cp" type="password" autoComplete="current-password" value={cur} onChange={e => setCur(e.target.value)} /></div>
+              <div className="field"><label htmlFor="np">New password</label><input className="input" id="np" type="password" autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} /><p className="hint">At least {minPw} characters.{p.password_changed_at ? ` Last changed ${date(p.password_changed_at)}.` : ''}</p></div>
+              <div className="field"><label htmlFor="np2">Repeat new password</label><input className="input" id="np2" type="password" autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)} /></div>
               <div><button className="btn" disabled={busy === 'pw'}>{busy === 'pw' ? 'Saving…' : 'Change password'}</button></div>
             </form>
           </div></div>

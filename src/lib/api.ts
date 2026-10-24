@@ -118,11 +118,21 @@ const auth = {
   },
   async signOut() { setSession(null, 'SIGNED_OUT'); return { error: null }; },
   onAuthStateChange(cb: (ev: string, s: Session | null) => void) { authListeners.add(cb); return { data: { subscription: { unsubscribe: () => { authListeners.delete(cb); } } } }; },
-  async updateUser({ password }: { password?: string }) {
-    try { if (!session) throw new Error('Not signed in.'); if (password) await call('password', { password }); authListeners.forEach(f => f('USER_UPDATED', session)); return { data: {}, error: null }; }
+  /** Change password while signed in: the current password is checked on the server. */
+  async updateUser({ password, current }: { password?: string; current?: string }) {
+    try { if (!session) throw new Error('Not signed in.'); if (password) await call('password', { password, current: current || '' }); authListeners.forEach(f => f('USER_UPDATED', session)); return { data: {}, error: null }; }
     catch (e) { return { data: null, error: { message: (e as Error).message } }; }
   },
-  async resetPasswordForEmail(_e: string, _o?: unknown) { return { data: null, error: { message: 'Password resets are done by the Super Admin. Ask them to set a new password for you.' } }; },
+  /** Change password from the sign-in page: phone number (or email) + current password + new password. Does not sign in. */
+  async changePassword({ email, current, password }: { email: string; current: string; password: string }) {
+    try { await call('change_password', { email, current, password }); return { data: {}, error: null }; }
+    catch (e) { return { data: null, error: { message: (e as Error).message } }; }
+  },
+  /** Forgot password: tells the Super Admin (in-app and by email), who sets a new temporary password. */
+  async resetPasswordForEmail(email: string, o?: { message?: string }) {
+    try { await call('forgot_password', { email, message: o?.message || '' }); return { data: {}, error: null }; }
+    catch (e) { return { data: null, error: { message: (e as Error).message } }; }
+  },
   mfa: {
     async getAuthenticatorAssuranceLevel() { return { data: { currentLevel: 'aal1', nextLevel: 'aal1' }, error: null }; },
     async listFactors() { return { data: { totp: [] as { id: string; status: string; friendly_name?: string }[] }, error: null }; },

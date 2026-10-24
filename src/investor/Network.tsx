@@ -1,4 +1,5 @@
 import { Fragment, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { useQuery } from '../lib/useQuery';
 import { money, date, rateShort } from '../lib/format';
@@ -32,7 +33,7 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
   const [open, setOpen] = useState<string | null>(null);
   const [allBonus, setAllBonus] = useState(false);
 
-  const head = page ? <PageHead crumbs={['My people']} title="People under you" sub="Their investments and the bonus you earn from them. Everything here is entered by the company." /> : null;
+  const head = page ? <PageHead crumbs={['My sub-investors']} title="My sub-investors" sub="Their investments and the bonus you earn from them. Everything here is entered by the company." /> : null;
   if (q.error) return page ? <>{head}<ErrorNote msg={q.error} retry={q.reload} /></> : null;
   if (!q.data) return page ? <>{head}<Loading /></> : null;
   const d: Network = q.data;
@@ -47,22 +48,22 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
 
   return (
     <>
-      {page ? <PageHead crumbs={['My people']} title="People under you" sub="Their investments and the bonus you earn from them. Everything here is entered by the company."  /> : (
+      {page ? <PageHead crumbs={['My sub-investors']} title="My sub-investors" sub="Their investments and the bonus you earn from them. Everything here is entered by the company."  /> : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 8 }}>
-          <div style={{ flex: 1, minWidth: 220 }}><h2 style={{ margin: 0, fontSize: 20 }}>People under you</h2>
+          <div style={{ flex: 1, minWidth: 220 }}><h2 style={{ margin: 0, fontSize: 20 }}>My sub-investors</h2>
             <p className="hint" style={{ marginTop: 4 }}>Their investments and the bonus you earn from them. Added by the company.</p></div>
         </div>
       )}
 
       <div className="kpis k4">
-        <Kpi label="People under me" value={d.investors.length} sub={`${d.investors.filter(p => p.investments.some(i => LIVE.includes(i.status))).length} with live investments`} />
+        <Kpi label="My sub-investors" value={d.investors.length} sub={`${d.investors.filter(p => p.investments.some(i => LIVE.includes(i.status))).length} with live investments`} />
         <Kpi label="Their total investment" value={money(d.investors.reduce((s, p) => s + livePrincipal(p), 0))} sub={`${allInv.filter(i => LIVE.includes(i.status)).length} live investments`} />
         <Kpi label="My bonus per month" value={money(monthlyBonus(allInv))} sub="from active investments" />
         <Kpi label="Bonus received" cls="pos" value={money(paid)} sub={unpaid ? `${money(unpaid)} still to be paid` : 'nothing pending'} />
       </div>
 
       <div className="card">
-        <div className="card-h"><h3>People under me</h3><div className="r">click a row to see their investments</div></div>
+        <div className="card-h"><h3>My sub-investors</h3><div className="r">click a row to see their investments · Details for charts and requests</div></div>
         {d.investors.length ? (
           <div className="tbl"><table>
             <thead><tr><th>Name</th><th>Status</th><th className="n">Investment</th><th className="n">My bonus / month</th><th className="n">Bonus earned</th><th /></tr></thead>
@@ -74,7 +75,7 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
                   <td className="n">{money(livePrincipal(p))}<span className="sub">{p.investments.length} investment{p.investments.length === 1 ? '' : 's'}</span></td>
                   <td className="n">{money(monthlyBonus(p.investments))}</td>
                   <td className="n">{money(earned(p.investments))}<span className="sub">{money(earnedPaid(p.investments))} received</span></td>
-                  <td className="n"><span className="muted">{open === p.id ? 'Hide ▴' : 'View ▾'}</span></td>
+                  <td className="n"><Link to={'/portal/network/' + p.id} onClick={e => e.stopPropagation()}>Details ›</Link> <span className="muted">{open === p.id ? '▴' : '▾'}</span></td>
                 </tr>
                 {open === p.id && (
                   <tr><td colSpan={6} style={{ background: 'var(--surface-2, transparent)' }}>
@@ -104,7 +105,7 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
       </div>
 
       <div className="card">
-        <div className="card-h"><h3>My bonus from the people under me</h3><div className="r">{d.bonuses.length > 8 && <a style={{ cursor: 'pointer' }} onClick={() => setAllBonus(!allBonus)}>{allBonus ? 'Show latest' : `Show all ${d.bonuses.length}`}</a>}</div></div>
+        <div className="card-h"><h3>My bonus from my sub-investors</h3><div className="r">{d.bonuses.length > 8 && <a style={{ cursor: 'pointer' }} onClick={() => setAllBonus(!allBonus)}>{allBonus ? 'Show latest' : `Show all ${d.bonuses.length}`}</a>}</div></div>
         {d.bonuses.length ? (
           <div className="tbl"><table>
             <thead><tr><th>Month</th><th>From</th><th>Investment</th><th>Rate</th><th className="n">Amount</th><th>Status</th></tr></thead>

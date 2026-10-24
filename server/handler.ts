@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import * as db from '../src/lib/localdb';
 import { runQuery } from './query';
 import { getPool, type PoolLike } from './pool';
+import { appUrl, sendMail } from './mail';
 
 type Row = Record<string, any>;
 class HttpError extends Error { constructor(public status: number, msg: string) { super(msg); } }
@@ -115,7 +116,8 @@ function mayReadFile(bucket: string, path: string): boolean {
   if (db.isAdmin()) return true;
   const u = db.uid(); if (!u) return false;
   if (bucket === 'branding') return true;
-  if (bucket === 'documents') return db.T('documents').some(d => d.storage_path === path && d.owner_id === u && d.visible_to_investor);
+  if (bucket === 'documents') return db.T('documents').some(d => d.storage_path === path && d.owner_id === u && d.visible_to_investor)
+    || path.startsWith(u + '/') || db.attachmentVisible(path); // own uploads, and files attached to requests the user may see
   if (bucket === 'brochures') return db.T('brochures').some(b => b.storage_path === path && db.brochureVisible(b.id, u));
   return false;
 }
@@ -125,9 +127,10 @@ const FNS: Record<string, (a: any) => Promise<unknown>> = {
   createAccount: a => db.createAccount(a),
   adminResetPassword: a => db.adminResetPassword(String(a.userId), String(a.password)),
   createIB: a => db.createIB(a),
-  adminRecordInvestment: a => db.adminRecordInvestment(a)
+  adminRecordInvestment: a => db.adminRecordInvestment(a),
+  adminApproveInvestmentRequest: a => db.adminApproveInvestmentRequest(a)
 };
-async function act(pool: PoolLike, body: Row, uid: string | null): Promise<{ out: unknown; uid: string | null }> {
+async function act(pool: PoolLike, body: Row, uid: string | null): Promise<{ out: unknown; uid: string | null; after?: () => Promise<unknown> }> {
   switch (body.op) {
     case 'session': {
       const p = uid ? db.T('profiles').find(x => x.id === uid) : null;
@@ -139,8 +142,22 @@ async function act(pool: PoolLike, body: Row, uid: string | null): Promise<{ out
       return { out: { token: sign(id), user: { id, email: db.userEmail(id) } }, uid: id };
     }
     case 'password': {
+      // signed in (Profile & Security): the current password must be given
       if (!uid) throw new HttpError(401, 'Not signed in.');
-      await db.setPassword(uid, String(body.password || '')); return { out: true, uid };
+      await db.changePassword(uid, String(body.current || ''), String(body.password || '')); return { out: true, uid };
+    }
+    case 'forgot_password': {
+      // always the same answer, so nobody can find out which phone numbers or emails have an account
+      const mail = db.forgotPassword(String(body.email || ''), String(body.message || ''), appUrl());
+      return { out: { ok: true }, uid, after: mail ? () => sendMail(mail) : undefined };
+    }
+    case 'change_password': {
+      // from the sign-in page: phone number (or email) + current password + new password
+      const id = await db.checkLogin(String(body.email || ''), String(body.current || ''));
+      if (!id) throw new Error('Phone number / email or current password is incorrect.');
+      db.setCurrentUser(id);
+      await db.changePassword(id, String(body.current || ''), String(body.password || ''));
+      return { out: true, uid };
     }
     case 'query': return { out: runQuery(body.spec), uid };
     case 'rpc': return { out: db.rpcCall(String(body.fn), body.args || {}), uid };
@@ -149,13 +166,21 @@ async function act(pool: PoolLike, body: Row, uid: string | null): Promise<{ out
       return { out: await f(body.args || {}), uid };
     }
     case 'file_put': {
-      if (!db.isAdmin()) throw new HttpError(403, 'Only the Super Admin can upload files.');
+      // the Super Admin uploads anywhere; a signed-in investor only adds proof files to their own folder (never replaces one)
+      const admin = db.isAdmin();
+      const path = String(body.path || ''), mime = String(body.mime || 'application/octet-stream');
+      if (!admin) {
+        if (!uid || !db.me() || db.me()!.account_status !== 'active') throw new HttpError(403, 'Sign in to upload files.');
+        if (body.bucket !== 'documents' || !path.startsWith(uid + '/') || path.includes('..')) throw new HttpError(403, 'You can only upload proof files to your own requests.');
+        if (!db.ATTACH_MIME.includes(mime)) throw new HttpError(415, 'Attach an image, PDF, Word or Excel file.');
+      }
       const buf = Buffer.from(String(body.b64 || ''), 'base64');
       if (!buf.length) throw new HttpError(400, 'The file is empty.');
       if (buf.length > MAX_FILE) throw new HttpError(413, 'Files must be 3 MB or smaller.');
-      await pool.query('insert into pms_files (key, mime, data, size) values ($1, $2, $3, $4) on conflict (key) do update set mime = excluded.mime, data = excluded.data, size = excluded.size',
-        [body.bucket + '/' + body.path, String(body.mime || 'application/octet-stream'), buf, buf.length]);
-      return { out: { path: body.path }, uid };
+      const r = await pool.query('insert into pms_files (key, mime, data, size) values ($1, $2, $3, $4) on conflict (key) do ' + (admin ? 'update set mime = excluded.mime, data = excluded.data, size = excluded.size' : 'nothing') + ' returning key',
+        [body.bucket + '/' + path, mime, buf, buf.length]);
+      if (!admin && !r.rows.length) throw new HttpError(409, 'A file with this name already exists. Upload it again.');
+      return { out: { path }, uid };
     }
     case 'file_get': {
       if (!mayReadFile(String(body.bucket), String(body.path))) throw new HttpError(403, 'This file is not available to you.');
@@ -198,14 +223,18 @@ async function handleOne(body: Row, auth: string | undefined): Promise<unknown> 
     if (uid && !S.users.some(u => u.id === uid)) uid = null;
     db.setCurrentUser(uid);
     db.catchUp();
-    let res: { out: unknown; uid: string | null };
+    let res: { out: unknown; uid: string | null; after?: () => Promise<unknown> };
     try { res = await act(pool, body, uid); }
     catch (e) {
       if (e instanceof HttpError) throw e;
       // a rule said no (e.g. "Enter the amount"): nothing is saved, the message goes back to the screen
       return { error: { message: e instanceof Error ? e.message : String(e) } };
     } finally { db.setCurrentUser(null); }
-    if (await commit(pool, base, db.current())) return { data: res.out };
+    if (await commit(pool, base, db.current())) {
+      // emails go out only once the change is saved (never twice when a request is run again)
+      if (res.after) await res.after().catch(e => console.error(e));
+      return { data: res.out };
+    }
   }
   throw new HttpError(503, 'The system is busy. Please try again.');
 }

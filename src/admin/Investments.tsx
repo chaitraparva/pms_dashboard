@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useAuth, useSettings } from '../lib/auth';
-import { uploadDocument, openDocument, deleteDocument } from '../lib/docs';
+import { uploadDocument, openDocument, deleteDocument, uploadAttachment } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
 import { recordInvestmentFull } from '../lib/adminApi';
 import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE } from '../lib/format';
@@ -11,6 +11,7 @@ import type { Investment, Balance, Branch, Profile, Plan, Accrual, Payout, Ledge
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, InvBadge, PayBadge, LedgerBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
 import { Icon } from '../ui/Icon';
+import { FilePicker } from '../ui/Attach';
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 type Lite = Pick<Profile, 'id' | 'full_name' | 'code' | 'email'> & { branch_id?: string | null; introduced_by?: string | null; role?: string };
@@ -135,125 +136,281 @@ export function Investments() {
 
 /* =============================== RECORD DRAWER =============================== */
 type Found = { id: string; code: string; full_name: string; phone: string; has_login: boolean; ib_id: string | null; ib_name: string | null; people: number } | null;
+type Person = Lite & { phone?: string; has_login?: boolean; is_ib?: boolean; can_introduce?: boolean; account_status?: string };
 const LOCKS: [string, string][] = [['0', 'No lock-in'], ['6', '6 months'], ['12', '12 months'], ['custom', 'Custom']];
 const genPw = () => { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'; let s = ''; for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)]; return 'Parva@' + s; };
+const DEC = (v: string, d: number) => new RegExp('^\\d+(\\.\\d{1,' + d + '})?$').test(v.trim());
 
-/** Super Admin records an investment in one step: who (by phone), individual or under another investor, the ROI and bonus typed in,
- *  lock-in, principal and start date. A new person gets their login (phone number + password) at the same time. */
+/** Looks a phone number up as it is typed: an existing person keeps their record, login and IB. */
+function usePhoneLookup(phone: string, enabled = true) {
+  const digits = phone.replace(/\D/g, '').slice(-10);
+  const [found, setFound] = useState<Found>(null);
+  useEffect(() => {
+    if (!enabled || digits.length !== 10) { setFound(null); return; }
+    let live = true;
+    rpc<Found>('admin_lookup_phone', { p_phone: digits }).then(r => { if (live) setFound(r); }).catch(() => {});
+    return () => { live = false; };
+  }, [digits, enabled]);
+  return { digits, found };
+}
+
+/** Super Admin records an investment. Investor type comes first:
+ *  Individual: choose an existing investor, or find / add one by phone number (a new person gets their login now).
+ *  IB: choose (or register) the IB; their details fill in. Optionally add a sub-investor: the investment is then the
+ *  sub-investor's, under the IB, and the IB earns the bonus. Without a sub-investor it is the IB's own investment.
+ *  A payment proof (image or document) is required. */
 function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: string; onClose: () => void; onDone: (code: string) => void }) {
   const act = useAction();
   const t = today();
   const opts = useQuery(async () => {
-    const [all, pre] = await Promise.all([
-      fetchAll<Lite & { phone?: string }>((a, b) => api.from('profiles').select('id,full_name,code,email,phone,branch_id').eq('role', 'investor').order('full_name').range(a, b)),
+    const [all, branches, pre] = await Promise.all([
+      fetchAll<Person>((a, b) => api.from('profiles').select('id,full_name,code,email,phone,branch_id,introduced_by,has_login,is_ib,can_introduce,account_status').eq('role', 'investor').order('full_name').range(a, b)),
+      api.from('branches').select('id,name').then(r => must(r) as Pick<Branch, 'id' | 'name'>[]),
       preInvestor ? api.from('profiles').select('id,full_name,code,phone').eq('code', preInvestor).maybeSingle() : Promise.resolve({ data: null, error: null })
     ]);
-    return { all, pre: (pre.data as { full_name: string; phone: string } | null) || null };
+    return { all, branches, pre: (pre.data as { id: string; full_name: string; phone: string } | null) || null };
   }, [preInvestor]);
 
+  const [type, setType] = useState<'individual' | 'ib'>('individual');
+  // individual
+  const [pick, setPick] = useState('');
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
-  const [kind, setKind] = useState<'individual' | 'under'>('individual');
-  const [ib, setIb] = useState('');
+  const [pw, setPw] = useState(genPw);
+  // IB
+  const [ibMode, setIbMode] = useState<'existing' | 'new'>('existing');
+  const [ibId, setIbId] = useState('');
+  const [ibPw, setIbPw] = useState(genPw);
+  const [nibName, setNibName] = useState('');
+  const [nibPhone, setNibPhone] = useState('');
+  const [nibPw, setNibPw] = useState(genPw);
+  const [hasSub, setHasSub] = useState(false);
+  const [subPhone, setSubPhone] = useState('');
+  const [subName, setSubName] = useState('');
+  const [subPw, setSubPw] = useState(genPw);
+  // investment
   const [roi, setRoi] = useState('');
   const [bonus, setBonus] = useState('');
   const [lock, setLock] = useState('12');
   const [customLock, setCustomLock] = useState('');
   const [amount, setAmount] = useState('');
   const [start, setStart] = useState(t);
-  const [pw, setPw] = useState(genPw);
   const [ref, setRef] = useState('');
   const [notes, setNotes] = useState('');
-  const [found, setFound] = useState<Found>(null);
+  const [proof, setProof] = useState<File[]>([]);
   const [tried, setTried] = useState(false);
-  const [done, setDone] = useState<null | { code: string; phone: string; pw: string | null }>(null);
+  const [done, setDone] = useState<null | { code: string; investor: string; logins: [string, string, string][] }>(null);
 
-  useEffect(() => { if (opts.data?.pre && !phone) { setPhone(opts.data.pre.phone || ''); setName(opts.data.pre.full_name || ''); } }, [opts.data]); // eslint-disable-line react-hooks/exhaustive-deps
-  // look the phone number up as it is typed: an existing person keeps their record, login and the investor they are under
-  const digits = phone.replace(/\D/g, '').slice(-10);
-  useEffect(() => {
-    if (digits.length !== 10) { setFound(null); return; }
-    let live = true;
-    rpc<Found>('admin_lookup_phone', { p_phone: digits }).then(r => { if (!live) return; setFound(r); if (r) { setName(r.full_name); if (r.ib_id) { setKind('under'); setIb(r.ib_id); } } }).catch(() => {});
-    return () => { live = false; };
-  }, [digits]);
+  const ind = usePhoneLookup(phone, type === 'individual');
+  const subL = usePhoneLookup(subPhone, type === 'ib' && hasSub);
+  const nib = usePhoneLookup(nibPhone, type === 'ib' && ibMode === 'new');
+  const all = opts.data?.all || [];
+  const people = (id: string) => all.filter(x => x.introduced_by === id).length;
+  const branchName = (id?: string | null) => opts.data?.branches.find(b => b.id === id)?.name || '';
 
-  const under = kind === 'under';
+  useEffect(() => { if (opts.data?.pre && !phone) { setPick(opts.data.pre.id); setPhone(opts.data.pre.phone || ''); setName(opts.data.pre.full_name || ''); } }, [opts.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (ind.found) setName(ind.found.full_name); }, [ind.found]);
+  useEffect(() => { if (subL.found) setSubName(subL.found.full_name); }, [subL.found]);
+
+  const choose = (id: string) => {
+    setPick(id);
+    const p = all.find(x => x.id === id);
+    if (p) { setPhone(p.phone || ''); setName(p.full_name || ''); } else { setPhone(''); setName(''); }
+  };
+  const ib = type === 'ib' && ibMode === 'existing' ? all.find(x => x.id === ibId) : undefined;
+  const ibName = ibMode === 'new' ? nibName.trim() : ib?.full_name || '';
+  const withSub = type === 'ib' && hasSub;
+  // IBs first (registered as IB, allowed to add investors, or with people under them), then everybody else
+  const isIb = (p: Person) => !!p.is_ib || !!p.can_introduce || people(p.id) > 0;
+  const ibList = [...all.filter(isIb), ...all.filter(p => !isIb(p))].filter(p => p.account_status !== 'suspended');
+
   const months = lock === 'custom' ? Number(customLock) : Number(lock);
-  const r = Number(roi), b = under && ib ? Number(bonus || 0) : 0, amt = Number(amount);
-  const upRow = opts.data?.all.find(x => x.id === ib);
-  const needPw = !found || !found.has_login;
+  const r = Number(roi), b = withSub ? Number(bonus || 0) : 0, amt = Number(amount);
+  const picked = pick ? all.find(x => x.id === pick) : undefined;
+  const needPw = type === 'individual' && !(picked?.has_login || ind.found?.has_login);
+  const needIbPw = type === 'ib' && ibMode === 'existing' && !!ib && !ib.has_login;
+  const needSubPw = withSub && (!subL.found || !subL.found.has_login);
+  const subClash = withSub && subL.found && subL.found.ib_id && subL.found.ib_id !== ibId ? `${subL.found.full_name} is already under ${subL.found.ib_name}.` : null;
   const errs: Record<string, string | null> = {
-    phone: digits.length !== 10 ? 'Enter a 10-digit phone number.' : null,
-    name: !name.trim() ? 'Enter the name.' : null,
-    ib: under && !ib ? 'Choose the investor this person is under.' : found && found.ib_id && under && ib && found.ib_id !== ib ? `${found.full_name} is already under ${found.ib_name}.` : null,
-    roi: !(r > 0 && r <= 100) || !/^\d+(\.\d{1,4})?$/.test(roi.trim()) ? 'Enter the monthly ROI, e.g. 0.25, 2.3, 4.3 or 6.' : null,
-    bonus: under && (!/^\d+(\.\d{1,4})?$/.test((bonus || '0').trim()) || (r > 0 && b >= r)) ? 'The bonus must be 0 or more and less than the ROI.' : null,
+    phone: type === 'individual' && !picked && ind.digits.length !== 10 ? 'Enter a 10-digit phone number, or choose an existing investor.' : null,
+    name: type === 'individual' && !name.trim() ? 'Enter the name.' : null,
+    pw: needPw && pw.length < 8 ? 'At least 8 characters.' : null,
+    ib: type === 'ib' && ibMode === 'existing' && !ib ? 'Choose the IB.' : null,
+    ibPw: needIbPw && ibPw.length < 8 ? 'At least 8 characters.' : null,
+    nibName: type === 'ib' && ibMode === 'new' && !nibName.trim() ? 'Enter the IB’s name.' : null,
+    nibPhone: type === 'ib' && ibMode === 'new' ? (nib.digits.length !== 10 ? 'Enter a 10-digit phone number.' : nib.found ? `Already registered to ${nib.found.full_name}. Choose them under “Existing IB”.` : null) : null,
+    nibPw: type === 'ib' && ibMode === 'new' && nibPw.length < 8 ? 'At least 8 characters.' : null,
+    subPhone: withSub ? (subL.digits.length !== 10 ? 'Enter the sub-investor’s 10-digit phone number.' : subL.digits === (ibMode === 'new' ? nib.digits : (ib?.phone || '').replace(/\D/g, '').slice(-10)) ? 'Must be different from the IB’s phone number.' : subClash) : null,
+    subName: withSub && !subName.trim() ? 'Enter the sub-investor’s name.' : null,
+    subPw: needSubPw && subPw.length < 8 ? 'At least 8 characters.' : null,
+    roi: !(r > 0 && r <= 100) || !DEC(roi, 4) ? 'Enter the monthly ROI, e.g. 0.25, 2.3, 4.3 or 6.' : null,
+    bonus: withSub && (!DEC(bonus || '0', 4) || (r > 0 && b >= r)) ? 'The bonus must be 0 or more and less than the ROI.' : null,
     lock: !(Number.isInteger(months) && months >= 0 && months <= 120) ? 'Enter the lock-in in months (0 to 120).' : null,
-    amount: !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the principal (at most 2 decimals).' : null,
+    amount: !(amt > 0) || !DEC(amount, 2) ? 'Enter the principal (at most 2 decimals).' : null,
     start: !start ? 'Enter the start date.' : null,
-    pw: needPw && pw.length < 8 ? 'At least 8 characters.' : null
+    proof: !proof.length ? 'Attach the payment proof. It is required.' : null
   };
   const bad = Object.values(errs).some(Boolean);
   const e = (k: string) => (tried ? errs[k] : null);
   const invRate = r > 0 && b < r ? Math.round((r - b) * 10000) / 10000 : 0;
   const mine = amt > 0 && invRate ? Math.round(amt * invRate) / 100 : 0;
   const upMonthly = amt > 0 && b > 0 ? Math.round((Math.round(amt * r) / 100 - mine) * 100) / 100 : 0;
+  const investorName = type === 'individual' ? name.trim() : withSub ? subName.trim() : ibName;
 
   const save = async () => {
     setTried(true);
     if (bad) return;
-    const res = await act.run(() => recordInvestmentFull({
-      p_name: name.trim(), p_phone: phone.trim(), p_ib: under ? ib : null, p_rate: roi.trim(), p_bonus: under ? (bonus.trim() || '0') : '0', p_lockin_months: months,
-      p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_password: needPw ? pw : ''
-    }), ['Investment recorded', `${name.trim()} · ${money(amt)} at ${rateShort(r)} a month`]);
-    if (res) { refreshAll(); setDone({ code: res.code, phone: phone.trim(), pw: needPw ? pw : null }); }
+    const res = await act.run(async () => {
+      const file = await uploadAttachment(proof[0], 'proofs');
+      try {
+        return await recordInvestmentFull({
+          p_type: type, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(),
+          ...(type === 'individual'
+            ? { p_person: picked ? picked.id : null, p_name: name.trim(), p_phone: phone.trim(), p_password: needPw ? pw : '' }
+            : {
+              ...(ibMode === 'new' ? { p_new_ib: { name: nibName.trim(), phone: nibPhone.trim(), password: nibPw } } : { p_ib: ibId, p_ib_password: needIbPw ? ibPw : '' }),
+              p_sub: withSub ? { name: subName.trim(), phone: subPhone.trim(), password: needSubPw ? subPw : '' } : null
+            })
+        });
+      } catch (err) { await api.storage.from('documents').remove([file.path]).catch(() => undefined); throw err; }
+    }, ['Investment recorded', `${investorName} · ${money(amt)} at ${rateShort(r)} a month`]);
+    if (res) {
+      refreshAll();
+      const logins: [string, string, string][] = [];
+      if (type === 'individual' && needPw) logins.push([name.trim(), phone.trim(), pw]);
+      if (type === 'ib' && ibMode === 'new') logins.push([nibName.trim() + ' (IB)', nibPhone.trim(), nibPw]);
+      if (needIbPw && ib) logins.push([ib.full_name + ' (IB)', ib.phone || '', ibPw]);
+      if (withSub && needSubPw) logins.push([subName.trim() + ' (sub-investor)', subPhone.trim(), subPw]);
+      setDone({ code: res.code, investor: investorName, logins });
+    }
   };
 
   if (done) return (
-    <Drawer title="Investment recorded" sub={done.pw ? 'Share the login details with the investor offline.' : 'Added to the investor’s account.'} onClose={() => onDone(done.code)}
+    <Drawer title="Investment recorded" sub={done.logins.length ? 'Share the login details offline. Each person can change their password after signing in.' : 'Added to the investor’s account.'} onClose={() => onDone(done.code)}
       foot={<button className="btn primary" onClick={() => onDone(done.code)}>Open investment</button>}>
       <div className="form">
         <dl className="kv">
-          <dt>Investor</dt><dd>{name}</dd>
+          <dt>Investor type</dt><dd>{type === 'ib' ? (withSub ? 'Sub-investor under IB ' + ibName : 'IB (own investment)') : 'Individual'}</dd>
+          <dt>Investor</dt><dd>{done.investor}</dd>
           <dt>Investment</dt><dd className="mono">{done.code} · {money(amt)} at {rateShort(r)}</dd>
-          {under && upRow && <><dt>Under</dt><dd>{upRow.full_name} · bonus {rateShort(b)} ({money(upMonthly)} / month), shown to them now</dd></>}
-          {done.pw && <><dt>Login (phone)</dt><dd className="mono">{done.phone}</dd><dt>Password</dt><dd className="mono">{done.pw}</dd></>}
+          {withSub && b > 0 && <><dt>IB bonus</dt><dd>{ibName} · {rateShort(b)} ({money(upMonthly)} / month), shown to them now</dd></>}
+          <dt>Proof</dt><dd>{proof[0]?.name}</dd>
         </dl>
+        {done.logins.map(([who, ph, p]) => (
+          <div key={who} className="ib-card"><b>{who}</b><dl className="kv" style={{ marginTop: 6 }}><dt>Login (phone)</dt><dd className="mono">{ph}</dd><dt>Password</dt><dd className="mono">{p}</dd></dl></div>
+        ))}
       </div>
     </Drawer>
   );
 
+  const pwField = (label: string, v: string, set: (s: string) => void, k: string, who: string) => (
+    <Field label={label} err={e(k)} hint={`${who} signs in with the phone number and this password. Share it offline.`}>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input className={'input mono ' + (e(k) ? 'bad' : '')} value={v} onChange={ev => set(ev.target.value)} autoComplete="new-password" />
+        <button type="button" className="btn" onClick={() => set(genPw())} title="Generate a new password"><Icon name="refresh" /></button>
+      </div>
+    </Field>
+  );
+
   return (
-    <Drawer title="Record investment" sub="The person is found by phone number, or added with their own login." onClose={onClose}
+    <Drawer title="Record investment" sub="Choose the investor type first. A payment proof is required." onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={save} disabled={act.busy || !opts.data}>{act.busy ? 'Saving…' : 'Record investment'}</button></>}>
       {opts.error ? <ErrorNote msg={opts.error} retry={opts.reload} /> : !opts.data ? <Loading rows={3} /> : (
         <div className="form">
-          <div className="f-row">
-            <Field label="Phone number *" err={e('phone')} hint={found ? <>Existing investor: <b>{found.full_name}</b> ({found.code}){found.ib_name ? ` · under ${found.ib_name}` : ' · individual'}</> : 'The investor signs in with this number.'}>
-              <input className={'input num ' + (e('phone') ? 'bad' : '')} inputMode="tel" value={phone} onChange={ev => setPhone(ev.target.value)} placeholder="e.g. 98450 12345" />
-            </Field>
-            <Field label="Name *" err={e('name')}><input className={'input ' + (e('name') ? 'bad' : '')} value={name} onChange={ev => setName(ev.target.value)} disabled={!!found} /></Field>
-          </div>
-          <Field label="Investor type *" err={e('ib')}>
-            <div className="chips">
-              <button type="button" className={'chip ' + (!under ? 'on' : '')} disabled={!!found?.ib_id} onClick={() => { setKind('individual'); setIb(''); }}>Individual</button>
-              <button type="button" className={'chip ' + (under ? 'on' : '')} onClick={() => setKind('under')}>Under an investor</button>
+          <Field label="Investor type *">
+            <div className="chips" role="radiogroup" aria-label="Investor type">
+              <button type="button" role="radio" aria-checked={type === 'individual'} className={'chip ' + (type === 'individual' ? 'on' : '')} onClick={() => setType('individual')}>Individual</button>
+              <button type="button" role="radio" aria-checked={type === 'ib'} className={'chip ' + (type === 'ib' ? 'on' : '')} onClick={() => setType('ib')}>IB</button>
             </div>
-            {under && (
-              <select className={'input ' + (e('ib') ? 'bad' : '')} style={{ marginTop: 8 }} value={ib} onChange={ev => setIb(ev.target.value)} disabled={!!found?.ib_id}>
-                <option value="">Choose the investor…</option>
-                {opts.data.all.filter(x => x.id !== found?.id).map(x => <option key={x.id} value={x.id}>{x.full_name} · {x.code}{x.phone ? ' · ' + x.phone : ''}</option>)}
-              </select>
-            )}
-            <p className="hint">{under ? 'The person goes under this investor. That investor sees them and earns the bonus below from now on.' : 'Nobody earns a bonus on this investment.'}</p>
+            <p className="hint">{type === 'individual' ? 'An investor in their own name. Nobody earns a bonus on this investment.' : 'An IB (introducing broker). Add a sub-investor to record the investment under the IB, or leave it empty for the IB’s own investment.'}</p>
           </Field>
+
+          {type === 'individual' ? (
+            <div className="sec">
+              <h4>Investor</h4>
+              <Field label="Existing investor" hint="Or leave this empty and type a phone number to find or add the person.">
+                <select className="input" value={pick} onChange={ev => choose(ev.target.value)}>
+                  <option value="">New investor / search by phone…</option>
+                  {all.map(x => <option key={x.id} value={x.id}>{x.full_name} · {x.code}{x.phone ? ' · ' + x.phone : ''}</option>)}
+                </select>
+              </Field>
+              <div className="f-row">
+                <Field label="Phone number *" err={e('phone')} hint={ind.found ? <>Existing investor: <b>{ind.found.full_name}</b> ({ind.found.code}){ind.found.ib_name ? ` · sub-investor of ${ind.found.ib_name}` : ''}</> : 'The investor signs in with this number.'}>
+                  <input className={'input num ' + (e('phone') ? 'bad' : '')} inputMode="tel" value={phone} onChange={ev => { setPhone(ev.target.value); setPick(''); }} placeholder="e.g. 98450 12345" />
+                </Field>
+                <Field label="Name *" err={e('name')}><input className={'input ' + (e('name') ? 'bad' : '')} value={name} onChange={ev => setName(ev.target.value)} disabled={!!ind.found || !!picked} /></Field>
+              </div>
+              {ind.found?.ib_id && (
+                <div className="note info">{ind.found.full_name} is a sub-investor of <b>{ind.found.ib_name}</b>. Recorded as Individual, no bonus goes to the IB.{' '}
+                  <a style={{ cursor: 'pointer' }} onClick={() => { const f = ind.found!; setType('ib'); setIbMode('existing'); setIbId(f.ib_id!); setHasSub(true); setSubPhone(f.phone); setSubName(f.full_name); }}>Record under the IB instead</a></div>
+              )}
+              {needPw && pwField('Login password *', pw, setPw, 'pw', 'The investor')}
+            </div>
+          ) : (
+            <>
+              <div className="sec">
+                <h4>IB details</h4>
+                <div className="chips">
+                  <button type="button" className={'chip ' + (ibMode === 'existing' ? 'on' : '')} onClick={() => setIbMode('existing')}>Existing IB</button>
+                  <button type="button" className={'chip ' + (ibMode === 'new' ? 'on' : '')} onClick={() => setIbMode('new')}>Register a new IB</button>
+                </div>
+                {ibMode === 'existing' ? (
+                  <>
+                    <Field label="IB *" err={e('ib')} hint="IBs are listed first. Choosing any other investor makes them an IB.">
+                      <select className={'input ' + (e('ib') ? 'bad' : '')} value={ibId} onChange={ev => setIbId(ev.target.value)}>
+                        <option value="">Choose the IB…</option>
+                        {ibList.map(x => <option key={x.id} value={x.id}>{x.full_name} · {x.code}{x.phone ? ' · ' + x.phone : ''}{isIb(x) ? ' · IB' : ''}</option>)}
+                      </select>
+                    </Field>
+                    {ib && (
+                      <div className="ib-card">
+                        <dl className="kv">
+                          <dt>Name</dt><dd><b>{ib.full_name}</b> <span className="muted mono">{ib.code}</span></dd>
+                          <dt>Phone (login)</dt><dd className="num">{ib.phone || '—'}</dd>
+                          <dt>Branch</dt><dd>{branchName(ib.branch_id) || <span className="muted">Not assigned</span>}</dd>
+                          <dt>Sub-investors</dt><dd>{people(ib.id)}</dd>
+                          <dt>Login</dt><dd>{ib.has_login ? <Badge cls="b-blue">Has a login</Badge> : <Badge cls="b-amber">No login yet</Badge>}</dd>
+                        </dl>
+                      </div>
+                    )}
+                    {needIbPw && pwField('IB login password *', ibPw, setIbPw, 'ibPw', ib!.full_name)}
+                  </>
+                ) : (
+                  <>
+                    <div className="f-row">
+                      <Field label="IB name *" err={e('nibName')}><input className={'input ' + (e('nibName') ? 'bad' : '')} value={nibName} onChange={ev => setNibName(ev.target.value)} /></Field>
+                      <Field label="IB phone number *" err={e('nibPhone')} hint="The IB signs in with this number."><input className={'input num ' + (e('nibPhone') ? 'bad' : '')} inputMode="tel" value={nibPhone} onChange={ev => setNibPhone(ev.target.value)} /></Field>
+                    </div>
+                    {pwField('IB login password *', nibPw, setNibPw, 'nibPw', 'The IB')}
+                  </>
+                )}
+              </div>
+
+              <div className="sec">
+                <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>Sub-investor <span className="muted" style={{ fontWeight: 400 }}>(optional)</span>
+                  <label className="check" style={{ marginLeft: 'auto', fontWeight: 400 }}><input type="checkbox" checked={hasSub} onChange={ev => setHasSub(ev.target.checked)} /> Add a sub-investor</label></h4>
+                {!hasSub ? <p className="hint">Without a sub-investor, this is {ibName ? ibName + '’s' : 'the IB’s'} own investment.</p> : (
+                  <>
+                    <div className="f-row">
+                      <Field label="Sub-investor phone number *" err={e('subPhone')} hint={subL.found ? <>Existing investor: <b>{subL.found.full_name}</b> ({subL.found.code}){subL.found.ib_name ? ` · under ${subL.found.ib_name}` : ''}</> : 'They sign in with this number.'}>
+                        <input className={'input num ' + (e('subPhone') ? 'bad' : '')} inputMode="tel" value={subPhone} onChange={ev => setSubPhone(ev.target.value)} />
+                      </Field>
+                      <Field label="Sub-investor name *" err={e('subName')}><input className={'input ' + (e('subName') ? 'bad' : '')} value={subName} onChange={ev => setSubName(ev.target.value)} disabled={!!subL.found} /></Field>
+                    </div>
+                    {needSubPw ? pwField('Sub-investor login password *', subPw, setSubPw, 'subPw', 'The sub-investor') : <p className="hint">{subL.found?.full_name} already has a login.</p>}
+                    <p className="hint">The sub-investor is placed under {ibName || 'the IB'}. The IB sees them, their investments and the bonus below in their own login.</p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
           <div className="f-row">
             <Field label="Monthly ROI (% per month) *" err={e('roi')} hint="Any rate, e.g. 0.25, 2.3, 3.3, 4.3, 6.">
               <input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} placeholder="e.g. 6" />
             </Field>
-            <Field label={under && upRow ? `Bonus to ${upRow.full_name} (% per month)` : 'Bonus (% per month)'} err={e('bonus')} hint={under ? (r > 0 && b < r ? `Investor gets ${invRate}%${upRow ? `, ${upRow.full_name} gets ${b}%` : ''}.` : 'Taken out of the ROI.') : 'Only when under an investor.'}>
-              <input className={'input num ' + (e('bonus') ? 'bad' : '')} inputMode="decimal" value={under ? bonus : ''} onChange={ev => setBonus(ev.target.value)} disabled={!under} placeholder={under ? 'e.g. 2' : '—'} />
+            <Field label={withSub && ibName ? `Bonus to ${ibName} (% per month)` : 'IB bonus (% per month)'} err={e('bonus')} hint={withSub ? (r > 0 && b < r ? `Sub-investor gets ${invRate}%${ibName ? `, ${ibName} gets ${b}%` : ''}.` : 'Taken out of the ROI.') : 'Only with a sub-investor under an IB.'}>
+              <input className={'input num ' + (e('bonus') ? 'bad' : '')} inputMode="decimal" value={withSub ? bonus : ''} onChange={ev => setBonus(ev.target.value)} disabled={!withSub} placeholder={withSub ? 'e.g. 2' : '—'} />
             </Field>
           </div>
           <Field label="Lock-in period *" err={e('lock')}>
@@ -266,22 +423,20 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             <Field label="Principal (INR) *" err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder="e.g. 500000" /></Field>
             <Field label="Start date *" err={e('start')} hint="Returns accrue monthly from this date."><input className="input" type="date" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
           </div>
-          {needPw && (
-            <Field label="Login password *" err={e('pw')} hint={`They sign in as Investor with ${digits.length === 10 ? phone : 'this phone number'} and this password. Share it offline.`}>
-              <input className={'input mono ' + (e('pw') ? 'bad' : '')} value={pw} onChange={ev => setPw(ev.target.value)} autoComplete="new-password" />
-            </Field>
-          )}
           <div className="f-row">
             <Field label="Reference" hint="Bank / UTR or agreement number (optional)."><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
             <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
           </div>
+          <FilePicker label="Payment proof *" files={proof} onChange={setProof} max={1} err={e('proof')} hint="Required: bank receipt, transfer screenshot or signed document (image, PDF, Word or Excel, 3 MB). The investor sees it in their documents." />
           <div className="card" style={{ boxShadow: 'none' }}>
             <div className="card-h"><h3>Summary</h3></div>
             <div className="card-b">
               <dl className="kv">
+                <dt>Investor type</dt><dd>{type === 'ib' ? (withSub ? `Sub-investor under ${ibName || 'the IB'}` : 'IB · own investment') : 'Individual'}</dd>
+                <dt>Investment for</dt><dd>{investorName || '—'}</dd>
                 <dt>Monthly ROI</dt><dd>{r > 0 ? rate(r) : '—'}</dd>
                 <dt>Investor gets</dt><dd>{invRate ? <>{rate(invRate)}{amt > 0 && <> · <b>{money(mine)}</b> / month</>}</> : '—'}</dd>
-                <dt>Bonus</dt><dd>{under && b > 0 ? <>{rate(b)}{amt > 0 && <> · <b>{money(upMonthly)}</b> / month</>} <span className="muted">to {upRow?.full_name}</span></> : <span className="muted">None</span>}</dd>
+                <dt>IB bonus</dt><dd>{withSub && b > 0 ? <>{rate(b)}{amt > 0 && <> · <b>{money(upMonthly)}</b> / month</>} <span className="muted">to {ibName}</span></> : <span className="muted">None</span>}</dd>
                 <dt>First return</dt><dd>{start ? date(addMonths(start, 1)) : '—'}</dd>
                 <dt>Lock-in ends</dt><dd>{start && months > 0 ? date(addMonths(start, months)) : months === 0 ? 'No lock-in' : '—'}</dd>
               </dl>
@@ -480,6 +635,7 @@ export function InvestmentDetail() {
                 <dt>Payout lag</dt><dd>{i.payout_lag_days} day{i.payout_lag_days === 1 ? '' : 's'} after accrual</dd>
                 <dt>Agreement</dt><dd className="mono">{i.agreement_ref || '—'}</dd>
                 <dt>Deposit reference</dt><dd className="mono">{i.deposit_ref || '—'}</dd>
+                <dt>Payment proof</dt><dd>{i.proof_path ? <button className="btn sm" onClick={() => openAmendDoc(i.proof_path!)}><Icon name="doc" />Open proof</button> : <span className="muted">—</span>}</dd>
                 <dt>Recorded by</dt><dd>{nm(i.created_by)} · {dateTime(i.created_at)}</dd>
                 <dt>Activated by</dt><dd>{i.activated_by ? `${nm(i.activated_by)} · ${dateTime(i.activated_at)}` : '—'}</dd>
               </dl>

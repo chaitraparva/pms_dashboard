@@ -1,8 +1,11 @@
 // Data loading and small date helpers shared by the investor portal pages.
 // Every figure shown comes from rows the signed-in investor can read (RLS).
-import { api, must, fetchAll } from '../lib/api';
+import { api, must, fetchAll, rpc } from '../lib/api';
 import { addMonths, daysBetween, today } from '../lib/format';
-import type { Accrual, Balance, Investment, LedgerEntry, Payout } from '../lib/types';
+import type { Accrual, Balance, Investment, LedgerEntry, MyAccount, Payout } from '../lib/types';
+
+/** The signed-in investor: whether they are an IB, their IB (if any), their sub-investors and bank details. */
+export const loadAccount = () => rpc<MyAccount | null>('my_account');
 
 /** Investments that are funded and not yet settled. */
 export const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];

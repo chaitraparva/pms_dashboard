@@ -1,5 +1,5 @@
 import { api, friendly } from './api';
-import type { DocumentRow } from './types';
+import type { Attachment, DocumentRow } from './types';
 
 const safe = (n: string) => n.replace(/[^\w.\-]+/g, '_').slice(-120);
 
@@ -41,6 +41,31 @@ export async function uploadLogo(file: File): Promise<string> {
   if (error) throw new Error(friendly(error.message));
   return api.storage.from('branding').getPublicUrl(path).data.publicUrl;
 }
+
+/* ---------- proof attachments (images or documents) for investments, requests and withdrawals ---------- */
+export const ATTACH_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
+  'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
+export const ATTACH_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx';
+
+/** Checks a file before it is uploaded; returns a message, or null when it is fine. */
+export function attachmentProblem(f: File): string | null {
+  if (!ATTACH_TYPES.includes(f.type)) return `${f.name}: choose an image, PDF, Word or Excel file.`;
+  if (f.size > 3 * 1024 * 1024) return `${f.name}: files must be 3 MB or smaller.`;
+  if (!f.size) return `${f.name} is empty.`;
+  return null;
+}
+
+/** Uploads a proof file privately. Investors upload into their own folder; the Super Admin into the proofs folder. */
+export async function uploadAttachment(f: File, ownerFolder: string): Promise<Attachment> {
+  const p = attachmentProblem(f); if (p) throw new Error(p);
+  const path = `${ownerFolder}/${crypto.randomUUID()}-${safe(f.name)}`;
+  const { error } = await api.storage.from('documents').upload(path, f, { contentType: f.type, upsert: false });
+  if (error) throw new Error(friendly(error.message));
+  return { path, name: f.name, mime: f.type, size: f.size };
+}
+
+/** Opens a proof file the signed-in user may see. */
+export const openAttachment = (a: Pick<Attachment, 'path'>) => openDocument(a.path);
 
 /* ---------- brochures (private bucket "brochures") ---------- */
 export const BROCHURE_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];

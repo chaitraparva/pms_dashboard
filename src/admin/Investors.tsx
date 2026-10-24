@@ -221,8 +221,13 @@ export function InvestorDetail() {
         actions={<>
           <KycBadge k={p.kyc_status} /> <AcctBadge s={p.account_status} />
           {p.role === 'super_admin' && <Badge cls="b-navy">Super Admin</Badge>}
+          {p.role === 'investor' && (p.is_ib || brought.length > 0 ? <Badge cls="b-navy">IB</Badge> : introducer ? <Badge cls="b-grey">Sub-investor</Badge> : <Badge cls="b-grey">Individual</Badge>)}
           {p.has_login && <Badge cls="b-blue">Login: {p.phone}</Badge>}
           <button className="btn" onClick={() => setDlg('edit')}>Edit details</button>
+          {p.role === 'investor' && !brought.length && <button className="btn" disabled={act.busy} onClick={async () => {
+            const r = await act.run(() => rpc('admin_set_ib', { p_id: p.id, p_value: !p.is_ib }), [p.is_ib ? 'IB status removed' : 'Marked as IB', p.full_name]);
+            if (r !== undefined) refreshAll();
+          }}>{p.is_ib ? 'Remove IB status' : 'Make IB'}</button>}
           {p.role === 'investor' && !p.has_login && <button className="btn" onClick={() => setDlg('introduce')}><Icon name="users" />Create login</button>}
           {(p.has_login || p.role === 'super_admin') && <button className="btn" onClick={() => setDlg('password')}>Reset password</button>}
           <button className="btn" onClick={() => nav('/admin/announcements?to=' + p.id)}><Icon name="announce" />Send notice</button>
@@ -258,7 +263,7 @@ export function InvestorDetail() {
       )}
       {p.role === 'investor' && brought.length > 0 && (
         <div className="card">
-          <div className="card-h"><h3>People under {p.full_name || p.email}</h3>
+          <div className="card-h"><h3>Sub-investors of {p.full_name || p.email} (IB)</h3>
             <div className="r">{brought.length} investor{brought.length === 1 ? '' : 's'} · bonus earned {money(bonus.earned)} · paid {money(bonus.paid)}</div></div>
           {brought.length ? (
             <div className="tbl"><table><thead><tr><th>Investor</th><th>Branch</th><th>Verification</th><th>Added</th></tr></thead>

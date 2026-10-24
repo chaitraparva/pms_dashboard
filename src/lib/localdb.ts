@@ -13,7 +13,7 @@ export const phoneKey = (s: unknown) => String(s ?? '').replace(/\D/g, '').slice
 /* ---------- state ---------- */
 let S: Store;
 export const TABLES = ['settings', 'profiles', 'branches', 'plans', 'plan_versions', 'investments', 'contract_amendments', 'accruals', 'payouts', 'ledger_entries',
-  'announcements', 'notifications', 'documents', 'audit_logs', 'brochures', 'brochure_views', 'properties', 'admin_bonuses', 'withdrawals', 'queries'];
+  'announcements', 'notifications', 'documents', 'audit_logs', 'brochures', 'brochure_views', 'properties', 'admin_bonuses', 'withdrawals', 'queries', 'investment_requests', 'password_requests'];
 const listeners = new Set<(table: string) => void>();
 export const onChange = (f: (table: string) => void) => { listeners.add(f); return () => { listeners.delete(f); }; };
 /** Marks tables as changed (the server saves every table whose contents changed after the request). */
@@ -93,6 +93,31 @@ export const isAdmin = () => { const p = me(); return !!p && p.role === 'super_a
 /** Who can be "Introduced by" and receive the bonus: a Super Admin, or an investor the Super Admin allowed to add investors. */
 const canBeIntroducer = (id: string) => T('profiles').some(x => x.id === id && (x.role === 'super_admin' || x.role === 'investor'));
 const requireAdmin = () => { if (!isAdmin()) fail('Only an active Super Admin can do this.'); return currentUid!; };
+/** A sub-investor of the signed-in user: an investor placed directly under them (they are that person's IB). */
+const isMySub = (id: unknown) => !!id && !!currentUid && T('profiles').some(p => p.id === String(id) && p.role === 'investor' && p.introduced_by === currentUid);
+/** An IB (introducing broker): registered as an IB, allowed to add investors, or has sub-investors under them. */
+const isIbProfile = (p: Row | null | undefined) => !!p && p.role === 'investor' && (!!p.is_ib || !!p.can_introduce || T('profiles').some(x => x.role === 'investor' && x.introduced_by === p.id));
+/** Files an investor may attach to their own requests: images, PDF and office documents, 3 MB each, at most 5. */
+export const ATTACH_MIME = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
+  'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
+function cleanAttachments(list: unknown): Row[] {
+  if (list == null) return [];
+  if (!Array.isArray(list)) fail('Attachments are not valid. Upload them again.');
+  const arr = list as Row[];
+  if (arr.length > 5) fail('Attach at most 5 files.');
+  return arr.map(f => {
+    const path = str(f?.path);
+    if (!path || path.includes('..')) fail('An attachment is not valid. Upload it again.');
+    if (!isAdmin() && !path.startsWith(currentUid + '/')) fail('An attachment is not valid. Upload it again.');
+    if (Number(f.size || 0) > 3 * 1024 * 1024) fail('Each attachment must be 3 MB or smaller.');
+    if (!blank(f.mime) && !ATTACH_MIME.includes(String(f.mime))) fail('Attach an image, PDF, Word or Excel file.');
+    return { path, name: str(f.name, 'Attachment').slice(0, 160), mime: str(f.mime), size: Number(f.size || 0) };
+  });
+}
+/** True when the signed-in user can read a request or withdrawal that has this file attached. */
+export function attachmentVisible(path: string): boolean {
+  return ['withdrawals', 'investment_requests'].some(t => T(t).some(r => (r.attachments || []).some((f: Row) => f.path === path) && canRead(t, r)));
+}
 const actorName = (id: string | null) => { const p = T('profiles').find(x => x.id === id); return p ? (p.full_name || p.email) : 'System'; };
 const settings = () => T('settings')[0];
 
@@ -154,7 +179,9 @@ export function canRead(table: string, r: Row): boolean {
     case 'investment_balances': case 'accruals': case 'contract_amendments': return myInv(r.investment_id);
     case 'payouts': case 'ledger_entries': return r.investor_id === u;
     case 'notifications': return r.user_id === u;
-    case 'withdrawals': case 'queries': return r.investor_id === u;
+    case 'queries': return r.investor_id === u;
+    // an IB also sees the withdrawals and investment requests of the sub-investors under them
+    case 'withdrawals': case 'investment_requests': return r.investor_id === u || r.requested_by === u || isMySub(r.investor_id);
     case 'documents': return r.owner_id === u && r.visible_to_investor;
     case 'announcements': return r.status === 'published' && audienceOf(r).includes(u);
     case 'brochures': return brochureVisible(r.id, u);
@@ -449,10 +476,37 @@ export function rpcCall(fn: string, a: Row): unknown {
       audit('investor.can_introduce', 'profile', p.id, p.code, str(a.p_reason, p.can_introduce ? 'Allowed to add investors' : 'Right to add investors removed'), { can_introduce: before }, { can_introduce: p.can_introduce });
       touched('profiles', 'notifications'); return null;
     }
+    case 'admin_set_ib': {
+      requireAdmin(); const p = T('profiles').find(x => x.id === a.p_id && x.role === 'investor') || fail('Investor not found.');
+      const before = !!p.is_ib; p.is_ib = !!a.p_value; p.updated_at = nowIso();
+      if (!p.is_ib && T('profiles').some(x => x.introduced_by === p.id)) fail(`${p.full_name} still has sub-investors. Move them first.`);
+      audit('investor.ib', 'profile', p.id, p.code, str(a.p_reason, p.is_ib ? 'Marked as IB' : 'IB status removed'), { is_ib: before }, { is_ib: p.is_ib }); touched('profiles'); return null;
+    }
     case 'my_network': return myNetwork();
     case 'admin_lookup_phone': requireAdmin(); return lookupPhone(a.p_phone);
     case 'admin_record_direct': { const r = recordDirect(a); touched('profiles', 'investments', 'ledger_entries', 'accruals', 'payouts', 'notifications', 'admin_bonuses'); return r; }
-    case 'withdrawal_preview': { const u = isAdmin() && a.p_investor ? String(a.p_investor) : currentUid; if (!u) return []; return planWithdrawal(u, Number(a.p_amount) || 0).map(p => (isAdmin() ? p : { ...p, plan_rate: undefined })); }
+    case 'withdrawal_preview': {
+      // the Super Admin for anyone, an IB for a sub-investor under them, otherwise the signed-in investor
+      const u = a.p_investor && (isAdmin() || isMySub(a.p_investor)) ? String(a.p_investor) : currentUid; if (!u) return [];
+      return planWithdrawal(u, Number(a.p_amount) || 0).map(p => (isAdmin() ? p : { ...p, plan_rate: undefined }));
+    }
+    case 'my_account': return myAccount();
+    case 'my_sub_investor': return mySubInvestor(String(a.p_id || ''));
+    case 'request_investment': { const id = requestInvestment(a); touched('investment_requests', 'notifications'); return id; }
+    case 'cancel_investment_request': {
+      const r = T('investment_requests').find(x => x.id === a.p_id && x.requested_by === currentUid) || fail('Request not found.');
+      if (r.status !== 'pending') fail(`${r.code} is already ${r.status}.`);
+      Object.assign(r, { status: 'cancelled', decided_at: nowIso(), decision_note: 'Cancelled by the requester', updated_at: nowIso() });
+      audit('investment_request.cancel', 'investment_request', r.id, r.code, 'Cancelled by the requester', { status: 'pending' }, { status: 'cancelled' }); touched('investment_requests'); return null;
+    }
+    case 'admin_reject_investment_request': {
+      requireAdmin(); if (blank(a.p_reason)) fail('Enter the reason (the investor sees it).');
+      const r = T('investment_requests').find(x => x.id === a.p_id) || fail('Request not found.');
+      if (r.status !== 'pending') fail(`${r.code} is already ${r.status}.`);
+      Object.assign(r, { status: 'rejected', decided_by: currentUid, decided_at: nowIso(), decision_note: String(a.p_reason).trim(), updated_at: nowIso() });
+      [...new Set([r.requested_by, r.investor_id].filter(Boolean))].forEach(u => notify(u, 'investment_request', 'Investment request ' + r.code + ' was not approved', String(a.p_reason).trim(), '/portal/request-investment', 'investment_requests', r.id + ':rej'));
+      audit('investment_request.reject', 'investment_request', r.id, r.code, a.p_reason, { status: 'pending' }, { status: 'rejected' }); touched('investment_requests', 'notifications'); return null;
+    }
     case 'request_withdrawal': { const id = requestWithdrawal(a); touched('withdrawals', 'investments', 'ledger_entries', 'notifications'); return id; }
     case 'admin_complete_withdrawal': completeWithdrawal(a); touched('withdrawals', 'ledger_entries', 'notifications'); return null;
     case 'admin_cancel_withdrawal': cancelWithdrawal(a); touched('withdrawals', 'investments', 'ledger_entries', 'notifications'); return null;
@@ -779,17 +833,21 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   requireAdmin();
   const s = settings();
   const name = str(a.p_name).trim(), key = phoneKey(a.p_phone);
-  if (key.length !== 10) fail('Enter a 10-digit phone number.');
+  // an existing person can be passed by id (an IB investing for themselves, or an approved request)
+  const byId = blank(a.p_person) ? null : (T('profiles').find(p => p.id === String(a.p_person) && p.role === 'investor') || fail('Investor not found.'));
+  if (!byId && key.length !== 10) fail('Enter a 10-digit phone number.');
+  if (byId && byId.account_status !== 'active') fail(`${byId.full_name} has a suspended account.`);
   const rate = Number(a.p_rate), bonusIn = blank(a.p_bonus) ? 0 : Number(a.p_bonus), lock = Number(a.p_lockin_months || 0), principal = Number(a.p_principal);
   if (!(rate > 0 && rate <= 100) || !/^\d+(\.\d{1,4})?$/.test(String(a.p_rate).trim())) fail('Enter the monthly ROI, e.g. 0.25, 2.3 or 6 (at most 4 decimals).');
   if (!(bonusIn >= 0)) fail('Enter the bonus as 0 or more.');
   if (!(Number.isInteger(lock) && lock >= 0 && lock <= 120)) fail('Lock-in must be 0 (no lock-in) to 120 months.');
   if (!(principal > 0) || round2(principal) !== principal) fail('Enter the principal (at most 2 decimals).');
   const start = str(a.p_start_date); if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) fail('Enter the start date.');
-  let person = findByPhone(key);
+  let person = byId || findByPhone(key);
   const upId = blank(a.p_ib) ? null : String(a.p_ib);
   const up = upId ? T('profiles').find(p => p.id === upId && p.role === 'investor') : null;
   if (upId && !up) fail('Choose the investor this person is under.');
+  if (up && up.account_status !== 'active') fail(`${up.full_name} (IB) has a suspended account.`);
   if (person && upId && (upId === person.id || isUnder(upId, person.id))) fail(`${person.full_name} cannot be under ${up!.full_name}: ${up!.full_name} is already under ${person.full_name}.`);
   if (person && person.introduced_by && upId && person.introduced_by !== upId) {
     const cur = T('profiles').find(p => p.id === person!.introduced_by);
@@ -803,6 +861,7 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
     T('profiles').push(person);
     audit('investor.create', 'profile', id, code, 'Added with a recorded investment', null, { full_name: name, phone: a.p_phone, under: up?.code || null });
   } else if (upId && !person.introduced_by) { person.introduced_by = upId; person.updated_at = nowIso(); }
+  if (up && !up.is_ib) { up.is_ib = true; up.updated_at = nowIso(); }
   const upline = person.introduced_by ? T('profiles').find(p => p.id === person!.introduced_by) : null;
   const bonus = upline ? bonusIn : 0;
   if (bonus >= rate) fail('The bonus must be less than the monthly ROI.');
@@ -822,20 +881,180 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   return { id, code, investor: person.code, investor_id: person.id, is_new: isNew };
 }
 
-/** Record investment from the Super Admin form: a new person also gets their login (phone number + password). */
-export async function adminRecordInvestment(a: Row): Promise<{ id: string; code: string; investor: string }> {
-  requireAdmin();
-  const exists = findByPhone(a.p_phone);
+/** Gives an investor their login: phone number + a password set by the Super Admin (only a salted hash is stored). */
+function addLogin(id: string, phone: unknown, pwHash: string) {
+  if (hasLogin(id)) return;
+  const key = phoneKey(phone);
+  if (key.length !== 10) fail('This person has no 10-digit phone number to sign in with. Edit their details first.');
+  const email = key + '@investor.login';
+  if (S.users.some(u => u.email === email && u.id !== id)) fail('Another login already uses this phone number.');
+  S.users.push({ id, email, pw: pwHash });
+  const p = T('profiles').find(x => x.id === id); if (p) p.has_login = true;
+}
+const PW_MIN = 8;
+/** recordDirect, plus a login for a person who has none yet (the Super Admin sets the first password). */
+async function recordWithLogin(a: Row): Promise<{ id: string; code: string; investor: string; investor_id: string; is_new: boolean }> {
+  const exists = blank(a.p_person) ? findByPhone(a.p_phone) : T('profiles').find(p => p.id === String(a.p_person)) || null;
   let pw: string | null = null;
   if (!exists || !hasLogin(exists.id)) {
-    if (String(a.p_password || '').length < 8) fail('Set a login password (at least 8 characters) for this investor.');
+    if (String(a.p_password || '').length < PW_MIN) fail(`Set a login password (at least ${PW_MIN} characters) for ${exists?.full_name || str(a.p_name, 'this investor')}.`);
     pw = await hash(String(a.p_password));
   }
   const r = recordDirect(a);
-  if (pw && !hasLogin(r.investor_id)) { S.users.push({ id: r.investor_id, email: phoneKey(a.p_phone) + '@investor.login', pw }); }
-  const pr = T('profiles').find(x => x.id === r.investor_id); if (pr) pr.has_login = true;
-  persist('profiles', 'investments', 'ledger_entries', 'accruals', 'payouts', 'notifications', 'admin_bonuses', 'audit_logs');
+  const pr = T('profiles').find(x => x.id === r.investor_id);
+  if (pw && !hasLogin(r.investor_id)) addLogin(r.investor_id, pr?.phone || a.p_phone, pw);
+  if (pr) pr.has_login = hasLogin(pr.id);
   return r;
+}
+/** Registers a new IB (an investor who can have sub-investors) with their login. */
+async function registerIB(n: Row): Promise<Row> {
+  const name = str(n?.name).trim(), key = phoneKey(n?.phone);
+  if (!name) fail('Enter the IB’s name.');
+  if (key.length !== 10) fail('Enter the IB’s 10-digit phone number. They sign in with it.');
+  const clash = findByPhone(key); if (clash) fail(`This phone number already belongs to ${clash.full_name} (${clash.code}). Choose them from the IB list.`);
+  if (String(n.password || '').length < PW_MIN) fail(`Set a login password for the IB (at least ${PW_MIN} characters).`);
+  const id = uuid(), code = 'INVR-' + nextSeq('investor', 1001);
+  const p = profileRow(id, blank(n.email) ? '' : String(n.email).trim().toLowerCase(), name, code, 'investor', 'verified', { phone: n.phone, city: n.city, branch_id: blank(n.branch_id) ? null : n.branch_id });
+  p.is_ib = true;
+  T('profiles').push(p);
+  addLogin(id, n.phone, await hash(String(n.password)));
+  audit('investor.create', 'profile', id, code, 'Registered as IB', null, { full_name: name, phone: n.phone, is_ib: true });
+  return p;
+}
+const PROOF_MIME = ATTACH_MIME;
+/** Record investment from the Super Admin form.
+ *  Individual: the investor is chosen (or found / added by phone number), with a login if they have none.
+ *  IB: the IB is chosen (or registered); with an optional sub-investor the investment is the sub-investor's, under the IB
+ *  (the IB earns the bonus); without one it is the IB's own investment. A payment proof is always required. */
+export async function adminRecordInvestment(a: Row): Promise<{ id: string; code: string; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
+  requireAdmin();
+  const proof = a.p_proof as Row | null;
+  if (!proof || blank(proof.path)) fail('Attach the payment proof (an image or document). It is required for every recorded investment.');
+  if (!blank(proof!.mime) && !PROOF_MIME.includes(String(proof!.mime))) fail('The proof must be an image, PDF, Word or Excel file.');
+  if (Number(proof!.size || 0) > 3 * 1024 * 1024) fail('The proof must be 3 MB or smaller.');
+  let args: Row; let ib: Row | null = null;
+  if (a.p_type === 'ib') {
+    if (a.p_new_ib) ib = await registerIB(a.p_new_ib);
+    else {
+      ib = T('profiles').find(p => p.id === a.p_ib && p.role === 'investor') || fail('Choose the IB.');
+      if (ib!.account_status !== 'active') fail(`${ib!.full_name} has a suspended account.`);
+      if (!hasLogin(ib!.id)) {
+        if (String(a.p_ib_password || '').length < PW_MIN) fail(`Set a login password for ${ib!.full_name} (at least ${PW_MIN} characters).`);
+        addLogin(ib!.id, ib!.phone, await hash(String(a.p_ib_password)));
+      }
+      if (!ib!.is_ib) { audit('investor.ib', 'profile', ib!.id, ib!.code, 'Marked as IB', { is_ib: false }, { is_ib: true }); }
+      ib!.is_ib = true; ib!.updated_at = nowIso();
+    }
+    const sub = a.p_sub && (!blank(a.p_sub.phone) || !blank(a.p_sub.name) || !blank(a.p_sub.id)) ? a.p_sub as Row : null;
+    if (sub) {
+      if (blank(sub.id) && phoneKey(sub.phone) === phoneKey(ib!.phone)) fail('The sub-investor’s phone number must be different from the IB’s.');
+      if (!blank(sub.id) && sub.id === ib!.id) fail('Choose a different person as the sub-investor.');
+      args = { ...a, p_person: blank(sub.id) ? null : sub.id, p_name: sub.name, p_phone: sub.phone, p_city: sub.city, p_ib: ib!.id, p_password: sub.password };
+    } else args = { ...a, p_person: ib!.id, p_ib: null, p_bonus: '0', p_password: '' };
+  } else args = { ...a, p_ib: null, p_bonus: '0' };
+  const r = await recordWithLogin(args);
+  T('documents').push({ id: uuid(), owner_id: r.investor_id, investment_id: r.id, kind: 'proof', title: str(proof!.name, 'Payment proof') + ' · ' + r.code, storage_path: String(proof!.path),
+    mime: str(proof!.mime), size_bytes: Number(proof!.size || 0), visible_to_investor: true, uploaded_by: currentUid, created_at: nowIso() });
+  const inv = T('investments').find(i => i.id === r.id); if (inv) inv.proof_path = String(proof!.path);
+  persist('profiles', 'investments', 'ledger_entries', 'accruals', 'payouts', 'notifications', 'admin_bonuses', 'audit_logs', 'documents');
+  return { ...r, ib: ib ? ib.full_name : null };
+}
+
+/* ---------- investment requests: an investor (for themselves) or an IB (for a sub-investor) asks; the Super Admin approves ---------- */
+function requestInvestment(a: Row): string {
+  const mePr = me() || fail('Not signed in.');
+  if (mePr.role !== 'investor') fail('Only investors can request an investment.');
+  if (mePr.account_status !== 'active') fail('Your account is suspended.');
+  const forSub = a.p_for === 'sub';
+  let investorId: string | null = mePr.id, newSub: Row | null = null;
+  if (forSub) {
+    if (!isIbProfile(mePr)) fail('Only an IB can request an investment for a sub-investor.');
+    if (!blank(a.p_sub_id)) { if (!isMySub(a.p_sub_id)) fail('Choose one of your sub-investors.'); investorId = String(a.p_sub_id); }
+    else {
+      const name = str(a.p_new_sub?.name).trim(), key = phoneKey(a.p_new_sub?.phone);
+      if (!name) fail('Enter the sub-investor’s name.');
+      if (key.length !== 10) fail('Enter the sub-investor’s 10-digit phone number.');
+      if (key === phoneKey(mePr.phone)) fail('That is your own phone number. Choose “For myself” instead.');
+      const ex = findByPhone(key);
+      if (ex && ex.introduced_by !== mePr.id) fail('This phone number is already registered with the company. Ask the company to place them under you.');
+      if (ex) investorId = ex.id; else { investorId = null; newSub = { name, phone: String(a.p_new_sub.phone).trim(), city: str(a.p_new_sub?.city).trim() }; }
+    }
+  }
+  const amount = Number(a.p_amount);
+  if (!(amount > 0) || round2(amount) !== amount) fail('Enter the amount to invest (at most 2 decimals).');
+  const lock = Number(a.p_lockin_months ?? 0);
+  if (!(Number.isInteger(lock) && lock >= 0 && lock <= 120)) fail('Lock-in must be 0 (no lock-in) to 120 months.');
+  const start = str(a.p_start_date, today()); if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) fail('Enter a valid start date.');
+  const attachments = cleanAttachments(a.p_attachments);
+  const id = uuid(), code = 'REQ-' + pad(nextSeq('inv_request', 1), 5);
+  const subName = investorId && investorId !== mePr.id ? T('profiles').find(p => p.id === investorId)?.full_name : newSub?.name;
+  T('investment_requests').push({ id, code, kind: forSub ? 'sub' : 'self', requested_by: mePr.id, investor_id: investorId, new_sub: newSub, amount, lockin_months: lock, start_date: start,
+    reference: str(a.p_reference).trim(), note: str(a.p_note).trim(), attachments, status: 'pending', decided_by: null, decided_at: null, decision_note: null, investment_id: null, investment_code: null,
+    created_at: nowIso(), updated_at: nowIso() });
+  const who = forSub ? `${subName} (sub-investor of ${mePr.full_name})` : mePr.full_name;
+  T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
+    notify(ad.id, 'investment_request', 'Investment request ' + code + ': ' + fmtMoney(amount), who + (attachments.length ? ' · ' + attachments.length + ' attachment' + (attachments.length === 1 ? '' : 's') : ''), '/admin/requests', 'investment_requests', id));
+  notify(mePr.id, 'investment_request', 'Investment request ' + code + ' sent', fmtMoney(amount) + (forSub ? ' for ' + subName : '') + ' · waiting for approval', '/portal/request-investment', 'investment_requests', id + ':sent');
+  audit('investment_request.create', 'investment_request', id, code, forSub ? 'Requested by IB for a sub-investor' : 'Requested by the investor', null, { amount, lockin_months: lock, start_date: start, for: forSub ? 'sub' : 'self' });
+  return id;
+}
+/** Approves a request: records the investment exactly like Record investment (a new sub-investor is added under the IB, with the login password set here). */
+export async function adminApproveInvestmentRequest(a: Row): Promise<{ id: string; code: string; investor: string }> {
+  requireAdmin();
+  const r = T('investment_requests').find(x => x.id === a.p_id) || fail('Request not found.');
+  if (r.status !== 'pending') fail(`${r.code} is already ${r.status}.`);
+  const args: Row = { p_rate: a.p_rate, p_bonus: blank(a.p_bonus) ? '0' : a.p_bonus, p_lockin_months: a.p_lockin_months ?? r.lockin_months, p_principal: blank(a.p_principal) ? r.amount : Number(a.p_principal),
+    p_start_date: str(a.p_start_date, r.start_date), p_reference: str(a.p_reference, r.reference), p_notes: 'From request ' + r.code + (r.note ? ' · ' + r.note : ''), p_password: a.p_password };
+  if (r.investor_id) { args.p_person = r.investor_id; args.p_ib = r.kind === 'sub' ? r.requested_by : null; }
+  else { args.p_name = r.new_sub?.name; args.p_phone = r.new_sub?.phone; args.p_city = r.new_sub?.city; args.p_ib = r.requested_by; }
+  const res = await recordWithLogin(args);
+  (r.attachments || []).forEach((f: Row) => T('documents').push({ id: uuid(), owner_id: res.investor_id, investment_id: res.id, kind: 'proof', title: f.name + ' · ' + res.code, storage_path: f.path,
+    mime: f.mime, size_bytes: Number(f.size || 0), visible_to_investor: true, uploaded_by: r.requested_by, created_at: nowIso() }));
+  Object.assign(r, { status: 'approved', decided_by: currentUid, decided_at: nowIso(), decision_note: str(a.p_note).trim(), investment_id: res.id, investment_code: res.code, investor_id: res.investor_id, updated_at: nowIso() });
+  notify(res.investor_id, 'investment_request', 'Investment ' + res.code + ' approved', fmtMoney(Number(args.p_principal)) + ' · request ' + r.code, '/portal/investments/' + res.code, 'investment_requests', r.id + ':ok');
+  if (r.requested_by !== res.investor_id) notify(r.requested_by, 'investment_request', 'Request ' + r.code + ' approved', fmtMoney(Number(args.p_principal)) + ' for ' + (T('profiles').find(p => p.id === res.investor_id)?.full_name || 'your sub-investor') + ' · ' + res.code, '/portal/network/' + res.investor_id, 'investment_requests', r.id + ':ok-ib');
+  audit('investment_request.approve', 'investment_request', r.id, r.code, str(a.p_note, 'Approved'), { status: 'pending' }, { status: 'approved', investment: res.code });
+  persist('investment_requests', 'profiles', 'investments', 'ledger_entries', 'accruals', 'payouts', 'notifications', 'admin_bonuses', 'audit_logs', 'documents');
+  return res;
+}
+
+/* ---------- what the portal needs to know about the signed-in investor ---------- */
+const livePrincipalOf = (id: string) => round2(T('investments').filter(i => i.investor_id === id && WD_LIVE(i)).reduce((s, i) => s + Number(i.principal), 0));
+function myAccount(): Row | null {
+  const p = me(); if (!p || p.role !== 'investor') return null;
+  const subs = T('profiles').filter(x => x.role === 'investor' && x.introduced_by === p.id).sort((x, y) => String(x.full_name).localeCompare(String(y.full_name)));
+  const up = p.introduced_by ? T('profiles').find(x => x.id === p.introduced_by) : null;
+  return {
+    is_ib: isIbProfile(p), ib: up && up.role === 'investor' ? { name: up.full_name, code: up.code } : null, available: livePrincipalOf(p.id),
+    bank: { name: p.bank_name || '', account: p.bank_account_masked || '', ifsc: p.bank_ifsc || '' },
+    subs: subs.map(s => ({ id: s.id, code: s.code, full_name: s.full_name, phone: s.phone, account_status: s.account_status, has_login: hasLogin(s.id), available: livePrincipalOf(s.id), bank_name: s.bank_name || '', bank_account: s.bank_account_masked || '' }))
+  };
+}
+/** One sub-investor, as their IB sees them: details, investments, returns and bonus. Never bank or ID details beyond the masked account. */
+function mySubInvestor(id: string): Row {
+  const u = currentUid;
+  const p = T('profiles').find(x => x.id === id && x.role === 'investor' && !!u && x.introduced_by === u) || fail('Sub-investor not found.');
+  const invs = T('investments').filter(i => i.investor_id === p.id && i.status !== 'cancelled').sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)));
+  const ids = new Set(invs.map(i => i.id));
+  const acc = T('accruals').filter(x => ids.has(x.investment_id));
+  const pays = T('payouts').filter(x => ids.has(x.investment_id));
+  const bon = T('admin_bonuses').filter(b => b.admin_id === u && ids.has(b.investment_id) && b.status !== 'cancelled');
+  const sum = (rows: Row[]) => round2(rows.reduce((s, r) => s + Number(r.amount), 0));
+  return {
+    profile: { id: p.id, code: p.code, full_name: p.full_name, phone: p.phone, email: p.email, city: p.city, kyc_status: p.kyc_status, account_status: p.account_status, created_at: p.created_at, has_login: hasLogin(p.id), bank_name: p.bank_name || '', bank_account: p.bank_account_masked || '' },
+    investments: invs.map(i => ({ id: i.id, code: i.code, plan_name: investorPlanName(i.plan_name, i.monthly_rate, i.admin_bonus_rate), principal: Number(i.principal), original_principal: Number(i.original_principal ?? i.principal),
+      investor_rate: investorRate(i), bonus_rate: Number(i.admin_bonus_rate || 0), monthly_return: Number(i.monthly_return), bonus_monthly: Number(i.admin_bonus || 0), status: i.status, start_date: i.start_date,
+      maturity_date: i.maturity_date, lockin_months: i.lockin_months, created_at: i.created_at,
+      accrued: sum(acc.filter(x => x.investment_id === i.id)), paid: sum(pays.filter(x => x.investment_id === i.id && x.status === 'paid')),
+      bonus_earned: sum(bon.filter(b => b.investment_id === i.id)), bonus_paid: sum(bon.filter(b => b.investment_id === i.id && b.status === 'paid')) })),
+    accruals: acc.map(x => ({ date: x.accrual_date, amount: Number(x.amount) })),
+    paid: pays.filter(x => x.status === 'paid').map(x => ({ date: x.paid_on, amount: Number(x.amount) })),
+    bonuses: bon.map(b => ({ date: b.accrual_date, amount: Number(b.amount), status: b.status })),
+    withdrawals: T('withdrawals').filter(w => w.investor_id === p.id).sort((x, y) => String(y.requested_at).localeCompare(String(x.requested_at)))
+      .map(w => ({ id: w.id, code: w.code, amount: Number(w.amount), method: w.method, mt5_account: w.mt5_account || null, status: w.status, requested_on: w.requested_on, completed_on: w.completed_on, cancelled_reason: w.cancelled_reason })),
+    requests: T('investment_requests').filter(r => r.investor_id === p.id).sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)))
+      .map(r => ({ id: r.id, code: r.code, amount: Number(r.amount), status: r.status, created_at: r.created_at, investment_code: r.investment_code, decision_note: r.decision_note }))
+  };
 }
 
 /** Gives a person a login (phone number + password), or creates a new investor with a login and no investment yet. */
@@ -880,32 +1099,55 @@ function planWithdrawal(investorId: string, amount: number): Row[] {
   }
   return out;
 }
+/** How a withdrawal is paid: to the bank account, to an MT5 trading account, transferred to the investor's IB, or (Super Admin only) in cash. */
+export const WD_METHODS = ['bank', 'mt5', 'ib', 'cash'];
+function wdHow(w: Row): string {
+  if (w.method === 'cash') return 'cash';
+  if (w.method === 'mt5') return 'transfer to MT5 account ' + (w.mt5_account || '');
+  if (w.method === 'ib') return 'transfer to IB ' + (T('profiles').find(p => p.id === w.ib_id)?.full_name || '');
+  return 'bank transfer';
+}
 function requestWithdrawal(a: Row): string {
   const mePr = me() || fail('Not signed in.');
-  const investorId = isAdmin() && a.p_investor ? String(a.p_investor) : mePr.id;
+  let investorId = mePr.id;
+  if (!blank(a.p_investor) && String(a.p_investor) !== mePr.id) {
+    // the Super Admin records for anyone; an IB requests for the sub-investors directly under them
+    if (isAdmin() || isMySub(a.p_investor)) investorId = String(a.p_investor);
+    else fail('You can only request withdrawals for yourself or your sub-investors.');
+  }
   const who = T('profiles').find(p => p.id === investorId && p.role === 'investor') || fail('Investor not found.');
-  if (!isAdmin() && who.id !== currentUid) fail('You can only withdraw your own money.');
+  if (!isAdmin() && who.account_status !== 'active') fail(`${who.full_name}’s account is suspended.`);
   const amount = Number(a.p_amount);
   if (!(amount > 0) || round2(amount) !== amount) fail('Enter the amount to withdraw (at most 2 decimals).');
   const available = round2(T('investments').filter(i => i.investor_id === who.id && WD_LIVE(i)).reduce((x, i) => x + Number(i.principal), 0));
-  if (amount > available) fail(`You can withdraw up to ${fmtMoney(available)}.`);
-  const method = a.p_method === 'cash' ? 'cash' : 'bank';
+  if (amount > available) fail(`${who.id === mePr.id ? 'You' : who.full_name} can withdraw up to ${fmtMoney(available)}.`);
+  const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : 'bank';
+  if (method === 'cash' && !isAdmin()) fail('Choose your bank account, your MT5 account or a transfer to your IB.');
+  const mt5 = str(a.p_mt5).trim();
+  if (method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5)) fail('Enter the MT5 account number (letters and digits only).');
+  const ib = who.introduced_by ? T('profiles').find(p => p.id === who.introduced_by && p.role === 'investor') || null : null;
+  if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
+  const attachments = cleanAttachments(a.p_attachments);
   const d = today(), id = uuid(), code = 'WDR-' + pad(nextSeq('withdrawal', 1), 5);
   const parts = planWithdrawal(who.id, amount);
+  const row: Row = { id, code, investor_id: who.id, amount, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null, note: str(a.p_note), status: 'pending', requested_on: d, requested_at: nowIso(), requested_by: currentUid,
+    allocations: parts, attachments, completed_on: null, completed_by: null, payment_ref: null, admin_note: null, cancelled_reason: null, updated_at: nowIso() };
+  const how = wdHow(row);
   parts.forEach(pt => {
     const i = T('investments').find(x => x.id === pt.investment_id)!;
     if (i.original_principal === undefined) i.original_principal = Number(i.principal);
     // ROI on the lower principal from the request date
     i.principal_changes = [...(i.principal_changes || []), { date: d, principal: pt.after, withdrawal_id: id }];
     i.principal = pt.after; applySplit(i); i.updated_at = nowIso(); closeIfEmpty(i);
-    ledger({ investment_id: i.id, investor_id: who.id, type: 'principal_redemption', amount: pt.amount, status: 'pending', occurred_on: d, reference: code, note: 'Withdrawal requested · ' + (method === 'cash' ? 'cash' : 'bank transfer'), source_table: 'withdrawals', source_id: id + ':' + i.id });
+    ledger({ investment_id: i.id, investor_id: who.id, type: 'principal_redemption', amount: pt.amount, status: 'pending', occurred_on: d, reference: code, note: 'Withdrawal requested · ' + how, source_table: 'withdrawals', source_id: id + ':' + i.id });
   });
-  T('withdrawals').push({ id, code, investor_id: who.id, amount, method, note: str(a.p_note), status: 'pending', requested_on: d, requested_at: nowIso(), requested_by: currentUid,
-    allocations: parts, completed_on: null, completed_by: null, payment_ref: null, admin_note: null, cancelled_reason: null, updated_at: nowIso() });
+  T('withdrawals').push(row);
+  const byIb = !isAdmin() && who.id !== mePr.id;
   T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
-    notify(ad.id, 'withdrawal', 'Withdrawal request ' + code + ': ' + fmtMoney(amount), who.full_name + ' · ' + (method === 'cash' ? 'cash' : 'bank transfer') + ' · from ' + parts.map(p => p.code + ' (' + p.plan_rate + '%)').join(', '), '/admin/withdrawals', 'withdrawals', id));
-  notify(who.id, 'withdrawal', 'Withdrawal ' + code + ' is pending', fmtMoney(amount) + ' · returns are now calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
-  audit('withdrawal.request', 'withdrawal', id, code, str(a.p_note, 'Withdrawal requested'), null, { amount, method, parts: parts.map(p => ({ code: p.code, amount: p.amount })) });
+    notify(ad.id, 'withdrawal', (method === 'ib' ? 'Transfer to IB ' : 'Withdrawal request ') + code + ': ' + fmtMoney(amount), who.full_name + (byIb ? ' (requested by IB ' + mePr.full_name + ')' : '') + ' · ' + how + ' · from ' + parts.map(p => p.code + ' (' + p.plan_rate + '%)').join(', ') + (method === 'ib' ? ' · needs your approval' : ''), '/admin/withdrawals', 'withdrawals', id));
+  notify(who.id, 'withdrawal', 'Withdrawal ' + code + ' is pending', fmtMoney(amount) + ' · ' + how + ' · returns are now calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
+  if (byIb) notify(mePr.id, 'withdrawal', 'Withdrawal ' + code + ' for ' + who.full_name + ' is pending', fmtMoney(amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', id + ':req-ib');
+  audit('withdrawal.request', 'withdrawal', id, code, str(a.p_note, 'Withdrawal requested'), null, { amount, method, mt5_account: row.mt5_account, ib: ib?.code || null, requested_by: mePr.code, parts: parts.map(p => ({ code: p.code, amount: p.amount })) });
   return id;
 }
 function completeWithdrawal(a: Row) {
@@ -913,9 +1155,17 @@ function completeWithdrawal(a: Row) {
   const w = T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.');
   if (w.status !== 'pending') fail(`${w.code} is already ${w.status}.`);
   const on = str(a.p_paid_on, today());
-  Object.assign(w, { status: 'completed', completed_on: on, completed_by: adminId, payment_ref: str(a.p_ref), method: a.p_method === 'cash' ? 'cash' : a.p_method === 'bank' ? 'bank' : w.method, admin_note: str(a.p_note), updated_at: nowIso() });
-  T('ledger_entries').filter(l => l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')).forEach(l => Object.assign(l, { status: 'confirmed', occurred_on: on, reference: w.payment_ref || w.code, note: 'Withdrawal paid · ' + (w.method === 'cash' ? 'cash' : 'bank transfer'), updated_at: nowIso() }));
-  notify(w.investor_id, 'withdrawal', 'Withdrawal ' + w.code + ' completed', fmtMoney(w.amount) + ' paid ' + (w.method === 'cash' ? 'in cash' : 'by bank transfer') + ' on ' + fmtDate(on) + (w.payment_ref ? ' · ' + w.payment_ref : ''), '/portal/withdraw', 'withdrawals', w.id + ':done');
+  const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : w.method;
+  if (method === 'mt5' && blank(a.p_mt5) && blank(w.mt5_account)) fail('Enter the MT5 account the money was sent to.');
+  let ibId = w.ib_id;
+  if (method === 'ib' && !ibId) { ibId = T('profiles').find(p => p.id === w.investor_id)?.introduced_by || null; if (!ibId) fail('This investor is not under an IB.'); }
+  Object.assign(w, { status: 'completed', completed_on: on, completed_by: adminId, payment_ref: str(a.p_ref), method, mt5_account: method === 'mt5' ? str(a.p_mt5, w.mt5_account) : w.mt5_account ?? null, ib_id: method === 'ib' ? ibId : w.ib_id ?? null, admin_note: str(a.p_note), updated_at: nowIso() });
+  const how = wdHow(w);
+  T('ledger_entries').filter(l => l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')).forEach(l => Object.assign(l, { status: 'confirmed', occurred_on: on, reference: w.payment_ref || w.code, note: 'Withdrawal paid · ' + how, updated_at: nowIso() }));
+  notify(w.investor_id, 'withdrawal', 'Withdrawal ' + w.code + ' completed', fmtMoney(w.amount) + ' · ' + how + ' on ' + fmtDate(on) + (w.payment_ref ? ' · ' + w.payment_ref : ''), '/portal/withdraw', 'withdrawals', w.id + ':done');
+  if (method === 'ib' && w.ib_id) notify(w.ib_id, 'withdrawal', 'Transfer received: ' + fmtMoney(w.amount), 'From ' + (T('profiles').find(p => p.id === w.investor_id)?.full_name || 'your sub-investor') + ' · ' + w.code + ' approved by the company', '/portal/network/' + w.investor_id, 'withdrawals', w.id + ':ib');
+  if (w.requested_by && w.requested_by !== w.investor_id && w.requested_by !== w.ib_id && T('profiles').some(p => p.id === w.requested_by && p.role === 'investor'))
+    notify(w.requested_by, 'withdrawal', 'Withdrawal ' + w.code + ' completed', fmtMoney(w.amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', w.id + ':done-ib');
   audit('withdrawal.complete', 'withdrawal', w.id, w.code, str(a.p_note, 'Paid'), { status: 'pending' }, { status: 'completed', paid_on: on, reference: w.payment_ref });
 }
 function cancelWithdrawal(a: Row) {
@@ -935,6 +1185,8 @@ function cancelWithdrawal(a: Row) {
   T('ledger_entries').filter(l => l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')).forEach(l => Object.assign(l, { status: 'reversed', updated_at: nowIso() }));
   Object.assign(w, { status: 'cancelled', cancelled_reason: String(a.p_reason).trim(), updated_at: nowIso() });
   notify(w.investor_id, 'withdrawal', 'Withdrawal ' + w.code + ' cancelled', String(a.p_reason).trim(), '/portal/withdraw', 'withdrawals', w.id + ':cancel');
+  if (w.requested_by && w.requested_by !== w.investor_id && T('profiles').some(p => p.id === w.requested_by && p.role === 'investor'))
+    notify(w.requested_by, 'withdrawal', 'Withdrawal ' + w.code + ' cancelled', String(a.p_reason).trim(), '/portal/withdraw', 'withdrawals', w.id + ':cancel-ib');
   audit('withdrawal.cancel', 'withdrawal', w.id, w.code, a.p_reason, { status: 'pending' }, { status: 'cancelled' });
 }
 
@@ -980,10 +1232,25 @@ export async function createAccount(u: Row): Promise<{ id: string; code: string 
   persist('profiles', 'audit_logs');
   return { id, code };
 }
+/** Super Admins need at least 10 characters; investors, IBs and sub-investors at least 8 (as set at registration). */
+const minPw = (userId: string) => (T('profiles').find(p => p.id === userId)?.role === 'super_admin' ? 10 : PW_MIN);
 export async function setPassword(userId: string, pw: string) {
-  if (pw.length < 10) fail('Use at least 10 characters.');
+  const n = minPw(userId);
+  if (pw.length < n) fail(`Use at least ${n} characters.`);
+  if (pw.length > 200) fail('Use at most 200 characters.');
   const u = S.users.find(x => x.id === userId) || fail('User not found.');
   u.pw = await hash(pw); persist();
+}
+/** Change password: the current password is checked first (only a salted hash is ever stored). */
+export async function changePassword(userId: string, current: string, next: string) {
+  const u = S.users.find(x => x.id === userId) || fail('User not found.');
+  if (!current || !(await verify(current, u.pw))) fail('The current password is incorrect.');
+  if (current === next) fail('Choose a new password that is different from the current one.');
+  await setPassword(userId, next);
+  const p = T('profiles').find(x => x.id === userId);
+  if (p) { p.password_changed_at = nowIso(); p.updated_at = nowIso(); }
+  audit('user.password_change', 'profile', userId, p?.code || p?.email || '', 'Password changed by the user', null, null);
+  persist('profiles', 'audit_logs');
 }
 export async function adminResetPassword(userId: string, pw: string) {
   requireAdmin(); await setPassword(userId, pw);
@@ -997,6 +1264,51 @@ export async function checkLogin(email: string, pw: string): Promise<string | nu
   return u && await verify(pw, u.pw) ? u.id : null;
 }
 export const userEmail = (id: string) => S.users.find(u => u.id === id)?.email || '';
+
+/* ---------- forgot password: the Super Admin is told (in-app and by email) and sets a new temporary password ---------- */
+const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[c]);
+/** Records a forgot-password request and returns the email for the Super Admins (null when nothing should be sent).
+ *  The answer to the person is always the same, so it never reveals whether an account exists.
+ *  At most one request per account every 15 minutes, and 30 an hour in total. */
+export function forgotPassword(identifier: string, message: string, siteUrl: string): { to: string[]; subject: string; text: string; html: string } | null {
+  const raw = String(identifier || '').trim().slice(0, 120);
+  if (!raw) return null;
+  const key = raw.includes('@') ? '' : phoneKey(raw);
+  let p: Row | null = null;
+  if (key.length === 10) p = T('profiles').find(x => x.role === 'investor' && phoneKey(x.phone) === key && hasLogin(x.id)) || null;
+  else if (raw.includes('@')) { const u = S.users.find(x => x.email === raw.toLowerCase()); p = u ? T('profiles').find(x => x.id === u.id) || null : null; }
+  if (!p) return null;
+  const now = Date.now();
+  S.tables.password_requests = T('password_requests').filter(r => now - Date.parse(r.at) < 7 * 864e5);
+  const log = T('password_requests');
+  if (log.some(r => r.user_id === p!.id && now - Date.parse(r.at) < 15 * 60e3)) return null;
+  if (log.filter(r => now - Date.parse(r.at) < 3600e3).length >= 30) return null;
+  const note = String(message || '').trim().slice(0, 500);
+  log.push({ id: uuid(), user_id: p.id, at: nowIso(), note });
+  const kind = p.role === 'super_admin' ? 'Super Admin' : isIbProfile(p) ? 'IB' : p.introduced_by ? 'Sub-investor' : 'Investor';
+  const login = p.role === 'super_admin' ? userEmail(p.id) : p.phone;
+  const admins = T('profiles').filter(x => x.role === 'super_admin' && x.account_status === 'active');
+  const path = '/admin/investors/' + encodeURIComponent(p.code || '');
+  admins.forEach(ad => notify(ad.id, 'password_reset', (p!.full_name || login) + ' forgot their password', kind + ' · ' + login + (note ? ' · “' + note + '”' : '') + ' · open and use Reset password', path, 'password_requests', uuid()));
+  audit('user.password_forgot', 'profile', p.id, p.code || '', 'Forgot password requested from the sign-in page', null, { login });
+  persist('password_requests', 'notifications', 'audit_logs');
+  const to = [...new Set([...admins.map(ad => userEmail(ad.id) || ad.email), settings()?.support_email]
+    .map(e => String(e || '').trim().toLowerCase()).filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e) && !e.endsWith('@investor.login')))];
+  const company = settings()?.company_name || 'Portfolio';
+  const link = siteUrl ? siteUrl + path : '';
+  const rows: [string, string][] = [['Name', p.full_name || '—'], ['ID', p.code || '—'], ['Account', kind], [p.role === 'super_admin' ? 'Email' : 'Phone (login)', login || '—'], ['Requested', fmtDate(today()) + ' ' + new Date().toISOString().slice(11, 16) + ' UTC']];
+  if (note) rows.push(['Message', note]);
+  return {
+    to, subject: `${company}: ${p.full_name || login} forgot their password`,
+    text: `${p.full_name || login} asked for a new password on the sign-in page.\n\n${rows.map(([k, v]) => k + ': ' + v).join('\n')}\n\nSet a new temporary password with “Reset password”${link ? ' at ' + link : ' on their page under Investors'}, then share it with them offline. They can change it after signing in.\n\nIf this was not them, you can ignore this email; their password has not changed.`,
+    html: `<div style="font-family:Arial,sans-serif;font-size:14px;color:#1b1b1b;max-width:560px">
+<p><b>${esc(p.full_name || login)}</b> asked for a new password on the ${esc(company)} sign-in page.</p>
+<table style="border-collapse:collapse;margin:12px 0">${rows.map(([k, v]) => `<tr><td style="padding:4px 14px 4px 0;color:#666">${esc(k)}</td><td style="padding:4px 0"><b>${esc(v)}</b></td></tr>`).join('')}</table>
+<p>Set a new temporary password with <b>Reset password</b> on their page, then share it with them offline. They can change it after signing in.</p>
+${link ? `<p><a href="${esc(link)}" style="display:inline-block;background:#0F2147;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Open ${esc(p.full_name || 'account')}</a></p>` : ''}
+<p style="color:#777;font-size:12px">If this was not them, ignore this email. Their password has not changed.</p></div>`
+  };
+}
 
 function profileRow(id: string, email: string, name: string, code: string, role: string, kyc: string, x: Row = {}): Row {
   return { id, role, code, full_name: name, email, phone: str(x.phone), address: str(x.address), city: str(x.city), id_number_masked: str(x.id_number_masked), bank_name: str(x.bank_name),

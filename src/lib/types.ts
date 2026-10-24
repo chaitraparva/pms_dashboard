@@ -25,6 +25,9 @@ export interface Profile {
   can_introduce?: boolean;
   /** Investors: has a login (phone number + password). */
   has_login?: boolean;
+  /** Investors: registered as an IB (introducing broker) who can have sub-investors. */
+  is_ib?: boolean;
+  password_changed_at?: string;
 }
 
 export interface Branch { id: string; code: string; name: string; city: string; status: 'active' | 'inactive'; created_at: string; updated_at: string }
@@ -52,6 +55,8 @@ export interface Investment {
   created_by: string | null; created_at: string; activated_by: string | null; activated_at: string | null;
   /** Admin view only. monthly_rate is the plan rate; investor_rate is what the investor earns (monthly_return); the rest is the admin bonus. */
   investor_rate?: number; admin_bonus_rate?: number; admin_bonus?: number;
+  /** The payment proof attached when the investment was recorded (private file). */
+  proof_path?: string | null;
 }
 
 export interface AdminBonus {
@@ -132,11 +137,26 @@ export interface Dashboard {
 
 /** A withdrawal: taken from the investor's highest monthly ROI first; returns use the lower principal from the request date. */
 export interface WithdrawalPart { investment_id: string; code: string; rate: number; plan_rate: number; amount: number; before: number; after: number }
+/** A proof file (image or document) attached to a request. Stored privately; at most 3 MB. */
+export interface Attachment { path: string; name: string; mime: string; size: number }
+/** bank: to the registered bank account · mt5: to an MT5 trading account · ib: transferred to the investor's IB (needs Super Admin approval) · cash: recorded by the Super Admin. */
+export type WithdrawalMethod = 'bank' | 'mt5' | 'ib' | 'cash';
 export interface Withdrawal {
-  id: string; code: string; investor_id: string; amount: number; method: 'cash' | 'bank'; note: string; status: 'pending' | 'completed' | 'cancelled';
+  id: string; code: string; investor_id: string; amount: number; method: WithdrawalMethod; note: string; status: 'pending' | 'completed' | 'cancelled';
+  mt5_account?: string | null; ib_id?: string | null; attachments?: Attachment[];
   requested_on: string; requested_at: string; requested_by: string | null; allocations: WithdrawalPart[];
   completed_on: string | null; completed_by: string | null; payment_ref: string | null; admin_note: string | null; cancelled_reason: string | null; updated_at: string;
 }
+/** An investment requested from the portal (for the investor or, by an IB, for a sub-investor). The Super Admin approves it. */
+export interface InvestmentRequest {
+  id: string; code: string; kind: 'self' | 'sub'; requested_by: string; investor_id: string | null; new_sub: { name: string; phone: string; city?: string } | null;
+  amount: number; lockin_months: number; start_date: string; reference: string; note: string; attachments: Attachment[];
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'; decided_by: string | null; decided_at: string | null; decision_note: string | null;
+  investment_id: string | null; investment_code: string | null; created_at: string; updated_at: string;
+}
+/** What the portal knows about the signed-in investor (see my_account on the server). */
+export interface SubLite { id: string; code: string; full_name: string; phone: string; account_status: string; has_login: boolean; available: number; bank_name: string; bank_account: string }
+export interface MyAccount { is_ib: boolean; ib: { name: string; code: string } | null; available: number; bank: { name: string; account: string; ifsc: string }; subs: SubLite[] }
 /** A question from an investor, answered by the Super Admin. */
 export interface QueryMessage { from: 'investor' | 'admin'; by: string; text: string; at: string }
 export interface Query { id: string; code: string; investor_id: string; subject: string; status: 'open' | 'answered' | 'closed'; created_at: string; updated_at: string; messages: QueryMessage[] }

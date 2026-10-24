@@ -35,7 +35,12 @@ export async function createIbLogin(u: NewIB): Promise<{ id: string; code: strin
   try { return await call('fn', { name: 'createIB', args: { ...u } }); } catch (e) { throw new Error(friendly((e as Error).message)); }
 }
 
-/** Record investment: finds the person by phone (or adds them with a login) and records the investment. */
-export async function recordInvestmentFull(a: Record<string, unknown>): Promise<{ id: string; code: string; investor: string }> {
+/** Record investment: Individual (chosen, or found / added by phone with a login) or IB (with an optional sub-investor). A proof is required. */
+export async function recordInvestmentFull(a: Record<string, unknown>): Promise<{ id: string; code: string; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
   try { return await call('fn', { name: 'adminRecordInvestment', args: { ...a } }); } catch (e) { throw new Error(friendly((e as Error).message)); }
+}
+
+/** Approves an investment request from the portal: the investment is recorded as with Record investment. */
+export async function approveInvestmentRequest(a: Record<string, unknown>): Promise<{ id: string; code: string; investor: string }> {
+  try { return await call('fn', { name: 'adminApproveInvestmentRequest', args: { ...a } }); } catch (e) { throw new Error(friendly((e as Error).message)); }
 }

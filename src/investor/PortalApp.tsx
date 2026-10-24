@@ -18,6 +18,9 @@ import { Announcements } from './Announcements';
 import { MyNetwork } from './Network';
 import { Withdraw } from './Withdraw';
 import { Queries } from './Queries';
+import { RequestInvestment } from './RequestInvestment';
+import { SubInvestor } from './SubInvestor';
+import { loadAccount } from './data';
 
 export default function PortalApp() {
   const nav = useNavigate();
@@ -27,10 +30,14 @@ export default function PortalApp() {
     const [all, ann] = await Promise.all([base(), base().in('kind', ['announcement', 'brochure'])]);
     return { notifications: all.count || 0, announcements: ann.count || 0 };
   }, [profile?.id]);
+  // IBs see their sub-investors; a sub-investor or individual investor does not
+  const acc = useQuery(() => loadAccount().catch(() => null), [profile?.id]);
+  const isIb = !!acc.data?.is_ib;
   const items: NavItem[] = [
     { group: 'Portfolio' }, { to: '/portal', label: 'Overview', icon: 'home' }, { to: '/portal/investments', label: 'My Investments', icon: 'invest' },
     { to: '/portal/returns', label: 'ROI Released', icon: 'roi' },
-    { to: '/portal/network', label: 'My People', icon: 'users' },
+    { to: '/portal/request-investment', label: 'Request Investment', icon: 'plus' },
+    ...(isIb ? [{ to: '/portal/network', label: 'My Sub-Investors', icon: 'users' }] : []),
     { to: '/portal/withdraw', label: 'Withdraw', icon: 'payout' },
     { to: '/portal/queries', label: 'Ask a query', icon: 'announce' },
     { to: '/portal/properties', label: 'Explore Properties', icon: 'building' },
@@ -40,7 +47,7 @@ export default function PortalApp() {
   return (
     <>
     <Routes>
-      <Route element={<Shell base="/portal" roleLabel="Investor portal" nav={items} searchPh="Search my transactions" onSearch={q => nav('/portal/transactions?q=' + encodeURIComponent(q))} />}>
+      <Route element={<Shell base="/portal" roleLabel={isIb ? 'IB portal' : acc.data?.ib ? 'Sub-investor portal' : 'Investor portal'} nav={items} searchPh="Search my transactions" onSearch={q => nav('/portal/transactions?q=' + encodeURIComponent(q))} />}>
         <Route index element={<Overview />} />
         <Route path="investments" element={<Investments />} />
         <Route path="investments/:code" element={<InvestmentDetail />} />
@@ -52,6 +59,8 @@ export default function PortalApp() {
         <Route path="statement" element={<Statement />} />
         <Route path="announcements" element={<Announcements />} />
         <Route path="network" element={<MyNetwork page />} />
+        <Route path="network/:id" element={<SubInvestor />} />
+        <Route path="request-investment" element={<RequestInvestment />} />
         <Route path="withdraw" element={<Withdraw />} />
         <Route path="queries" element={<Queries />} />
         <Route path="notifications" element={<Notifications />} />

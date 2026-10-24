@@ -9,7 +9,10 @@ import { Logo } from '../shell/Shell';
 export function Login() {
   const { session, profile, branding, needsMfa, ready } = useAuth();
   const nav = useNavigate();
-  const [mode, setMode] = useState<'signin' | 'reset' | 'mfa'>('signin');
+  const [mode, setMode] = useState<'signin' | 'reset' | 'mfa' | 'change'>('signin');
+  const [npw, setNpw] = useState('');
+  const [npw2, setNpw2] = useState('');
+  const [resetNote, setResetNote] = useState('');
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [code, setCode] = useState('');
@@ -37,10 +40,29 @@ export function Login() {
     setBusy(false);
     if (error) setMsg({ t: /invalid/i.test(error.message) ? (as === 'investor' ? 'Phone number or password is incorrect.' : 'Email or password is incorrect.') : friendly(error.message) });
   };
+  /** Forgot password: the Super Admin is emailed (and notified in the app) and sets a new temporary password. */
   const sendReset = async (e: FormEvent) => {
     e.preventDefault(); setMsg(null);
-    const who = branding?.support_email || 'your administrator';
-    setMsg({ t: `Passwords are reset by the administrator. Email ${who} from your registered address and they will set a new temporary password for you.`, ok: true });
+    if (as === 'investor' && email.replace(/\D/g, '').length < 10) { setMsg({ t: 'Enter your 10-digit phone number.' }); return; }
+    setBusy(true);
+    const { error } = await api.auth.resetPasswordForEmail(email.trim(), { message: resetNote.trim() });
+    setBusy(false);
+    if (error) { setMsg({ t: friendly(error.message) }); return; }
+    setMsg({ t: `Request sent. If this ${as === 'investor' ? 'phone number' : 'email'} has an account, the Super Admin has been emailed and will set a new temporary password and share it with you.${branding?.support_email ? ` Questions: ${branding.support_email}` : ''}`, ok: true });
+  };
+  /** Change password without signing in: phone number (or email) + current password + new password. */
+  const changePw = async (e: FormEvent) => {
+    e.preventDefault(); setMsg(null);
+    const min = as === 'super_admin' ? 10 : 8;
+    if (npw.length < min) { setMsg({ t: `Use at least ${min} characters for the new password.` }); return; }
+    if (npw !== npw2) { setMsg({ t: 'The two new passwords do not match.' }); return; }
+    if (npw === pw) { setMsg({ t: 'Choose a new password that is different from the current one.' }); return; }
+    setBusy(true);
+    const { error } = await api.auth.changePassword({ email: email.trim(), current: pw, password: npw });
+    setBusy(false);
+    if (error) { setMsg({ t: friendly(error.message) }); return; }
+    setPw(''); setNpw(''); setNpw2(''); setMode('signin');
+    setMsg({ t: 'Password changed. Sign in with your new password.', ok: true });
   };
   const verifyMfa = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setMsg(null);
@@ -76,30 +98,60 @@ export function Login() {
       <section className="login-r">
         {mode === 'signin' && (
           <form className="login-box" onSubmit={signIn}>
-            <div><h2>Sign in</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>Super Admin signs in with email. Investors sign in with their phone number.</p></div>
+            <div><h2>Sign in</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>Super Admin signs in with email. Investors, IBs and sub-investors sign in with their phone number.</p></div>
             <div className="role-pick" role="radiogroup" aria-label="I am a">
               {(['super_admin', 'investor'] as const).map(r => (
                 <button key={r} type="button" role="radio" aria-checked={as === r} className={'role ' + (as === r ? 'on' : '')} onClick={() => { setAs(r); setEmail(''); setPw(''); setMsg(null); }}>
-                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor'}</b><span>{r === 'super_admin' ? 'Records investors, investments, withdrawals and payouts' : 'Your investments, returns, withdrawals and people under you'}</span>
+                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor / IB'}</b><span>{r === 'super_admin' ? 'Records investors, investments, withdrawals and payouts' : 'Investors, IBs and sub-investors: investments, returns, requests and withdrawals'}</span>
                 </button>
               ))}
             </div>
             <div className="field"><label htmlFor="em">{as === 'investor' ? 'Phone number' : 'Email'}</label><input className="input" id="em" type={as === 'investor' ? 'tel' : 'email'} inputMode={as === 'investor' ? 'tel' : undefined} required autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} placeholder={as === 'investor' ? 'e.g. 98450 10000' : undefined} /></div>
             <div className="field"><label htmlFor="pw">Password</label><input className="input" id="pw" type="password" required autoComplete="current-password" value={pw} onChange={e => setPw(e.target.value)} /></div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}><a style={{ cursor: 'pointer' }} onClick={() => { setMode('reset'); setMsg(null); }}>Forgot password?</a></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <a style={{ cursor: 'pointer' }} onClick={() => { setMode('change'); setMsg(null); setPw(''); }}>Change password</a>
+              <a style={{ cursor: 'pointer' }} onClick={() => { setMode('reset'); setMsg(null); setResetNote(''); }}>Forgot password?</a>
+            </div>
             {msg && <p className="hint" role="alert" style={{ color: msg.ok ? 'var(--green)' : 'var(--red)' }}>{msg.t}</p>}
             <button className="btn primary" style={{ padding: 13 }} type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
             <div className="divider">Security</div>
-            <p className="hint">All accounts are created by the Super Admin. You can change your password from Profile & Security.{branding?.support_email ? ` Need help? ${branding.support_email}` : ''}</p>
+            <p className="hint">All accounts and first passwords are set by the Super Admin. Change your password with “Change password” above or from Profile & Security.{branding?.support_email ? ` Need help? ${branding.support_email}` : ''}</p>
+          </form>
+        )}
+        {mode === 'change' && (
+          <form className="login-box" onSubmit={changePw}>
+            <div><h2>Change password</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>Use the password the Super Admin gave you (or your current one) and choose a new one.</p></div>
+            <div className="role-pick" role="radiogroup" aria-label="I am a">
+              {(['super_admin', 'investor'] as const).map(r => (
+                <button key={r} type="button" role="radio" aria-checked={as === r} className={'role ' + (as === r ? 'on' : '')} onClick={() => { setAs(r); setEmail(''); setMsg(null); }}>
+                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor / IB'}</b><span>{r === 'super_admin' ? 'Signs in with email' : 'Investors, IBs and sub-investors sign in with their phone number'}</span>
+                </button>
+              ))}
+            </div>
+            <div className="field"><label htmlFor="cem">{as === 'investor' ? 'Phone number' : 'Email'}</label><input className="input" id="cem" type={as === 'investor' ? 'tel' : 'email'} inputMode={as === 'investor' ? 'tel' : undefined} required autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} /></div>
+            <div className="field"><label htmlFor="cpw">Current password</label><input className="input" id="cpw" type="password" required autoComplete="current-password" value={pw} onChange={e => setPw(e.target.value)} /></div>
+            <div className="field"><label htmlFor="npw">New password</label><input className="input" id="npw" type="password" required autoComplete="new-password" value={npw} onChange={e => setNpw(e.target.value)} /><p className="hint">At least {as === 'super_admin' ? 10 : 8} characters.</p></div>
+            <div className="field"><label htmlFor="npw2">Repeat new password</label><input className="input" id="npw2" type="password" required autoComplete="new-password" value={npw2} onChange={e => setNpw2(e.target.value)} /></div>
+            {msg && <p className="hint" role="alert" style={{ color: msg.ok ? 'var(--green)' : 'var(--red)' }}>{msg.t}</p>}
+            <button className="btn primary" style={{ padding: 13 }} type="submit" disabled={busy}>{busy ? 'Saving…' : 'Change password'}</button>
+            <a style={{ cursor: 'pointer', textAlign: 'center' }} onClick={() => { setMode('signin'); setMsg(null); setNpw(''); setNpw2(''); }}>Back to sign in</a>
           </form>
         )}
         {mode === 'reset' && (
           <form className="login-box" onSubmit={sendReset}>
-            <div><h2>Reset password</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>Your administrator sets a new temporary password for you.</p></div>
-            <div className="field"><label htmlFor="em2">Email</label><input className="input" id="em2" type="email" required value={email} onChange={e => setEmail(e.target.value)} /></div>
+            <div><h2>Forgot password</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>The Super Admin gets an email, sets a new temporary password for you and shares it with you.</p></div>
+            <div className="role-pick" role="radiogroup" aria-label="I am a">
+              {(['super_admin', 'investor'] as const).map(r => (
+                <button key={r} type="button" role="radio" aria-checked={as === r} className={'role ' + (as === r ? 'on' : '')} onClick={() => { setAs(r); setEmail(''); setMsg(null); }}>
+                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor / IB'}</b><span>{r === 'super_admin' ? 'Signs in with email' : 'Signs in with phone number'}</span>
+                </button>
+              ))}
+            </div>
+            <div className="field"><label htmlFor="em2">{as === 'investor' ? 'Phone number' : 'Email'}</label><input className="input" id="em2" type={as === 'investor' ? 'tel' : 'email'} inputMode={as === 'investor' ? 'tel' : undefined} required autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} placeholder={as === 'investor' ? 'e.g. 98450 10000' : undefined} /></div>
+            <div className="field"><label htmlFor="rn">Message to the Super Admin (optional)</label><input className="input" id="rn" maxLength={500} value={resetNote} onChange={e => setResetNote(e.target.value)} placeholder="e.g. Please call me on this number" /></div>
             {msg && <p className="hint" role="status" style={{ color: msg.ok ? 'var(--green)' : 'var(--red)' }}>{msg.t}</p>}
-            <button className="btn primary" style={{ padding: 13 }} type="submit" disabled={busy}>How do I reset it?</button>
-            <a style={{ cursor: 'pointer', textAlign: 'center' }} onClick={() => { setMode('signin'); setMsg(null); }}>Back to sign in</a>
+            <button className="btn primary" style={{ padding: 13 }} type="submit" disabled={busy || !!msg?.ok}>{busy ? 'Sending…' : 'Email the Super Admin'}</button>
+            <a style={{ cursor: 'pointer', textAlign: 'center' }} onClick={() => { setMode('signin'); setMsg(null); setResetNote(''); }}>Back to sign in</a>
           </form>
         )}
         {mode === 'mfa' && (

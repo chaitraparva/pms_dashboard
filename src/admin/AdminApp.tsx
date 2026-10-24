@@ -24,22 +24,25 @@ import { Bonuses } from './Bonuses';
 import { IBs } from './IBs';
 import { Withdrawals } from './Withdrawals';
 import { Queries } from './Queries';
+import { Requests } from './Requests';
 import { SubTabs } from '../ui/kit';
 
 export default function AdminApp() {
   const nav = useNavigate();
   const counts = useQuery(async () => {
-    const [p, w, qy] = await Promise.all([
+    const [p, w, qy, rq] = await Promise.all([
       api.from('payouts').select('id', { count: 'exact', head: true }).in('status', ['approved', 'processing', 'failed']),
       api.from('withdrawals').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-      api.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
+      api.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open'),
+      api.from('investment_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending')
     ]);
-    return { payouts: p.count || 0, withdrawals: w.count || 0, queries: qy.count || 0 };
+    return { payouts: p.count || 0, withdrawals: w.count || 0, queries: qy.count || 0, requests: rq.count || 0 };
   }, []);
   const items: NavItem[] = [
     { group: 'Dashboard' }, { to: '/admin', label: 'Overview', icon: 'home', also: ['/admin/branches', '/admin/ranking'] },
     { group: 'Manage' }, { to: '/admin/investors', label: 'Investors', icon: 'users', count: counts.data?.payouts, also: ['/admin/investments', '/admin/payouts'] },
-    { to: '/admin/ibs', label: 'Network', icon: 'users' },
+    { to: '/admin/requests', label: 'Investment requests', icon: 'invest', count: counts.data?.requests },
+    { to: '/admin/ibs', label: 'IBs & Network', icon: 'users' },
     { to: '/admin/bonuses', label: 'Bonus', icon: 'roi' },
     { to: '/admin/withdrawals', label: 'Withdrawals', icon: 'payout', count: counts.data?.withdrawals },
     { to: '/admin/queries', label: 'Queries', icon: 'announce', count: counts.data?.queries },
@@ -64,6 +67,7 @@ export default function AdminApp() {
         <Route path="ibs" element={<IBs />} />
         <Route path="withdrawals" element={<Withdrawals />} />
         <Route path="queries" element={<Queries />} />
+        <Route path="requests" element={<Requests />} />
         <Route path="payouts" element={<>{peopleTabs}<Payouts /></>} />
         <Route path="branches" element={<Branches />} />
         <Route path="ranking" element={<Ranking />} />
