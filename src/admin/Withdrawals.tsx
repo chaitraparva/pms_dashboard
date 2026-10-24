@@ -8,7 +8,7 @@ import type { Profile, Withdrawal, WithdrawalPart } from '../lib/types';
 import { ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
 import { DataTable, Col } from '../ui/DataTable';
 import { Icon } from '../ui/Icon';
-import { WdBadge, methodText } from '../investor/Withdraw';
+import { WdBadge, methodText, EditWithdrawal, DeleteWithdrawal } from '../investor/Withdraw';
 import { AttachmentLinks } from '../ui/Attach';
 import type { WithdrawalMethod } from '../lib/types';
 
@@ -33,6 +33,8 @@ export function Withdrawals() {
   const [tab, setTab] = useState<Tab>('pending');
   const [done, setDone] = useState<Row | null>(null);
   const [cancel, setCancel] = useState<Row | null>(null);
+  const [editing, setEditing] = useState<Row | null>(null);
+  const [del, setDel] = useState<Row | null>(null);
   const [adding, setAdding] = useState(false);
   const all = q.data?.rows || [];
   const rows = all.filter(r => tab === 'all' || r.status === tab);
@@ -47,14 +49,19 @@ export function Withdrawals() {
     { h: 'Proof', v: r => (r.attachments || []).length, r: r => <AttachmentLinks items={r.attachments} /> },
     { h: 'Taken from (highest ROI first)', v: r => (r.allocations || []).map(p => p.code).join(' '), r: r => <>{(r.allocations || []).map((p: WithdrawalPart) => <div key={p.investment_id} className="sub" style={{ display: 'block' }}><span className="mono">{p.code}</span> · {rateShort(p.plan_rate ?? p.rate)} · {money(p.amount)} → {money(p.after)} left</div>)}</> },
     { h: 'Status', v: r => r.status, r: r => <><WdBadge s={r.status} />{r.status === 'completed' && <span className="sub">{date(r.completed_on)}{r.payment_ref ? ' · ' + r.payment_ref : ''}</span>}{r.status === 'cancelled' && <span className="sub">{r.cancelled_reason}</span>}</> },
-    { h: '', r: r => r.status === 'pending' ? <span style={{ display: 'flex', gap: 6 }}><button className="btn sm primary" onClick={e => { e.stopPropagation(); setDone(r); }}>{r.method === 'ib' ? 'Approve transfer' : 'Mark completed'}</button><button className="btn sm" onClick={e => { e.stopPropagation(); setCancel(r); }}>Cancel</button></span> : null }
+    { h: '', r: r => <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {r.status === 'pending' && <><button className="btn sm primary" onClick={e => { e.stopPropagation(); setDone(r); }}>{r.method === 'ib' ? 'Approve transfer' : 'Mark completed'}</button>
+        <button className="btn sm" onClick={e => { e.stopPropagation(); setEditing(r); }}>Edit</button>
+        <button className="btn sm" onClick={e => { e.stopPropagation(); setCancel(r); }}>Cancel</button></>}
+      <button className="btn sm danger" onClick={e => { e.stopPropagation(); setDel(r); }}>Delete</button>
+    </span> }
   ], []);
   return (
     <>
       <PageHead crumbs={['Withdrawals']} title="Withdrawals" sub="Taken automatically from the investor’s highest monthly ROI first, whatever the lock-in. Returns already use the lower amount from the request date. Pay the investor, then mark it completed."
         actions={<>
           <button className="btn" disabled={!rows.length} onClick={() => downloadCsv('withdrawals-' + tab, ['Request', 'Investor ID', 'Investor', 'Phone', 'Applied on', 'Amount', 'How', 'Taken from', 'Status', 'Paid on', 'Reference'],
-            rows.map(r => [r.code, r.who?.code, r.who?.full_name, r.who?.phone, r.requested_on, Number(r.amount).toFixed(2), methodText(r.method) + (r.mt5_account ? ' ' + r.mt5_account : '') + (r.ib ? ' ' + r.ib.full_name : ''), (r.allocations || []).map(p => `${p.code} ${p.amount}`).join('; '), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export CSV</button>
+            rows.map(r => [r.code, r.who?.code, r.who?.full_name, r.who?.phone, r.requested_on, Number(r.amount).toFixed(2), methodText(r.method) + (r.mt5_account ? ' ' + r.mt5_account : '') + (r.ib ? ' ' + r.ib.full_name : ''), (r.allocations || []).map(p => `${p.code} ${p.amount}`).join('; '), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export to Excel</button>
           <button className="btn accent" onClick={() => setAdding(true)}><Icon name="plus" />Record a withdrawal</button>
         </>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : (
@@ -77,6 +84,8 @@ export function Withdrawals() {
       )}
       {done && <CompleteDialog w={done} onClose={() => setDone(null)} />}
       {cancel && <CancelDialog w={cancel} onClose={() => setCancel(null)} />}
+      {editing && <EditWithdrawal w={editing} who={editing.who?.full_name || ''} hasIb={!!editing.who?.introduced_by} admin onClose={() => setEditing(null)} />}
+      {del && <DeleteWithdrawal w={del} who={del.who?.full_name || ''} onClose={() => setDel(null)} />}
       {adding && q.data && <RecordDialog people={q.data.people} onClose={() => setAdding(false)} />}
     </>
   );

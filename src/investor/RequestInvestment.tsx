@@ -57,7 +57,7 @@ export function RequestInvestment() {
   const errs: Record<string, string | null> = {
     sub: forWho === 'sub' && !subId ? 'Choose the sub-investor, or add a new one.' : null,
     newName: isNew && !newName.trim() ? 'Enter their name.' : null,
-    newPhone: isNew ? (digits.length !== 10 ? 'Enter their 10-digit phone number.' : digits === (profile!.phone || '').replace(/\D/g, '').slice(-10) ? 'That is your own number.' : null) : null,
+    newPhone: isNew && newPhone.trim() ? (digits.length !== 10 ? 'Enter a 10-digit phone number, or leave it empty.' : digits === (profile!.phone || '').replace(/\D/g, '').slice(-10) ? 'That is your own number.' : null) : null,
     amount: !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount (at most 2 decimals).' : null,
     lock: !(Number.isInteger(months) && months >= 0 && months <= 120) ? 'Lock-in in months, 0 to 120.' : null,
     start: !start ? 'Choose the start date.' : null
@@ -117,10 +117,10 @@ export function RequestInvestment() {
                   <h4>New sub-investor</h4>
                   <div className="f-row">
                     <Field label="Name *" err={e('newName')}><input className={'input ' + (e('newName') ? 'bad' : '')} value={newName} onChange={ev => setNewName(ev.target.value)} /></Field>
-                    <Field label="Phone number *" err={e('newPhone')} hint="They will sign in with this number."><input className={'input num ' + (e('newPhone') ? 'bad' : '')} inputMode="tel" value={newPhone} onChange={ev => setNewPhone(ev.target.value)} /></Field>
+                    <Field label="Phone number (optional)" err={e('newPhone')} hint="Needed only if they should sign in."><input className={'input num ' + (e('newPhone') ? 'bad' : '')} inputMode="tel" value={newPhone} onChange={ev => setNewPhone(ev.target.value)} /></Field>
                   </div>
                   <Field label="City (optional)"><input className="input" value={newCity} onChange={ev => setNewCity(ev.target.value)} /></Field>
-                  <p className="hint">The company registers them under you and sets their login password when approving.</p>
+                  <p className="hint">The company registers them under you when approving. With a phone number, the company can also give them a login.</p>
                 </div>
               )}
               <div className="f-row">

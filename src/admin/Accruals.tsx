@@ -104,7 +104,7 @@ export function Accruals() {
       <PageHead crumbs={['Monthly ROI & Accruals']} title="Monthly ROI & Accruals"
         sub="The accrual job posts each investment's monthly return on its start-date anniversary. It runs automatically every hour and can be run on demand."
         actions={<>
-          <IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export CSV</IconBtn>
+          <IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export to Excel</IconBtn>
           <IconBtn icon="refresh" className="primary" onClick={runJob} disabled={busy}>{busy ? 'Running…' : 'Run accrual job now'}</IconBtn>
         </>} />
       {q.error && <ErrorNote msg={q.error} retry={q.reload} />}

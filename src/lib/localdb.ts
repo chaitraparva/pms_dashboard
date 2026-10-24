@@ -454,18 +454,33 @@ function dashboard(branch: string | null, pFrom: string | null, pTo: string | nu
 
 
 /* ---------- investor ranking: ROI released compared with principal ---------- */
+/** ROI still to be released to an investor: returns earned but not yet paid, plus (with a lock-in) the months still to come
+ *  until the lock-in ends, at today's principal. */
+function toBeReleased(investorId: string): { pending: number; upcoming: number } {
+  const pending = round2(T('payouts').filter(x => x.investor_id === investorId && ['accrued', 'approved', 'processing', 'failed'].includes(x.status)).reduce((s, x) => s + Number(x.amount), 0));
+  let upcoming = 0;
+  T('investments').filter(i => i.investor_id === investorId && LIVE.includes(i.status) && i.start_date && Number(i.lockin_months) > 0).forEach(i => {
+    const done = new Set(T('accruals').filter(a => a.investment_id === i.id && a.kind !== 'reversal').map(a => a.period_no));
+    periodsOf(i, today()).filter(p => !done.has(p.k)).forEach(p => { upcoming += Number(i.principal) * investorRate(i) / 100 * p.days / p.daysInMonth; });
+  });
+  return { pending, upcoming: round2(upcoming) };
+}
+/** Investor ranking: whoever put money in most recently is rank 1; the earliest investors are last.
+ *  The date used is the start date of the investor's most recent live investment (larger principal first on the same day). */
 function ranking(branch: string | null, period: string | null = null) {
   const from = period === '6m' ? addMonths(today(), -6) : period === '1y' ? addMonths(today(), -12) : null;
   const rows: Row[] = T('profiles').filter(p => p.role === 'investor' && p.account_status === 'active').map(p => {
     const live = T('investments').filter(i => i.investor_id === p.id && LIVE.includes(i.status));
     const principal = round2(live.reduce((s, i) => s + Number(i.principal), 0));
-    const released = round2(T('payouts').filter(x => x.investor_id === p.id && x.status === 'paid' && (!from || (x.paid_on || '') >= from)).reduce((s, x) => s + Number(x.amount), 0));
-    const since = live.map(i => i.start_date).filter(Boolean).sort()[0] || null;
-    const plans = [...new Set(live.map(i => Number(i.monthly_rate)))].sort((x, y) => x - y).map(r => r + '%').join(', ');
-    return { id: p.id, code: p.code, name: p.full_name || p.email, email: p.email, branch_id: p.branch_id, branch: T('branches').find(b => b.id === p.branch_id)?.name ?? null, principal, released, plans,
-      multiple: principal ? Math.round((released / principal) * 1000) / 1000 : 0, since, rank: 0, branch_rank: 0 };
-  }).filter(r => r.principal > 0)
-    .sort((a, b) => b.multiple - a.multiple || b.released - a.released || a.name.localeCompare(b.name));
+    const released = round2(T('payouts').filter(x => x.investor_id === p.id && x.status === 'paid').reduce((s, x) => s + Number(x.amount), 0));
+    const dates = live.map(i => i.start_date).filter(Boolean).sort();
+    const tb = toBeReleased(p.id);
+    const plans = [...new Set(live.map(i => investorRate(i)))].sort((x, y) => x - y).map(r => r + '%').join(', ');
+    return { id: p.id, code: p.code, name: p.full_name || p.email, email: p.email, phone: p.phone, branch_id: p.branch_id, branch: T('branches').find(b => b.id === p.branch_id)?.name ?? null, principal, released, plans,
+      pending: tb.pending, upcoming: tb.upcoming, to_release: round2(tb.pending + tb.upcoming),
+      multiple: principal ? Math.round((released / principal) * 1000) / 1000 : 0, since: dates[0] || null, last: dates[dates.length - 1] || null, rank: 0, branch_rank: 0 };
+  }).filter(r => r.principal > 0 && r.last && (!from || r.last >= from))
+    .sort((a, b) => String(b.last).localeCompare(String(a.last)) || b.principal - a.principal || a.name.localeCompare(b.name));
   rows.forEach((r, k) => { r.rank = k + 1; });
   const perBranch = new Map<string, number>();
   rows.forEach(r => { const k = r.branch_id || '-'; perBranch.set(k, (perBranch.get(k) || 0) + 1); r.branch_rank = perBranch.get(k)!; r.branch_total = 0; });
@@ -482,7 +497,8 @@ export function rpcCall(fn: string, a: Row): unknown {
     case 'my_rank': {
       // an investor only learns their own position, never anyone else's name or amounts
       const u = currentUid; if (!u) return null; const r = ranking(null); const me2 = r.rows.find(x => x.id === u);
-      return me2 ? { rank: me2.rank, total: r.total, multiple: me2.multiple, branch: me2.branch, branch_rank: me2.branch_rank, branch_total: me2.branch_total } : null;
+      return me2 ? { rank: me2.rank, total: r.total, multiple: me2.multiple, branch: me2.branch, branch_rank: me2.branch_rank, branch_total: me2.branch_total,
+        last: me2.last, since: me2.since, principal: me2.principal, released: me2.released, pending: me2.pending, upcoming: me2.upcoming, to_release: me2.to_release } : null;
     }
     case 'admin_set_can_introduce': {
       requireAdmin(); const p = T('profiles').find(x => x.id === a.p_id) || fail('Investor not found.');
@@ -526,6 +542,39 @@ export function rpcCall(fn: string, a: Row): unknown {
     case 'request_withdrawal': { const id = requestWithdrawal(a); touched('withdrawals', 'investments', 'ledger_entries', 'notifications'); return id; }
     case 'admin_complete_withdrawal': completeWithdrawal(a); touched('withdrawals', 'ledger_entries', 'notifications'); return null;
     case 'admin_cancel_withdrawal': cancelWithdrawal(a); touched('withdrawals', 'investments', 'ledger_entries', 'notifications'); return null;
+    case 'update_withdrawal': updateWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
+    case 'delete_withdrawal': deleteWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
+    case 'admin_update_investment': updateInvestment(a); touched(...RET_TABLES); return null;
+    case 'admin_delete_investment': {
+      requireAdmin(); const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
+      removeInvestment(i, str(a.p_reason, 'Deleted by Super Admin')); touched(...RET_TABLES, 'documents', 'contract_amendments', 'investment_requests'); return null;
+    }
+    case 'admin_delete_investor': deleteInvestor(a); touched('profiles', 'withdrawals', 'investment_requests', 'queries', 'documents', 'contract_amendments', 'brochure_views', 'password_requests', ...RET_TABLES); return null;
+    case 'admin_update_investment_request': {
+      requireAdmin(); const r = T('investment_requests').find(x => x.id === a.p_id) || fail('Request not found.');
+      if (r.status !== 'pending') fail(`${r.code} is already ${r.status}. Only pending requests can be edited.`);
+      const before = { amount: r.amount, lockin_months: r.lockin_months, start_date: r.start_date, note: r.note };
+      const amount = blank(a.p_amount) ? Number(r.amount) : Number(a.p_amount), lock = blank(a.p_lockin_months) ? Number(r.lockin_months) : Number(a.p_lockin_months), start = str(a.p_start_date, r.start_date);
+      if (!(amount > 0) || round2(amount) !== amount) fail('Enter the amount (at most 2 decimals).');
+      if (!(Number.isInteger(lock) && lock >= 0 && lock <= 120)) fail('Lock-in must be 0 (no lock-in) to 120 months.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) fail('Enter a valid start date.');
+      Object.assign(r, { amount, lockin_months: lock, start_date: start, note: a.p_note != null ? str(a.p_note).trim() : r.note, reference: a.p_reference != null ? str(a.p_reference).trim() : r.reference, updated_at: nowIso() });
+      if (r.new_sub && a.p_new_sub) { const n = str(a.p_new_sub.name).trim(), ph = str(a.p_new_sub.phone).trim(); if (!n) fail('Enter the sub-investor’s name.'); if (ph && phoneKey(ph).length !== 10) fail('Enter a 10-digit phone number, or leave it empty.'); r.new_sub = { ...r.new_sub, name: n, phone: ph }; }
+      audit('investment_request.update', 'investment_request', r.id, r.code, 'Request edited by Super Admin', before, { amount, lockin_months: lock, start_date: start, note: r.note }); touched('investment_requests'); return null;
+    }
+    case 'admin_delete_investment_request': {
+      requireAdmin(); const r = T('investment_requests').find(x => x.id === a.p_id) || fail('Request not found.');
+      S.tables.investment_requests = T('investment_requests').filter(x => x.id !== r.id);
+      S.tables.notifications = T('notifications').filter(n => !(n.source_table === 'investment_requests' && String(n.source_id).startsWith(r.id)));
+      audit('investment_request.delete', 'investment_request', r.id, r.code, str(a.p_reason, 'Request deleted'), { amount: r.amount, status: r.status }, null); touched('investment_requests', 'notifications'); return null;
+    }
+    case 'admin_delete_branch': {
+      requireAdmin(); const b = T('branches').find(x => x.id === a.p_id) || fail('Branch not found.');
+      let n = 0; T('profiles').forEach(p => { if (p.branch_id === b.id) { p.branch_id = null; p.updated_at = nowIso(); n++; } });
+      T('brochures').forEach(x => { if (x.branch_id === b.id) x.branch_id = null; });
+      S.tables.branches = T('branches').filter(x => x.id !== b.id);
+      audit('branch.delete', 'branch', b.id, b.name, str(a.p_reason, 'Branch deleted') + (n ? ` · ${n} investor${n === 1 ? '' : 's'} now without a branch` : ''), { ...b }, null); touched('branches', 'profiles', 'brochures'); return n;
+    }
     case 'ask_query': { const id = askQuery(a); touched('queries', 'notifications'); return id; }
     case 'reply_query': replyQuery(a); touched('queries', 'notifications'); return null;
     case 'admin_close_query': { requireAdmin(); const q = T('queries').find(x => x.id === a.p_id) || fail('Query not found.'); q.status = 'closed'; q.updated_at = nowIso(); touched('queries'); return null; }
@@ -853,7 +902,9 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   const name = str(a.p_name).trim(), key = phoneKey(a.p_phone);
   // an existing person can be passed by id (an IB investing for themselves, or an approved request)
   const byId = blank(a.p_person) ? null : (T('profiles').find(p => p.id === String(a.p_person) && p.role === 'investor') || fail('Investor not found.'));
-  if (!byId && key.length !== 10) fail('Enter a 10-digit phone number.');
+  // a sub-investor (under an IB) needs only a name; their phone number and login are optional
+  const subOnly = !blank(a.p_ib);
+  if (!byId && key.length !== 10 && !(subOnly && blank(a.p_phone))) fail(subOnly ? 'Enter a 10-digit phone number, or leave it empty.' : 'Enter a 10-digit phone number.');
   if (byId && byId.account_status !== 'active') fail(`${byId.full_name} has a suspended account.`);
   const rate = Number(a.p_rate), bonusIn = blank(a.p_bonus) ? 0 : Number(a.p_bonus), lock = Number(a.p_lockin_months || 0), principal = Number(a.p_principal);
   if (!(rate > 0 && rate <= 100) || !/^\d+(\.\d{1,4})?$/.test(String(a.p_rate).trim())) fail('Enter the monthly ROI, e.g. 0.25, 2.3 or 6 (at most 4 decimals).');
@@ -861,7 +912,7 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   if (!(Number.isInteger(lock) && lock >= 0 && lock <= 120)) fail('Lock-in must be 0 (no lock-in) to 120 months.');
   if (!(principal > 0) || round2(principal) !== principal) fail('Enter the principal (at most 2 decimals).');
   const start = str(a.p_start_date); if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) fail('Enter the start date.');
-  let person = byId || findByPhone(key);
+  let person = byId || (key.length === 10 ? findByPhone(key) : null);
   const upId = blank(a.p_ib) ? null : String(a.p_ib);
   const up = upId ? T('profiles').find(p => p.id === upId && p.role === 'investor') : null;
   if (upId && !up) fail('Choose the investor this person is under.');
@@ -919,9 +970,12 @@ function addLogin(id: string, phone: unknown, pwHash: string) {
 const PW_MIN = 8;
 /** recordDirect, plus a login for a person who has none yet (the Super Admin sets the first password). */
 async function recordWithLogin(a: Row): Promise<{ id: string; code: string; investor: string; investor_id: string; is_new: boolean }> {
-  const exists = blank(a.p_person) ? findByPhone(a.p_phone) : T('profiles').find(p => p.id === String(a.p_person)) || null;
+  const exists = blank(a.p_person) ? (phoneKey(a.p_phone).length === 10 ? findByPhone(a.p_phone) : null) : T('profiles').find(p => p.id === String(a.p_person)) || null;
   let pw: string | null = null;
-  if (!exists || !hasLogin(exists.id)) {
+  // a person without a phone number (allowed for sub-investors) gets no login; one can be created later with Create login
+  const phoneOf = exists ? exists.phone : a.p_phone;
+  const optionalLogin = !blank(a.p_ib) && blank(a.p_password);
+  if (phoneKey(phoneOf).length === 10 && (!exists || !hasLogin(exists.id)) && !optionalLogin) {
     if (String(a.p_password || '').length < PW_MIN) fail(`Set a login password (at least ${PW_MIN} characters) for ${exists?.full_name || str(a.p_name, 'this investor')}.`);
     pw = await hash(String(a.p_password));
   }
@@ -971,7 +1025,8 @@ export async function adminRecordInvestment(a: Row): Promise<{ id: string; code:
     }
     const sub = a.p_sub && (!blank(a.p_sub.phone) || !blank(a.p_sub.name) || !blank(a.p_sub.id)) ? a.p_sub as Row : null;
     if (sub) {
-      if (blank(sub.id) && phoneKey(sub.phone) === phoneKey(ib!.phone)) fail('The sub-investor’s phone number must be different from the IB’s.');
+      if (blank(sub.name) && blank(sub.id)) fail('Enter the sub-investor’s name.');
+      if (blank(sub.id) && !blank(sub.phone) && phoneKey(sub.phone) === phoneKey(ib!.phone)) fail('The sub-investor’s phone number must be different from the IB’s.');
       if (!blank(sub.id) && sub.id === ib!.id) fail('Choose a different person as the sub-investor.');
       args = { ...a, p_person: blank(sub.id) ? null : sub.id, p_name: sub.name, p_phone: sub.phone, p_city: sub.city, p_ib: ib!.id, p_password: sub.password };
     } else args = { ...a, p_person: ib!.id, p_ib: null, p_bonus: '0', p_password: '' };
@@ -999,11 +1054,11 @@ function requestInvestment(a: Row): string {
     else {
       const name = str(a.p_new_sub?.name).trim(), key = phoneKey(a.p_new_sub?.phone);
       if (!name) fail('Enter the sub-investor’s name.');
-      if (key.length !== 10) fail('Enter the sub-investor’s 10-digit phone number.');
-      if (key === phoneKey(mePr.phone)) fail('That is your own phone number. Choose “For myself” instead.');
-      const ex = findByPhone(key);
+      if (!blank(a.p_new_sub?.phone) && key.length !== 10) fail('Enter a 10-digit phone number, or leave it empty.');
+      if (key && key === phoneKey(mePr.phone)) fail('That is your own phone number. Choose “For myself” instead.');
+      const ex = key.length === 10 ? findByPhone(key) : null;
       if (ex && ex.introduced_by !== mePr.id) fail('This phone number is already registered with the company. Ask the company to place them under you.');
-      if (ex) investorId = ex.id; else { investorId = null; newSub = { name, phone: String(a.p_new_sub.phone).trim(), city: str(a.p_new_sub?.city).trim() }; }
+      if (ex) investorId = ex.id; else { investorId = null; newSub = { name, phone: str(a.p_new_sub?.phone).trim(), city: str(a.p_new_sub?.city).trim() }; }
     }
   }
   const amount = Number(a.p_amount);
@@ -1214,6 +1269,179 @@ function cancelWithdrawal(a: Row) {
   if (w.requested_by && w.requested_by !== w.investor_id && T('profiles').some(p => p.id === w.requested_by && p.role === 'investor'))
     notify(w.requested_by, 'withdrawal', 'Withdrawal ' + w.code + ' cancelled', String(a.p_reason).trim(), '/portal/withdraw', 'withdrawals', w.id + ':cancel-ib');
   audit('withdrawal.cancel', 'withdrawal', w.id, w.code, a.p_reason, { status: 'pending' }, { status: 'cancelled' });
+}
+
+/* ---------- edit and delete (Super Admin everywhere; investors only their own pending withdrawals) ---------- */
+/** Removes the calculated returns of periods ending on or after `from` (accruals with their payouts, bonuses, ledger lines and
+ *  notifications) so the next accrual run recalculates them. Refused when any of them has been approved or paid. */
+function resetReturnsFrom(i: Row, from: string) {
+  const accs = T('accruals').filter(a => a.investment_id === i.id && String(a.period_end) >= from);
+  const ids = new Set(accs.map(a => a.id));
+  T('accruals').forEach(a => { if (a.reverses_id && ids.has(a.reverses_id)) ids.add(a.id); });
+  if (T('payouts').some(p => ids.has(p.accrual_id) && ['approved', 'processing', 'paid'].includes(p.status)) || T('admin_bonuses').some(b => ids.has(b.accrual_id) && b.status === 'paid'))
+    fail(`Returns of ${i.code} from ${fmtDate(from === '0000-01-01' ? i.start_date || today() : from)} are already approved or paid, so they cannot be recalculated. Only the reference and notes can be changed now.`);
+  S.tables.accruals = T('accruals').filter(a => !ids.has(a.id));
+  S.tables.payouts = T('payouts').filter(p => !ids.has(p.accrual_id));
+  S.tables.admin_bonuses = T('admin_bonuses').filter(b => !ids.has(b.accrual_id));
+  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'accruals' && ids.has(l.source_id)));
+  S.tables.notifications = T('notifications').filter(n => !(n.source_table === 'accruals' && ids.has(n.source_id)));
+}
+const RET_TABLES = ['investments', 'accruals', 'payouts', 'admin_bonuses', 'ledger_entries', 'notifications'];
+
+/** Super Admin: change an investment's terms. ROI, bonus, lock-in, principal or start date recalculate its returns
+ *  (only while none has been approved or paid); the reference and notes can always be changed. */
+function updateInvestment(a: Row) {
+  requireAdmin();
+  const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
+  if (['cancelled', 'redeemed'].includes(i.status)) fail(`${i.code} is closed and cannot be edited.`);
+  const before = { monthly_rate: i.monthly_rate, admin_bonus_rate: i.admin_bonus_rate, lockin_months: i.lockin_months, principal: i.original_principal ?? i.principal, start_date: i.start_date || i.expected_start, reference: i.deposit_ref, notes: i.notes };
+  const rate = blank(a.p_rate) ? Number(i.monthly_rate) : Number(a.p_rate);
+  const bonus = blank(a.p_bonus) ? Number(i.admin_bonus_rate || 0) : Number(a.p_bonus);
+  const lock = blank(a.p_lockin_months) ? Number(i.lockin_months) : Number(a.p_lockin_months);
+  const principal = blank(a.p_principal) ? Number(i.original_principal ?? i.principal) : Number(a.p_principal);
+  const start = str(a.p_start_date, i.start_date || i.expected_start || today());
+  if (!(rate > 0 && rate <= 100)) fail('Enter the monthly ROI, e.g. 0.25, 2.3 or 6.');
+  if (!(bonus >= 0 && bonus <= 100)) fail('Enter the IB bonus as 0 or more.');
+  if (!(Number.isInteger(lock) && lock >= 0 && lock <= 120)) fail('Lock-in must be 0 (no lock-in) to 120 months.');
+  if (!(principal > 0) || round2(principal) !== principal) fail('Enter the principal (at most 2 decimals).');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) fail('Enter the start date.');
+  const who = T('profiles').find(p => p.id === i.investor_id);
+  if (bonus > 0 && !who?.introduced_by) fail(`${who?.full_name || 'This investor'} is not under an IB, so the bonus must be 0.`);
+  const oldPrincipal = Number(i.original_principal ?? i.principal), oldStart = i.start_date || i.expected_start;
+  const financial = rate !== Number(i.monthly_rate) || bonus !== Number(i.admin_bonus_rate || 0) || lock !== Number(i.lockin_months) || principal !== oldPrincipal || start !== oldStart;
+  if (financial) {
+    const wd = (i.principal_changes || []).length > 0;
+    if (wd && (principal !== oldPrincipal || start !== oldStart)) fail(`${i.code} has withdrawals, so its principal and start date cannot be changed. Edit or delete those withdrawals first.`);
+    resetReturnsFrom(i, '0000-01-01');
+    if (principal !== oldPrincipal) { i.original_principal = principal; i.principal = principal; }
+    Object.assign(i, { monthly_rate: rate, admin_bonus_rate: bonus, lockin_months: lock });
+    if (!i.plan_id) { i.plan_name = rate + '% Monthly'; i.bonus_on_top = true; }
+    if (i.status === 'pending_funding') i.expected_start = start;
+    else {
+      const maturity = lock > 0 ? addMonths(start, lock) : null;
+      Object.assign(i, { start_date: start, expected_start: start, maturity_date: maturity, lockin_end_date: maturity || start, request_from_date: maturity ? addDays(maturity, -settings().request_window_days) : null });
+      if (i.status === 'matured' && (!maturity || maturity > today())) i.status = 'active';
+    }
+    applySplit(i);
+    ledgerFor('investments', i.id).forEach(l => Object.assign(l, { amount: principal, occurred_on: start, updated_at: nowIso() }));
+  }
+  if (a.p_reference != null) { i.deposit_ref = str(a.p_reference).trim(); i.agreement_ref = i.deposit_ref; }
+  if (a.p_notes != null) i.notes = str(a.p_notes).trim();
+  i.updated_at = nowIso();
+  audit('investment.update', 'investment', i.id, i.code, str(a.p_reason, financial ? 'Terms changed; returns recalculated' : 'Details changed'), before,
+    { monthly_rate: i.monthly_rate, admin_bonus_rate: i.admin_bonus_rate, lockin_months: i.lockin_months, principal: i.original_principal ?? i.principal, start_date: i.start_date || i.expected_start, reference: i.deposit_ref, notes: i.notes });
+  if (financial) runAccrualsFor(i, today());
+}
+
+/** Removes an investment and everything calculated from it. Its withdrawals must be deleted first (unless deleting the investor). */
+function removeInvestment(i: Row, reason: string, withWithdrawals = false) {
+  const wds = T('withdrawals').filter(w => w.status !== 'cancelled' && (w.allocations || []).some((p: Row) => p.investment_id === i.id));
+  if (wds.length && !withWithdrawals) fail(`${i.code} has withdrawals (${wds.map(w => w.code).join(', ')}). Delete them first.`);
+  const accIds = new Set(T('accruals').filter(x => x.investment_id === i.id).map(x => x.id));
+  S.tables.accruals = T('accruals').filter(x => x.investment_id !== i.id);
+  S.tables.payouts = T('payouts').filter(x => x.investment_id !== i.id);
+  S.tables.admin_bonuses = T('admin_bonuses').filter(x => x.investment_id !== i.id);
+  S.tables.ledger_entries = T('ledger_entries').filter(x => x.investment_id !== i.id);
+  S.tables.documents = T('documents').filter(x => x.investment_id !== i.id);
+  S.tables.contract_amendments = T('contract_amendments').filter(x => x.investment_id !== i.id);
+  S.tables.notifications = T('notifications').filter(n => !(accIds.has(n.source_id) || (n.source_table === 'investments' && n.source_id === i.id) || String(n.link || '').endsWith('/' + i.code)));
+  T('investment_requests').forEach(r => { if (r.investment_id === i.id) { r.investment_id = null; r.decision_note = str(r.decision_note) + ' (investment ' + i.code + ' was deleted)'; } });
+  S.tables.investments = T('investments').filter(x => x.id !== i.id);
+  audit('investment.delete', 'investment', i.id, i.code, reason || 'Deleted', { ...i, principal_changes: undefined }, null);
+}
+
+/** Puts back what a withdrawal took out of the investments (principal, closed status, ledger lines) and recalculates
+ *  the returns from its date. A later withdrawal of the same person must be removed first. */
+function undoWithdrawal(w: Row) {
+  const later = T('withdrawals').find(x => x.id !== w.id && x.investor_id === w.investor_id && x.status !== 'cancelled' && String(x.requested_at) > String(w.requested_at));
+  if (later) fail(`${later.code} was requested after ${w.code}. Delete or edit ${later.code} first.`);
+  const invs = (w.allocations || []).map((pt: Row) => T('investments').find(x => x.id === pt.investment_id)).filter(Boolean) as Row[];
+  invs.forEach(i => resetReturnsFrom(i, w.requested_on));
+  invs.forEach(i => {
+    i.principal_changes = (i.principal_changes || []).filter((c: Row) => c.withdrawal_id !== w.id);
+    i.principal = principalOn(i, '9999-12-31'); applySplit(i);
+    if (i.status === 'redeemed' && Number(i.principal) > 0) i.status = i.maturity_date && i.maturity_date <= today() ? 'matured' : 'active';
+    i.updated_at = nowIso();
+  });
+  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')));
+  return invs;
+}
+/** Who may change a withdrawal: the Super Admin, or (while it is pending) the investor, the person who asked for it, or their IB. */
+function mayChangeWithdrawal(w: Row) {
+  if (isAdmin()) return;
+  const u = currentUid;
+  if (w.status !== 'pending') fail(`${w.code} is already ${w.status}. Only pending requests can be changed.`);
+  if (!(w.investor_id === u || w.requested_by === u || isMySub(w.investor_id))) fail('Withdrawal not found.');
+}
+function updateWithdrawal(a: Row) {
+  const w = T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.');
+  mayChangeWithdrawal(w);
+  if (w.status !== 'pending') fail(`${w.code} is already ${w.status}. Only pending requests can be edited; delete it instead.`);
+  const before = { amount: w.amount, method: w.method, mt5_account: w.mt5_account, note: w.note };
+  const who = T('profiles').find(p => p.id === w.investor_id) || fail('Investor not found.');
+  const amount = blank(a.p_amount) ? Number(w.amount) : Number(a.p_amount);
+  if (!(amount > 0) || round2(amount) !== amount) fail('Enter the amount to withdraw (at most 2 decimals).');
+  const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : w.method;
+  if (method === 'cash' && !isAdmin()) fail('Choose the bank account, an MT5 account or a transfer to the IB.');
+  const mt5 = str(a.p_mt5, w.mt5_account || '').trim();
+  if (method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5)) fail('Enter the MT5 account number (letters and digits only).');
+  const ib = who.introduced_by ? T('profiles').find(p => p.id === who.introduced_by && p.role === 'investor') || null : null;
+  if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
+  const invs = undoWithdrawal(w);
+  const available = round2(T('investments').filter(i => i.investor_id === who.id && WD_LIVE(i)).reduce((x, i) => x + Number(i.principal), 0));
+  if (amount > available) fail(`Up to ${fmtMoney(available)} can be withdrawn.`);
+  const parts = planWithdrawal(who.id, amount);
+  Object.assign(w, { amount, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null, note: a.p_note != null ? str(a.p_note).trim() : w.note, allocations: parts, updated_at: nowIso() });
+  if (a.p_attachments != null) w.attachments = cleanAttachments(a.p_attachments);
+  const how = wdHow(w), d = w.requested_on;
+  parts.forEach(pt => {
+    const i = T('investments').find(x => x.id === pt.investment_id)!;
+    if (i.original_principal === undefined) i.original_principal = Number(i.principal);
+    i.principal_changes = [...(i.principal_changes || []), { date: d, principal: pt.after, withdrawal_id: w.id }];
+    i.principal = pt.after; applySplit(i); i.updated_at = nowIso(); closeIfEmpty(i);
+    ledger({ investment_id: i.id, investor_id: who.id, type: 'principal_redemption', amount: pt.amount, status: 'pending', occurred_on: d, reference: w.code, note: 'Withdrawal requested · ' + how, source_table: 'withdrawals', source_id: w.id + ':' + i.id });
+  });
+  [...invs, ...parts.map(pt => T('investments').find(x => x.id === pt.investment_id)!)].forEach(i => runAccrualsFor(i, today()));
+  if (!isAdmin()) T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
+    notify(ad.id, 'withdrawal', 'Withdrawal ' + w.code + ' was changed: ' + fmtMoney(amount), who.full_name + ' · ' + how, '/admin/withdrawals', 'withdrawals', w.id + ':edit:' + nowIso()));
+  audit('withdrawal.update', 'withdrawal', w.id, w.code, str(a.p_reason, 'Withdrawal changed'), before, { amount, method, mt5_account: w.mt5_account, note: w.note });
+}
+function deleteWithdrawal(a: Row) {
+  const w = T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.');
+  mayChangeWithdrawal(w);
+  const invs = w.status === 'cancelled' ? [] : undoWithdrawal(w);
+  if (w.status === 'cancelled') S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')));
+  S.tables.withdrawals = T('withdrawals').filter(x => x.id !== w.id);
+  S.tables.notifications = T('notifications').filter(n => !(n.source_table === 'withdrawals' && String(n.source_id).startsWith(w.id)));
+  invs.forEach(i => runAccrualsFor(i, today()));
+  if (!isAdmin()) T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
+    notify(ad.id, 'withdrawal', 'Withdrawal ' + w.code + ' was deleted by the investor', fmtMoney(w.amount), '/admin/withdrawals', 'withdrawals_deleted', w.id));
+  audit('withdrawal.delete', 'withdrawal', w.id, w.code, str(a.p_reason, 'Withdrawal deleted'), { amount: w.amount, method: w.method, status: w.status }, null);
+}
+
+/** Super Admin: remove an investor with everything recorded for them (investments, returns, withdrawals, requests, documents, login). */
+function deleteInvestor(a: Row) {
+  requireAdmin();
+  const p = T('profiles').find(x => x.id === a.p_id) || fail('Investor not found.');
+  if (p.role !== 'investor') fail('Only investors can be deleted here.');
+  const subs = T('profiles').filter(x => x.role === 'investor' && x.introduced_by === p.id);
+  if (subs.length) fail(`${p.full_name} has ${subs.length} sub-investor${subs.length === 1 ? '' : 's'} (${subs.slice(0, 3).map(x => x.full_name).join(', ')}${subs.length > 3 ? '…' : ''}). Delete them or place them under someone else first.`);
+  const wdIds = new Set(T('withdrawals').filter(w => w.investor_id === p.id).map(w => w.id));
+  S.tables.withdrawals = T('withdrawals').filter(w => !wdIds.has(w.id));
+  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'withdrawals' && wdIds.has(String(l.source_id).split(':')[0])));
+  T('investments').filter(i => i.investor_id === p.id).forEach(i => removeInvestment(i, 'Investor deleted', true));
+  S.tables.investment_requests = T('investment_requests').filter(r => r.investor_id !== p.id && r.requested_by !== p.id);
+  S.tables.queries = T('queries').filter(q => q.investor_id !== p.id);
+  S.tables.documents = T('documents').filter(d => d.owner_id !== p.id);
+  S.tables.notifications = T('notifications').filter(n => n.user_id !== p.id);
+  S.tables.payouts = T('payouts').filter(x => x.investor_id !== p.id);
+  S.tables.ledger_entries = T('ledger_entries').filter(x => x.investor_id !== p.id);
+  S.tables.brochure_views = T('brochure_views').filter(x => x.user_id !== p.id);
+  S.tables.password_requests = T('password_requests').filter(x => x.user_id !== p.id);
+  T('admin_bonuses').forEach(b => { if (b.admin_id === p.id) b.admin_id = null; });
+  S.tables.profiles = T('profiles').filter(x => x.id !== p.id);
+  S.users = S.users.filter(u => u.id !== p.id);
+  audit('investor.delete', 'profile', p.id, p.code, str(a.p_reason, 'Investor deleted'), { full_name: p.full_name, phone: p.phone, code: p.code }, null);
 }
 
 /* ---------- queries: an investor asks, the Super Admin answers ---------- */

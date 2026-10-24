@@ -45,7 +45,7 @@ export function Audit() {
     <>
       <PageHead crumbs={['Audit Logs']} title="Audit logs"
         sub="Append-only and read-only for everyone, including Super Admins. Every sensitive action records the actor, reason and before/after values."
-        actions={<IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export CSV</IconBtn>} />
+        actions={<IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export to Excel</IconBtn>} />
       {q.error && <ErrorNote msg={q.error} retry={q.reload} />}
       {!q.data && !q.error ? <Loading /> : q.data && (
         <DataTable rows={rows} cols={cols} rowKey={r => String(r.id)} href={r => '/admin/audit?id=' + r.id}

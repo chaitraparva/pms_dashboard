@@ -61,7 +61,7 @@ export function IBs() {
         sub="IBs and the sub-investors under them. Each IB sees their sub-investors, their investments and the bonus they earn in their own login."
         actions={<>
           <button className="btn" disabled={!rows.length} onClick={() => downloadCsv('network', ['Investor ID', 'Name', 'Phone', 'Branch', 'People under', 'Their principal', 'Own investment', 'Bonus / month', 'Bonus earned', 'Bonus paid'],
-            rows.map(r => [r.code, r.full_name, r.phone, r.branch, r.people, r.peoplePrincipal.toFixed(2), r.own.toFixed(2), r.monthly.toFixed(2), r.earned.toFixed(2), r.paid.toFixed(2)]))}><Icon name="download" />Export CSV</button>
+            rows.map(r => [r.code, r.full_name, r.phone, r.branch, r.people, r.peoplePrincipal.toFixed(2), r.own.toFixed(2), r.monthly.toFixed(2), r.earned.toFixed(2), r.paid.toFixed(2)]))}><Icon name="download" />Export to Excel</button>
           <button className="btn accent" onClick={() => nav('/admin/investments?new=1')}><Icon name="plus" />Record investment</button>
         </>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : (

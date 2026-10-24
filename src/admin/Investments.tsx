@@ -98,7 +98,7 @@ export function Investments() {
       <PageHead crumbs={['Investments']} title="Investment register"
         sub={q.data ? `${rows.length} investments · ${money(livePrincipal)} live principal` : 'Loading…'}
         actions={<>
-          <button className="btn" onClick={exportCsv} disabled={!rows.length}><Icon name="download" />Export CSV</button>
+          <button className="btn" onClick={exportCsv} disabled={!rows.length}><Icon name="download" />Export to Excel</button>
           <button className="btn accent" onClick={() => setOpen(true)}><Icon name="plus" />Record investment</button>
         </>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : !all.length ? (
@@ -188,7 +188,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const [hasSub, setHasSub] = useState(false);
   const [subPhone, setSubPhone] = useState('');
   const [subName, setSubName] = useState('');
-  const [subPw, setSubPw] = useState(genPw);
+  const [subPw, setSubPw] = useState('');
   // investment
   const [roi, setRoi] = useState('');
   const [bonus, setBonus] = useState('');
@@ -230,7 +230,9 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const picked = pick ? all.find(x => x.id === pick) : undefined;
   const needPw = type === 'individual' && !(picked?.has_login || ind.found?.has_login);
   const needIbPw = type === 'ib' && ibMode === 'existing' && !!ib && !ib.has_login;
-  const needSubPw = withSub && (!subL.found || !subL.found.has_login);
+  // a sub-investor needs only a name: phone number and login are optional (a login needs both)
+  const needSubPw = withSub && subL.digits.length === 10 && (!subL.found || !subL.found.has_login);
+  const subLogin = needSubPw && !!subPw;
   const subClash = withSub && subL.found && subL.found.ib_id && subL.found.ib_id !== ibId ? `${subL.found.full_name} is already under ${subL.found.ib_name}.` : null;
   const errs: Record<string, string | null> = {
     phone: type === 'individual' && !picked && ind.digits.length !== 10 ? 'Enter a 10-digit phone number, or choose an existing investor.' : null,
@@ -241,9 +243,9 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
     nibName: type === 'ib' && ibMode === 'new' && !nibName.trim() ? 'Enter the IB’s name.' : null,
     nibPhone: type === 'ib' && ibMode === 'new' ? (nib.digits.length !== 10 ? 'Enter a 10-digit phone number.' : nib.found ? `Already registered to ${nib.found.full_name}. Choose them under “Existing IB”.` : null) : null,
     nibPw: type === 'ib' && ibMode === 'new' && nibPw.length < 8 ? 'At least 8 characters.' : null,
-    subPhone: withSub ? (subL.digits.length !== 10 ? 'Enter the sub-investor’s 10-digit phone number.' : subL.digits === (ibMode === 'new' ? nib.digits : (ib?.phone || '').replace(/\D/g, '').slice(-10)) ? 'Must be different from the IB’s phone number.' : subClash) : null,
+    subPhone: withSub && subPhone.trim() ? (subL.digits.length !== 10 ? 'Enter a 10-digit phone number, or leave it empty.' : subL.digits === (ibMode === 'new' ? nib.digits : (ib?.phone || '').replace(/\D/g, '').slice(-10)) ? 'Must be different from the IB’s phone number.' : subClash) : null,
     subName: withSub && !subName.trim() ? 'Enter the sub-investor’s name.' : null,
-    subPw: needSubPw && subPw.length < 8 ? 'At least 8 characters.' : null,
+    subPw: needSubPw && subPw && subPw.length < 8 ? 'At least 8 characters, or leave it empty for no login.' : null,
     roi: !(r > 0 && r <= 100) || !DEC(roi, 4) ? 'Enter the monthly ROI, e.g. 0.25, 2.3, 4.3 or 6.' : null,
     bonus: withSub && (!DEC(bonus || '0', 4) || b > 100) ? 'Enter the bonus as 0 or more, e.g. 1, 2.5 or 3.' : null,
     lock: !(Number.isInteger(months) && months >= 0 && months <= 120) ? 'Enter the lock-in in months (0 to 120).' : null,
@@ -283,7 +285,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             ? { p_person: picked ? picked.id : null, p_name: name.trim(), p_phone: phone.trim(), p_password: needPw ? pw : '' }
             : {
               ...(ibMode === 'new' ? { p_new_ib: { name: nibName.trim(), phone: nibPhone.trim(), password: nibPw } } : { p_ib: ibId, p_ib_password: needIbPw ? ibPw : '' }),
-              p_sub: withSub ? { name: subName.trim(), phone: subPhone.trim(), password: needSubPw ? subPw : '' } : null
+              p_sub: withSub ? { name: subName.trim(), phone: subPhone.trim(), password: subLogin ? subPw : '' } : null
             })
         });
       } catch (err) { if (file) await api.storage.from('documents').remove([file.path]).catch(() => undefined); throw err; }
@@ -294,7 +296,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
       if (type === 'individual' && needPw) logins.push([name.trim(), phone.trim(), pw]);
       if (type === 'ib' && ibMode === 'new') logins.push([nibName.trim() + ' (IB)', nibPhone.trim(), nibPw]);
       if (needIbPw && ib) logins.push([ib.full_name + ' (IB)', ib.phone || '', ibPw]);
-      if (withSub && needSubPw) logins.push([subName.trim() + ' (sub-investor)', subPhone.trim(), subPw]);
+      if (withSub && subLogin) logins.push([subName.trim() + ' (sub-investor)', subPhone.trim(), subPw]);
       setDone({ code: res.code, investor: investorName, logins });
     }
   };
@@ -421,12 +423,12 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                 {!hasSub ? <p className="hint">Without a sub-investor, this is {ibName ? ibName + '’s' : 'the IB’s'} own investment.</p> : (
                   <>
                     <div className="f-row">
-                      <Field label="Sub-investor phone number *" err={e('subPhone')} hint={subL.found ? <>Existing investor: <b>{subL.found.full_name}</b> ({subL.found.code}){subL.found.ib_name ? ` · under ${subL.found.ib_name}` : ''}</> : 'They sign in with this number.'}>
+                      <Field label="Sub-investor phone number (optional)" err={e('subPhone')} hint={subL.found ? <>Existing investor: <b>{subL.found.full_name}</b> ({subL.found.code}){subL.found.ib_name ? ` · under ${subL.found.ib_name}` : ''}</> : 'Needed only if they should sign in.'}>
                         <input className={'input num ' + (e('subPhone') ? 'bad' : '')} inputMode="tel" value={subPhone} onChange={ev => setSubPhone(ev.target.value)} />
                       </Field>
                       <Field label="Sub-investor name *" err={e('subName')}><input className={'input ' + (e('subName') ? 'bad' : '')} value={subName} onChange={ev => setSubName(ev.target.value)} disabled={!!subL.found} /></Field>
                     </div>
-                    {needSubPw ? pwField('Sub-investor login password *', subPw, setSubPw, 'subPw', 'The sub-investor') : <p className="hint">{subL.found?.full_name} already has a login.</p>}
+                    {needSubPw ? pwField('Sub-investor login password (optional)', subPw, setSubPw, 'subPw', 'Leave empty for no login. If set, the sub-investor') : subL.found?.has_login ? <p className="hint">{subL.found.full_name} already has a login.</p> : <p className="hint">Without a phone number the sub-investor has no login. You can add one later from their page.</p>}
                     <p className="hint">The sub-investor is placed under {ibName || 'the IB'}. The IB sees them, their investments and the bonus below in their own login.</p>
                   </>
                 )}
@@ -506,7 +508,7 @@ async function loadInvestment(code: string): Promise<DetailData | null> {
   return { i, investor: names[i.investor_id], bal: must(bal) as Balance | null, accruals, payouts, ledger, amendments, plan: must(plan) as Plan | null, names, introducedBy };
 }
 
-type Dialog = null | 'fund' | 'cancel' | 'amend';
+type Dialog = null | 'fund' | 'cancel' | 'amend' | 'edit' | 'delete';
 
 export function InvestmentDetail() {
   const { code = '' } = useParams();
@@ -560,10 +562,14 @@ export function InvestmentDetail() {
     <>
       <Link className="back" to="/admin/investments"><Icon name="back" /> Investment register</Link>
       <PageHead crumbs={['Investments', i.code]} title={i.code}
-        actions={pending ? <>
-          <button className="btn danger" onClick={() => setDlg('cancel')}>Cancel</button>
-          <button className="btn primary" onClick={() => setDlg('fund')}>Confirm deposit & activate</button>
-        </> : !closed ? <button className="btn" onClick={() => setDlg('amend')}>Record amendment</button> : undefined}>
+        actions={<>
+          {!closed && <button className="btn" onClick={() => setDlg('edit')}>Edit</button>}
+          <button className="btn danger" onClick={() => setDlg('delete')}>Delete</button>
+          {pending ? <>
+            <button className="btn danger" onClick={() => setDlg('cancel')}>Cancel</button>
+            <button className="btn primary" onClick={() => setDlg('fund')}>Confirm deposit & activate</button>
+          </> : !closed ? <button className="btn" onClick={() => setDlg('amend')}>Record amendment</button> : null}
+        </>}>
         <h1>{i.code} · {investor ? <Link to={'/admin/investors/' + investor.code}>{investor.full_name || investor.email}</Link> : '—'} <InvBadge i={i} approachingDays={s.approaching_days} /></h1>
         <p>{i.plan_name}{i.plan_id ? ` v${i.plan_version}` : ''} · {i.lockin_months ? lockinText(i.lockin_months) + ' lock-in' : 'No lock-in'} · {i.start_date
           ? `started ${date(i.start_date)}${i.maturity_date ? ` · matures ${date(i.maturity_date)}${daysLeft != null && daysLeft > 0 && !closed ? ` (${daysLeft} days)` : ''}` : ''}`
@@ -706,6 +712,8 @@ export function InvestmentDetail() {
       {dlg === 'fund' && <FundDialog i={i} meId={me?.id} onClose={() => setDlg(null)} />}
       {dlg === 'cancel' && <CancelDialog i={i} onClose={() => setDlg(null)} />}
       {dlg === 'amend' && <AmendDialog i={i} onClose={() => setDlg(null)} />}
+      {dlg === 'edit' && <EditInvestment i={i} underIb={!!introducedBy} ibName={introducedBy ? nm(introducedBy) : ''} onClose={() => setDlg(null)} />}
+      {dlg === 'delete' && <DeleteInvestment i={i} onClose={() => setDlg(null)} />}
     </>
   );
 }
@@ -758,6 +766,79 @@ function CancelDialog({ i, onClose }: { i: Investment; onClose: () => void }) {
       <Field label="Reason (required, saved to audit log)" err={tried && !reason.trim() ? 'Enter a reason.' : null}>
         <input className={'input ' + (tried && !reason.trim() ? 'bad' : '')} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Investor withdrew before transferring funds" />
       </Field>
+    </Modal>
+  );
+}
+
+/** Super Admin: change an investment's terms. Changing ROI, bonus, lock-in, principal or start date recalculates its returns. */
+function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underIb: boolean; ibName: string; onClose: () => void }) {
+  const act = useAction();
+  const hasWd = ((i as Investment & { principal_changes?: unknown[] }).principal_changes || []).length > 0;
+  const orig = Number((i as Investment & { original_principal?: number }).original_principal ?? i.principal);
+  const [roi, setRoi] = useState(String(Number(i.monthly_rate)));
+  const [bonus, setBonus] = useState(String(Number(i.admin_bonus_rate || 0)));
+  const [lock, setLock] = useState(String(i.lockin_months));
+  const [amount, setAmount] = useState(String(orig));
+  const [start, setStart] = useState(i.start_date || i.expected_start || today());
+  const [ref, setRef] = useState(i.deposit_ref || '');
+  const [notes, setNotes] = useState(i.notes || '');
+  const [reason, setReason] = useState('');
+  const [tried, setTried] = useState(false);
+  const r = Number(roi), b = Number(bonus || 0), m = Number(lock), amt = Number(amount);
+  const errs: Record<string, string | null> = {
+    roi: !(r > 0 && r <= 100) || !DEC(roi, 4) ? 'Enter the monthly ROI, e.g. 2.3 or 6.' : null,
+    bonus: underIb && (!DEC(bonus || '0', 4) || b > 100) ? 'Enter the bonus as 0 or more.' : null,
+    lock: !(Number.isInteger(m) && m >= 0 && m <= 120) ? '0 to 120 months.' : null,
+    amount: !(amt > 0) || !DEC(amount, 2) ? 'Enter the principal (at most 2 decimals).' : null,
+    start: !start ? 'Enter the start date.' : null
+  };
+  const e = (k: string) => (tried ? errs[k] : null);
+  const financial = r !== Number(i.monthly_rate) || (underIb && b !== Number(i.admin_bonus_rate || 0)) || m !== i.lockin_months || amt !== orig || start !== (i.start_date || i.expected_start);
+  const go = async () => {
+    setTried(true); if (Object.values(errs).some(Boolean)) return;
+    const res = await act.run(() => rpc('admin_update_investment', { p_id: i.id, p_rate: roi.trim(), p_bonus: underIb ? (bonus.trim() || '0') : '0', p_lockin_months: m, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_reason: reason.trim() }),
+      ['Investment updated', financial ? `${i.code} · returns recalculated` : i.code]);
+    if (res !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Drawer title={`Edit ${i.code}`} sub="Changing ROI, bonus, lock-in, principal or start date recalculates the returns. Returns already approved or paid cannot be recalculated." onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{act.busy ? 'Saving…' : 'Save changes'}</button></>}>
+      <div className="form">
+        <div className="f-row">
+          <Field label="Monthly ROI (% per month) *" err={e('roi')}><input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} /></Field>
+          <Field label={underIb ? `Bonus to ${ibName} (% per month)` : 'IB bonus'} err={e('bonus')} hint={underIb ? 'Paid on top of the ROI.' : 'Not under an IB.'}>
+            <input className={'input num ' + (e('bonus') ? 'bad' : '')} inputMode="decimal" value={underIb ? bonus : ''} onChange={ev => setBonus(ev.target.value)} disabled={!underIb} placeholder={underIb ? '' : '—'} />
+          </Field>
+        </div>
+        <div className="f-row">
+          <Field label="Principal (INR) *" err={e('amount')} hint={hasWd ? 'This investment has withdrawals, so the principal cannot be changed.' : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} disabled={hasWd} /></Field>
+          <Field label="Lock-in (months) *" err={e('lock')} hint="0 = no lock-in."><input className={'input num ' + (e('lock') ? 'bad' : '')} inputMode="numeric" value={lock} onChange={ev => setLock(ev.target.value)} /></Field>
+        </div>
+        <div className="f-row">
+          <Field label="Start date *" err={e('start')} hint={hasWd ? 'Cannot be changed while there are withdrawals.' : 'Returns count from the next day.'}><input className="input" type="date" value={start} onChange={ev => setStart(ev.target.value)} disabled={hasWd} /></Field>
+          <Field label="Reference"><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
+        </div>
+        <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
+        <Field label="Reason (saved to the history)"><input className="input" value={reason} onChange={ev => setReason(ev.target.value)} placeholder="e.g. ROI corrected" /></Field>
+        {financial && <div className="note info">The returns of {i.code} will be recalculated with the new terms. The investor sees the new figures straight away.</div>}
+      </div>
+    </Drawer>
+  );
+}
+
+/** Super Admin: delete an investment and everything calculated from it (returns, payouts, bonuses, ledger lines, documents). */
+function DeleteInvestment({ i, onClose }: { i: Investment; onClose: () => void }) {
+  const act = useAction();
+  const nav = useNavigate();
+  const [reason, setReason] = useState('');
+  const go = async () => {
+    const r = await act.run(() => rpc('admin_delete_investment', { p_id: i.id, p_reason: reason.trim() }), ['Investment deleted', i.code + ' and its returns were removed']);
+    if (r !== undefined) { refreshAll(); onClose(); nav('/admin/investments'); }
+  };
+  return (
+    <Modal title={`Delete ${i.code}?`} sub={`${money(i.principal)} · its returns, payouts, IB bonus, ledger lines and documents are removed. This cannot be undone. Withdrawals from it must be deleted first.`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Keep it</button><button className="btn danger" onClick={go} disabled={act.busy}>{act.busy ? 'Deleting…' : 'Delete investment'}</button></>}>
+      <Field label="Reason (saved to the history)"><input className="input" value={reason} onChange={ev => setReason(ev.target.value)} placeholder="e.g. Recorded twice by mistake" /></Field>
     </Modal>
   );
 }

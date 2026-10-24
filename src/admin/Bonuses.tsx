@@ -89,7 +89,7 @@ export function Bonuses() {
     <>
       <PageHead crumbs={['Bonus']} title="Bonus"
         sub={<>Part of each investment’s monthly ROI goes to the investor the person is under. You type the bonus % when you record each investment. The total paid out is the same as the plan rate. Investors only ever see their own share.</>}
-        actions={<IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export CSV</IconBtn>} />
+        actions={<IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export to Excel</IconBtn>} />
       {q.error && <ErrorNote msg={q.error} retry={q.reload} />}
       {!q.data && !q.error ? <Loading /> : q.data && (
         <>

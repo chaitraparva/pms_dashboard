@@ -41,7 +41,7 @@ export function Returns() {
   return (
     <>
       <PageHead crumbs={['ROI Released']} title="ROI released" sub="Simple interest: each month's return is your original principal × your contract rate. Returns are never added to principal."
-        actions={rows.length ? <button className="btn" onClick={exportCsv}><Icon name="download" />Export CSV</button> : undefined} />
+        actions={rows.length ? <button className="btn" onClick={exportCsv}><Icon name="download" />Export to Excel</button> : undefined} />
       {!inv.length ? (
         <div className="card"><div className="card-b"><Empty title="You have no investments yet">Your advisor will record your investment once funds are received. Monthly returns will be listed here.</Empty></div></div>
       ) : (

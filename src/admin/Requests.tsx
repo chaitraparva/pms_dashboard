@@ -39,6 +39,8 @@ export function Requests() {
   const [tab, setTab] = useState<Tab>('pending');
   const [approve, setApprove] = useState<Row | null>(null);
   const [reject, setReject] = useState<Row | null>(null);
+  const [editing, setEditing] = useState<Row | null>(null);
+  const [del, setDel] = useState<Row | null>(null);
   const all = q.data || [];
   const rows = all.filter(r => tab === 'all' || r.status === tab || (tab === 'rejected' && r.status === 'cancelled'));
   const n = (k: Tab) => (k === 'all' ? all.length : all.filter(r => r.status === k || (k === 'rejected' && r.status === 'cancelled')).length);
@@ -53,13 +55,18 @@ export function Requests() {
     { h: 'Start', v: r => r.start_date, r: r => date(r.start_date) },
     { h: 'Proof', v: r => (r.attachments || []).length, r: r => <AttachmentLinks items={r.attachments} empty="None" /> },
     { h: 'Status', v: r => r.status, r: r => <><ReqBadge s={r.status} />{r.investment_code && <span className="sub"><Link to={'/admin/investments/' + r.investment_code} onClick={e => e.stopPropagation()}>{r.investment_code}</Link></span>}{r.decision_note && r.status !== 'approved' && <span className="sub">{r.decision_note}</span>}</> },
-    { h: '', r: r => r.status === 'pending' ? <span style={{ display: 'flex', gap: 6 }}><button className="btn sm primary" onClick={e => { e.stopPropagation(); setApprove(r); }}>Approve</button><button className="btn sm" onClick={e => { e.stopPropagation(); setReject(r); }}>Reject</button></span> : null }
+    { h: '', r: r => <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {r.status === 'pending' && <><button className="btn sm primary" onClick={e => { e.stopPropagation(); setApprove(r); }}>Approve</button>
+        <button className="btn sm" onClick={e => { e.stopPropagation(); setEditing(r); }}>Edit</button>
+        <button className="btn sm" onClick={e => { e.stopPropagation(); setReject(r); }}>Reject</button></>}
+      <button className="btn sm danger" onClick={e => { e.stopPropagation(); setDel(r); }}>Delete</button>
+    </span> }
   ], []);
   return (
     <>
       <PageHead crumbs={['Investment requests']} title="Investment requests" sub="Requested from the investor portal: by investors for themselves, or by IBs for their sub-investors. Set the ROI and approve; the investment then shows in their portal."
-        actions={<button className="btn" disabled={!rows.length} onClick={() => downloadCsv('investment-requests-' + tab, ['Request', 'For', 'Phone', 'Type', 'Requested by', 'Amount', 'Lock-in', 'Start', 'Attachments', 'Status', 'Investment', 'Note'],
-          rows.map(r => [r.code, r.forName, r.subject?.phone || r.new_sub?.phone, r.kind, r.by?.full_name, Number(r.amount).toFixed(2), r.lockin_months, r.start_date, (r.attachments || []).length, r.status, r.investment_code, r.note]))}><Icon name="download" />Export CSV</button>} />
+        actions={<button className="btn" disabled={!rows.length} onClick={() => downloadCsv('investment-requests-' + tab, ['Request', 'Requested on', 'Investor ID', 'For', 'Phone', 'Type', 'Requested by', 'Amount', 'Lock-in', 'Start', 'Attachments', 'Status', 'Investment', 'Note'],
+          rows.map(r => [r.code, r.created_at.slice(0, 10), r.subject?.code, r.forName, r.subject?.phone || r.new_sub?.phone, r.kind, r.by?.full_name, Number(r.amount).toFixed(2), r.lockin_months, r.start_date, (r.attachments || []).length, r.status, r.investment_code, r.note]))}><Icon name="download" />Export to Excel</button>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : (
         <>
           <div className="kpis k4">
@@ -80,6 +87,8 @@ export function Requests() {
       )}
       {approve && <ApproveDrawer r={approve} onClose={() => setApprove(null)} />}
       {reject && <RejectDialog r={reject} onClose={() => setReject(null)} />}
+      {editing && <EditRequest r={editing} onClose={() => setEditing(null)} />}
+      {del && <DeleteRequest r={del} onClose={() => setDel(null)} />}
     </>
   );
 }
@@ -102,7 +111,10 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
   const [done, setDone] = useState<null | { code: string; pw: string | null }>(null);
   const underIb = !!r.ib || !r.investor_id;
   const ibName = r.ib?.full_name || r.by?.full_name || 'the IB';
-  const needPw = !r.subject || !r.subject.has_login;
+  // a login needs a phone number; for a sub-investor the password is optional
+  const subPhone = (r.subject?.phone || r.new_sub?.phone || '').replace(/\D/g, '');
+  const forSub = r.kind === 'sub';
+  const needPw = subPhone.length >= 10 && (!r.subject || !r.subject.has_login);
   const rr = Number(roi), b = underIb ? Number(bonus || 0) : 0, amt = Number(amount), months = Number(lock);
   const errs: Record<string, string | null> = {
     roi: !(rr > 0 && rr <= 100) || !DEC(roi, 4) ? 'Enter the monthly ROI, e.g. 2.3 or 6.' : null,
@@ -110,14 +122,14 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
     lock: !(Number.isInteger(months) && months >= 0 && months <= 120) ? '0 to 120 months.' : null,
     amount: !(amt > 0) || !DEC(amount, 2) ? 'Enter the principal (at most 2 decimals).' : null,
     start: !start ? 'Enter the start date.' : null,
-    pw: needPw && pw.length < 8 ? 'At least 8 characters.' : null
+    pw: needPw && (forSub ? pw.length > 0 && pw.length < 8 : pw.length < 8) ? 'At least 8 characters.' : null
   };
   const e = (k: string) => (tried ? errs[k] : null);
   const go = async () => {
     setTried(true); if (Object.values(errs).some(Boolean)) return;
     const res = await act.run(() => approveInvestmentRequest({ p_id: r.id, p_rate: roi.trim(), p_bonus: underIb ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_note: note.trim(), p_password: needPw ? pw : '' }),
       ['Request approved', `${r.code} · ${money(amt)} for ${r.forName}`]);
-    if (res) { refreshAll(); setDone({ code: res.code, pw: needPw ? pw : null }); }
+    if (res) { refreshAll(); setDone({ code: res.code, pw: needPw && pw ? pw : null }); }
   };
   if (done) return (
     <Drawer title="Request approved" sub={done.pw ? 'Share the login details with the sub-investor offline.' : 'The investment now shows in their portal.'} onClose={onClose}
@@ -158,7 +170,7 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
           <Field label="Reference"><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
         </div>
         {needPw && (
-          <Field label={`Login password for ${r.forName} *`} err={e('pw')} hint="They sign in with their phone number and this password, and can change it after signing in.">
+          <Field label={`Login password for ${r.forName}${forSub ? ' (optional)' : ' *'}`} err={e('pw')} hint={forSub ? 'Leave empty for no login. If set, they sign in with their phone number and this password.' : 'They sign in with their phone number and this password, and can change it after signing in.'}>
             <div style={{ display: 'flex', gap: 6 }}><input className={'input mono ' + (e('pw') ? 'bad' : '')} value={pw} onChange={ev => setPw(ev.target.value)} autoComplete="new-password" /><button type="button" className="btn" onClick={() => setPw(genPw())}><Icon name="refresh" /></button></div>
           </Field>
         )}
@@ -181,5 +193,54 @@ function RejectDialog({ r, onClose }: { r: Row; onClose: () => void }) {
       foot={<><button className="btn ghost" onClick={onClose}>Back</button><button className="btn danger" onClick={go} disabled={act.busy || !reason.trim()}>Reject request</button></>}>
       <Field label="Reason (shown to the investor) *"><input className="input" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Payment not received yet" /></Field>
     </Modal>
+  );
+}
+
+/** Super Admin: change a pending request before approving it. */
+function EditRequest({ r, onClose }: { r: Row; onClose: () => void }) {
+  const act = useAction();
+  const [amount, setAmount] = useState(String(r.amount));
+  const [lock, setLock] = useState(String(r.lockin_months));
+  const [start, setStart] = useState(r.start_date);
+  const [ref, setRef] = useState(r.reference || '');
+  const [note, setNote] = useState(r.note || '');
+  const [subName, setSubName] = useState(r.new_sub?.name || '');
+  const [subPhone, setSubPhone] = useState(r.new_sub?.phone || '');
+  const go = async () => {
+    const res = await act.run(() => rpc('admin_update_investment_request', { p_id: r.id, p_amount: Number(amount), p_lockin_months: Number(lock), p_start_date: start, p_reference: ref.trim(), p_note: note.trim(), p_new_sub: r.new_sub ? { name: subName.trim(), phone: subPhone.trim() } : null }), ['Request updated', r.code]);
+    if (res !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`Edit ${r.code}`} sub={`For ${r.forName}. The ROI and bonus are set when you approve it.`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>Save</button></>}>
+      <div className="form">
+        {r.new_sub && <div className="f-row">
+          <Field label="Sub-investor name *"><input className="input" value={subName} onChange={e => setSubName(e.target.value)} /></Field>
+          <Field label="Phone (optional)"><input className="input num" inputMode="tel" value={subPhone} onChange={e => setSubPhone(e.target.value)} /></Field>
+        </div>}
+        <div className="f-row">
+          <Field label="Amount (INR) *"><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
+          <Field label="Lock-in (months)" hint="0 = no lock-in."><input className="input num" inputMode="numeric" value={lock} onChange={e => setLock(e.target.value)} /></Field>
+        </div>
+        <div className="f-row">
+          <Field label="Start date"><input className="input" type="date" value={start} onChange={e => setStart(e.target.value)} /></Field>
+          <Field label="Reference"><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>
+        </div>
+        <Field label="Note"><input className="input" value={note} onChange={e => setNote(e.target.value)} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/** Super Admin: remove a request (an approved request's investment is kept). */
+function DeleteRequest({ r, onClose }: { r: Row; onClose: () => void }) {
+  const act = useAction();
+  const go = async () => {
+    const res = await act.run(() => rpc('admin_delete_investment_request', { p_id: r.id }), ['Request deleted', r.code]);
+    if (res !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`Delete ${r.code}?`} sub={r.status === 'approved' ? `The request is removed. Its investment ${r.investment_code || ''} is kept; delete it from its own page if needed.` : `${money(r.amount)} for ${r.forName}. The request is removed and cannot be restored.`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Keep</button><button className="btn danger" onClick={go} disabled={act.busy}>Delete request</button></>} />
   );
 }

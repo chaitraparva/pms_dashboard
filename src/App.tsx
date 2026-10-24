@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './lib/auth';
 import { ToastProvider, Loading } from './ui/kit';
 import { Login } from './pages/Login';
 import { SetPassword } from './pages/SetPassword';
+import { ExportHost } from './ui/ExportDialog';
 
 const AdminApp = lazy(() => import('./admin/AdminApp'));
 const PortalApp = lazy(() => import('./investor/PortalApp'));
@@ -50,6 +51,7 @@ export function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
+        <ExportHost />
       </ToastProvider>
     </AuthProvider>
   );

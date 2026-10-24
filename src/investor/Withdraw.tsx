@@ -45,6 +45,8 @@ export function Withdraw() {
   const [preview, setPreview] = useState<WithdrawalPart[]>([]);
   const [confirm, setConfirm] = useState(false);
   const [tried, setTried] = useState(false);
+  const [editing, setEditing] = useState<Withdrawal | null>(null);
+  const [del, setDel] = useState<Withdrawal | null>(null);
 
   const acc: MyAccount | null = q.data?.acc || null;
   const sub = forId !== me ? acc?.subs.find(s => s.id === forId) : undefined;
@@ -172,7 +174,7 @@ export function Withdraw() {
         <div className="card-h"><h3>{acc && acc.subs.length ? 'Withdrawals (me and my sub-investors)' : 'My withdrawals'}</h3></div>
         {wds.length ? (
           <div className="tbl"><table>
-            <thead><tr><th>Request</th>{acc && acc.subs.length > 0 && <th>For</th>}<th>Applied on</th><th className="n">Amount</th><th>Where</th><th>Taken from</th><th>Attachments</th><th>Status</th></tr></thead>
+            <thead><tr><th>Request</th>{acc && acc.subs.length > 0 && <th>For</th>}<th>Applied on</th><th className="n">Amount</th><th>Where</th><th>Taken from</th><th>Attachments</th><th>Status</th><th /></tr></thead>
             <tbody>{wds.map(w => (
               <tr key={w.id}>
                 <td className="mono">{w.code}</td>
@@ -183,17 +185,62 @@ export function Withdraw() {
                 <td>{(w.allocations || []).map(p => `${p.code} (${rateShort(p.rate)}): ${money(p.amount)}`).join(', ')}</td>
                 <td><AttachmentLinks items={w.attachments} /></td>
                 <td><WdBadge s={w.status} />{w.status === 'completed' && <span className="sub">{w.method === 'ib' ? 'approved' : 'paid'} {date(w.completed_on)}{w.payment_ref ? ' · ' + w.payment_ref : ''}</span>}{w.status === 'cancelled' && w.cancelled_reason && <span className="sub">{w.cancelled_reason}</span>}</td>
+                <td>{w.status === 'pending' && <span style={{ display: 'inline-flex', gap: 6 }}><button className="btn sm" onClick={() => setEditing(w)}>Edit</button><button className="btn sm danger" onClick={() => setDel(w)}>Delete</button></span>}</td>
               </tr>
             ))}</tbody>
           </table></div>
         ) : <div className="card-b"><Empty title="No withdrawals yet">Requests show here as Pending until the company completes them.</Empty></div>}
       </div>
 
+      {editing && <EditWithdrawal w={editing} who={whoName(editing.investor_id)} hasIb={editing.investor_id === me ? !!acc?.ib : true} ibLabel={editing.investor_id === me ? 'Transfer to my IB' : 'Transfer to me (IB)'} onClose={() => setEditing(null)} />}
+      {del && <DeleteWithdrawal w={del} who={whoName(del.investor_id)} onClose={() => setDel(null)} />}
       {confirm && (
         <Modal title={`Withdraw ${money(amt)}${forMe ? '' : ' for ' + sub!.full_name}?`} sub={`Taken from ${preview.map(p => `${p.code} (${rateShort(p.rate)})`).join(', ')}, ${how}. From today, returns are calculated on the lower amount. ${method === 'ib' ? 'The company approves the transfer and marks it completed.' : 'The company pays it and marks it completed.'}${files.length ? ` ${files.length} attachment${files.length === 1 ? '' : 's'} included.` : ''}`}
           onClose={() => setConfirm(false)}
           foot={<><button className="btn ghost" onClick={() => setConfirm(false)}>Cancel</button><button className="btn primary" onClick={send} disabled={act.busy}>{act.busy ? 'Sending…' : 'Send request'}</button></>} />
       )}
     </>
+  );
+}
+
+/** Edit a pending withdrawal: amount, where the money goes, note. The investor (or their IB) and the Super Admin can do this. */
+export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admin = false, onClose }: { w: Withdrawal; who: string; hasIb: boolean; ibLabel?: string; admin?: boolean; onClose: () => void }) {
+  const act = useAction();
+  const [amount, setAmount] = useState(String(w.amount));
+  const [method, setMethod] = useState<WithdrawalMethod>(w.method);
+  const [mt5, setMt5] = useState(w.mt5_account || '');
+  const [note, setNote] = useState(w.note || '');
+  const amt = Number(amount);
+  const err = !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount.' : method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5.trim()) ? 'Enter the MT5 account number.' : null;
+  const ways: [WithdrawalMethod, string][] = [['bank', 'Bank account'], ['mt5', 'MT5 account'], ...(hasIb ? [['ib', ibLabel] as [WithdrawalMethod, string]] : []), ...(admin ? [['cash', 'Cash'] as [WithdrawalMethod, string]] : [])];
+  const go = async () => {
+    const r = await act.run(() => rpc('update_withdrawal', { p_id: w.id, p_amount: amt, p_method: method, p_mt5: method === 'mt5' ? mt5.trim() : '', p_note: note.trim() }), ['Withdrawal updated', `${w.code} · ${money(amt)}`]);
+    if (r !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`Edit ${w.code}`} sub={`${who ? who + ' · ' : ''}taken again from the highest monthly ROI first, from ${date(w.requested_on)}.`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !!err}>{act.busy ? 'Saving…' : 'Save'}</button></>}>
+      <div className="form">
+        <Field label="Amount (INR) *" err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
+        <Field label="Where should the money go?"><div className="chips">
+          {ways.map(([k, l]) => <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k)}>{l}</button>)}
+        </div></Field>
+        {method === 'mt5' && <Field label="MT5 account number *"><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
+        <Field label="Note"><input className="input" value={note} onChange={e => setNote(e.target.value)} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/** Delete a withdrawal: the amount goes back into the investments it was taken from and the returns are recalculated. */
+export function DeleteWithdrawal({ w, who, onClose }: { w: Withdrawal; who: string; onClose: () => void }) {
+  const act = useAction();
+  const go = async () => {
+    const r = await act.run(() => rpc('delete_withdrawal', { p_id: w.id }), ['Withdrawal deleted', `${w.code} · the amount is back in the investments`]);
+    if (r !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`Delete ${w.code}?`} sub={`${money(w.amount)}${who ? ' · ' + who : ''}. The amount goes back into the investments it was taken from${w.status === 'completed' ? ' (this withdrawal was already paid)' : ''}, and returns are recalculated from ${date(w.requested_on)}. This cannot be undone.`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Keep</button><button className="btn danger" onClick={go} disabled={act.busy}>{act.busy ? 'Deleting…' : 'Delete withdrawal'}</button></>} />
   );
 }

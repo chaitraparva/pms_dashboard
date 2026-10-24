@@ -95,7 +95,7 @@ export function Investors() {
         sub={q.data ? `${rows.length} registered · ${rows.filter(r => r.kyc_status === 'pending').length} awaiting verification · ${rows.filter(r => !r.branch_id).length} without a branch` : 'Loading…'}
         actions={<>
           {sel.size > 0 && <button className="btn" onClick={() => setAssigning(true)}><Icon name="branch" />Assign branch ({sel.size})</button>}
-          <button className="btn" onClick={exportCsv} disabled={!rows.length}><Icon name="download" />Export CSV</button>
+          <button className="btn" onClick={exportCsv} disabled={!rows.length}><Icon name="download" />Export to Excel</button>
           <button className="btn accent" onClick={() => nav('/admin/investments?new=1')}><Icon name="plus" />Record investment</button>
         </>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : !rows.length ? (
@@ -184,7 +184,7 @@ async function loadDetail(code: string): Promise<DetailData | null> {
     introducer: (must(intro) as AdminLite | null) || null, brought, bonus: { earned: tot(x => x.status !== 'cancelled'), paid: tot(x => x.status === 'paid') } };
 }
 
-type Dialog = null | 'introduce' | 'kyc-verified' | 'kyc-rejected' | 'status' | 'edit' | 'upload' | 'branch' | 'password' | { del: DocumentRow };
+type Dialog = null | 'introduce' | 'kyc-verified' | 'kyc-rejected' | 'status' | 'edit' | 'upload' | 'branch' | 'password' | 'delete' | { del: DocumentRow };
 
 export function InvestorDetail() {
   const { code = '' } = useParams();
@@ -232,6 +232,7 @@ export function InvestorDetail() {
           {(p.has_login || p.role === 'super_admin') && <button className="btn" onClick={() => setDlg('password')}>Reset password</button>}
           <button className="btn" onClick={() => nav('/admin/announcements?to=' + p.id)}><Icon name="announce" />Send notice</button>
           {!self && <button className={'btn ' + (p.account_status === 'active' ? 'danger' : '')} onClick={() => setDlg('status')}>{p.account_status === 'active' ? 'Suspend account' : 'Reactivate account'}</button>}
+          {p.role === 'investor' && <button className="btn danger" onClick={() => setDlg('delete')}>Delete investor</button>}
           {p.role === 'investor' && <button className="btn accent" disabled={p.account_status !== 'active'}
             title={p.account_status !== 'active' ? 'Account is suspended' : undefined}
             onClick={() => nav('/admin/investments?new=1&investor=' + encodeURIComponent(p.code || ''))}><Icon name="plus" />Record investment</button>}
@@ -392,9 +393,31 @@ export function InvestorDetail() {
       {dlg === 'branch' && <BranchDialog ids={[p.id]} label={p.full_name || p.email} current={p.branch_id} branches={branches} onClose={() => setDlg(null)} />}
       {dlg === 'edit' && <EditInvestor p={p} onClose={() => setDlg(null)} />}
       {dlg === 'password' && <ResetPassword p={p} onClose={() => setDlg(null)} />}
+      {dlg === 'delete' && <DeleteInvestor p={p} subs={brought.length} invs={invs.length} onClose={() => setDlg(null)} />}
       {dlg === 'upload' && <UploadDoc p={p} invs={invs} onClose={() => setDlg(null)} />}
       {dlg && typeof dlg === 'object' && <DeleteDoc d={dlg.del} onClose={() => setDlg(null)} />}
     </>
+  );
+}
+
+/** Super Admin: delete an investor with their investments, returns, withdrawals, requests, documents and login. */
+function DeleteInvestor({ p, subs, invs, onClose }: { p: Profile; subs: number; invs: number; onClose: () => void }) {
+  const act = useAction();
+  const nav = useNavigate();
+  const [reason, setReason] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const go = async () => {
+    const r = await act.run(() => rpc('admin_delete_investor', { p_id: p.id, p_reason: reason.trim() }), ['Investor deleted', (p.full_name || p.code || '') + ' was removed']);
+    if (r !== undefined) { refreshAll(); onClose(); nav('/admin/investors'); }
+  };
+  return (
+    <Modal title={`Delete ${p.full_name || p.email}?`} sub={subs ? `${p.full_name} has ${subs} sub-investor${subs === 1 ? '' : 's'}. Delete them or place them under someone else first.` : `Removes ${p.full_name}, their ${invs} investment${invs === 1 ? '' : 's'} with all returns and payouts, their withdrawals, requests, documents and login. This cannot be undone.`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Keep</button><button className="btn danger" onClick={go} disabled={act.busy || !!subs || confirm.trim().toUpperCase() !== 'DELETE'}>{act.busy ? 'Deleting…' : 'Delete investor'}</button></>}>
+      {!subs && <>
+        <Field label="Reason (saved to the history)"><input className="input" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Added by mistake" /></Field>
+        <Field label="Type DELETE to confirm"><input className="input mono" value={confirm} onChange={e => setConfirm(e.target.value)} /></Field>
+      </>}
+    </Modal>
   );
 }
 

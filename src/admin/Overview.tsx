@@ -97,7 +97,7 @@ export function Overview() {
         <select className="input" style={{ width: 'auto' }} value={branch} onChange={e => setBranch(e.target.value)} aria-label="Branch">
           <option value="">All branches</option>{(q.data?.branchList || []).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
-        <button className="btn" onClick={exportCsv} disabled={act.busy}><Icon name="download" />Export CSV</button>
+        <button className="btn" onClick={exportCsv} disabled={act.busy}><Icon name="download" />Export to Excel</button>
         <button className="btn accent" onClick={() => nav('/admin/investments?new=1')}><Icon name="plus" />Record investment</button>
       </>} />
   );

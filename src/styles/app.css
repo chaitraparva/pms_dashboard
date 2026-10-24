@@ -468,3 +468,9 @@ pre.json{background:var(--surface-2);border:1px solid var(--line);border-radius:
 .ib-card{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);padding:10px 12px}
 .f-row.three{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media (max-width:760px){.f-row.three{grid-template-columns:minmax(0,1fr)}}
+/* investor rank: where you are between the earliest and the newest investor */
+.rank-line{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;font-size:12px;color:var(--fg-3)}
+.rank-line span{display:grid;text-align:center;line-height:1.2}
+.rank-line small{font-size:11px}
+.rank-rail{position:relative;height:8px;border-radius:999px;background:linear-gradient(90deg,var(--surface-2),var(--green))}
+.rank-rail i{position:absolute;top:50%;width:16px;height:16px;border-radius:50%;background:var(--navy);border:3px solid var(--surface);box-shadow:0 0 0 1px var(--line-strong);transform:translate(-50%,-50%)}

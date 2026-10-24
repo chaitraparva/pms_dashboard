@@ -64,7 +64,7 @@ export function Transactions() {
     <>
       <PageHead crumbs={['Transactions']} title="Transaction ledger"
         sub="Append-only. Entries are never edited or deleted; corrections are posted as separate reversing entries."
-        actions={<IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export CSV</IconBtn>} />
+        actions={<IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export to Excel</IconBtn>} />
       {q.error && <ErrorNote msg={q.error} retry={q.reload} />}
       {!q.data && !q.error ? <Loading /> : q.data && (
         <DataTable rows={rows} cols={cols} rowKey={r => r.id} searchPh="Search ID, investment, investor, reference"

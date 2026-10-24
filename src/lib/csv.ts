@@ -8,11 +8,16 @@ export function toCsv(headers: string[], rows: (string | number | null | undefin
   return [headers, ...rows].map(r => r.map(cell).join(',')).join('\r\n');
 }
 
+/* ---------- Export to Excel ---------- */
+export interface ExportRequest { name: string; headers: string[]; rows: (string | number | null | undefined)[][]; sheet?: string }
+const exportListeners = new Set<(r: ExportRequest) => void>();
+/** The Export to Excel dialog (src/ui/ExportDialog.tsx) listens here. */
+export function onExport(f: (r: ExportRequest) => void) { exportListeners.add(f); return () => { exportListeners.delete(f); }; }
+
+/** "Export to Excel": opens the dialog (choose dates and branch), which downloads an .xlsx file.
+ *  Kept under its old name so every list's export button uses it. */
 export function downloadCsv(name: string, headers: string[], rows: (string | number | null | undefined)[][]) {
-  const blob = new Blob(['﻿' + toCsv(headers, rows)], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name.endsWith('.csv') ? name : name + '.csv';
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  const req = { name: name.replace(/\.csv$/i, ''), headers, rows };
+  if (exportListeners.size) exportListeners.forEach(f => f(req));
+  else import('./xlsx').then(m => m.downloadXlsx(req.name, headers, rows));
 }

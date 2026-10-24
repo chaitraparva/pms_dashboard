@@ -36,7 +36,7 @@ export function Transactions() {
   return (
     <>
       <PageHead crumbs={['Transactions']} title="Transactions" sub="Every movement on your investments. Payouts show as paid only after the bank confirms them."
-        actions={rows.length ? <button className="btn" onClick={exportCsv}><Icon name="download" />Export CSV</button> : undefined} />
+        actions={rows.length ? <button className="btn" onClick={exportCsv}><Icon name="download" />Export to Excel</button> : undefined} />
       {term && (
         <div className="note info" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <span>Showing results for <b>“{term}”</b>: {rows.length} transaction{rows.length === 1 ? '' : 's'}.</span>

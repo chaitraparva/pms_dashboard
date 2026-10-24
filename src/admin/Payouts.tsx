@@ -111,7 +111,7 @@ export function Payouts() {
     <>
       <PageHead crumbs={['Payouts']} title="Payouts"
         sub="Payments are made by bank transfer outside the platform and confirmed here with a reference. Nothing shows as paid until it is confirmed."
-        actions={<IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export CSV</IconBtn>} />
+        actions={<IconBtn icon="download" onClick={exportCsv} disabled={!rows.length}>Export to Excel</IconBtn>} />
       {q.error && <ErrorNote msg={q.error} retry={q.reload} />}
       {!q.data && !q.error ? <Loading /> : q.data && (
         <>

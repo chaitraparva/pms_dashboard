@@ -84,6 +84,7 @@ export function Branches() {
     return { d, list };
   }, []);
   const [edit, setEdit] = useState<Branch | 'new' | null>(null);
+  const [del, setDel] = useState<Branch | null>(null);
   return (
     <>
       <PageHead crumbs={['Branches']} title="Branches" sub="Branch-wise view of the same Super Admin dashboard. Investors are assigned to a branch on their profile or in bulk from Investors."
@@ -101,14 +102,28 @@ export function Branches() {
               <tbody>{q.data.list.map(b => (
                 <tr key={b.id}><td className="m">{b.code}</td><td><Link to={'/admin/branches/' + b.code}>{b.name}</Link></td><td>{b.city || '—'}</td>
                   <td>{b.status === 'active' ? <Badge cls="b-green">Active</Badge> : <Badge cls="b-grey">Inactive</Badge>}</td>
-                  <td style={{ textAlign: 'right' }}><button className="btn sm" onClick={() => setEdit(b)}>Edit</button></td></tr>
+                  <td style={{ textAlign: 'right' }}><span style={{ display: 'inline-flex', gap: 6 }}><button className="btn sm" onClick={() => setEdit(b)}>Edit</button><button className="btn sm danger" onClick={() => setDel(b)}>Delete</button></span></td></tr>
               ))}</tbody>
             </table></div>
           </div>
         </>
       )}
       {edit && <BranchForm b={edit === 'new' ? null : edit} onClose={() => setEdit(null)} />}
+      {del && <DeleteBranch b={del} onClose={() => setDel(null)} />}
     </>
+  );
+}
+
+/** Super Admin: delete a branch. Its investors stay, without a branch. */
+function DeleteBranch({ b, onClose }: { b: Branch; onClose: () => void }) {
+  const act = useAction();
+  const go = async () => {
+    const r = await act.run(() => rpc<number>('admin_delete_branch', { p_id: b.id }), ['Branch deleted', b.name]);
+    if (r !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`Delete ${b.name}?`} sub="Investors in this branch are kept and shown as “No branch”. Their investments do not change." onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Keep</button><button className="btn danger" onClick={go} disabled={act.busy}>Delete branch</button></>} />
   );
 }
 
@@ -236,7 +251,7 @@ export function BranchDetail() {
       <PageHead crumbs={['Branches', branch.name]} title={`${branch.name} Branch`}
         sub={`${rows.length} investor${rows.length === 1 ? '' : 's'}${branch.city ? ' · ' + branch.city : ''} · figures from the investment records below`}
         actions={<>
-          <button className="btn" onClick={exportCsv} disabled={!lines.length}><Icon name="download" />Export CSV</button>
+          <button className="btn" onClick={exportCsv} disabled={!lines.length}><Icon name="download" />Export to Excel</button>
           <button className="btn" onClick={() => nav('/admin/investors?branch=' + branch.code)}><Icon name="users" />Manage investors</button>
         </>} />
       <div className="kpis">
