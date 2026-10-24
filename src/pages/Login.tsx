@@ -82,11 +82,11 @@ export function Login() {
       <section className="login-r">
         {mode === 'signin' && (
           <form className="login-box" onSubmit={signIn}>
-            <div><h2>Sign in</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>Super Admin signs in with email. Investors, IBs and sub-investors sign in with their phone number.</p></div>
+            <div><h2>Sign in</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>Super Admin signs in with email. Investors sign in with their phone number.</p></div>
             <div className="role-pick" role="radiogroup" aria-label="I am a">
               {(['super_admin', 'investor'] as const).map(r => (
                 <button key={r} type="button" role="radio" aria-checked={as === r} className={'role ' + (as === r ? 'on' : '')} onClick={() => { setAs(r); setEmail(''); setPw(''); setMsg(null); }}>
-                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor / IB'}</b><span>{r === 'super_admin' ? 'Records investors, investments, withdrawals and payouts' : 'Investors, IBs and sub-investors: investments, returns, requests and withdrawals'}</span>
+                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor'}</b><span>{r === 'super_admin' ? 'Records investors, investments, withdrawals and payouts' : 'Your investments, returns, requests and withdrawals'}</span>
                 </button>
               ))}
             </div>
@@ -105,7 +105,7 @@ export function Login() {
             <div className="role-pick" role="radiogroup" aria-label="I am a">
               {(['super_admin', 'investor'] as const).map(r => (
                 <button key={r} type="button" role="radio" aria-checked={as === r} className={'role ' + (as === r ? 'on' : '')} onClick={() => { setAs(r); setEmail(''); setMsg(null); }}>
-                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor / IB'}</b><span>{r === 'super_admin' ? 'Signs in with email' : 'Signs in with phone number'}</span>
+                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor'}</b><span>{r === 'super_admin' ? 'Signs in with email' : 'Signs in with phone number'}</span>
                 </button>
               ))}
             </div>

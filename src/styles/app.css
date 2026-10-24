@@ -466,3 +466,5 @@ pre.json{background:var(--surface-2);border:1px solid var(--line);border-radius:
 .sec{border:1px solid var(--line);border-radius:var(--r);padding:14px;display:grid;gap:12px;background:var(--surface)}
 .sec>h4{margin:0;font-size:13px;letter-spacing:.02em}
 .ib-card{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);padding:10px 12px}
+.f-row.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:760px){.f-row.three{grid-template-columns:minmax(0,1fr)}}

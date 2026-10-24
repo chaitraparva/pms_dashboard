@@ -165,13 +165,19 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const opts = useQuery(async () => {
     const [all, branches, pre] = await Promise.all([
       fetchAll<Person>((a, b) => api.from('profiles').select('id,full_name,code,email,phone,branch_id,introduced_by,has_login,is_ib,can_introduce,account_status').eq('role', 'investor').order('full_name').range(a, b)),
-      api.from('branches').select('id,name').then(r => must(r) as Pick<Branch, 'id' | 'name'>[]),
+      api.from('branches').select('id,name,code,city,status').order('name').then(r => must(r) as Pick<Branch, 'id' | 'name' | 'code' | 'city' | 'status'>[]),
       preInvestor ? api.from('profiles').select('id,full_name,code,phone').eq('code', preInvestor).maybeSingle() : Promise.resolve({ data: null, error: null })
     ]);
     return { all, branches, pre: (pre.data as { id: string; full_name: string; phone: string } | null) || null };
   }, [preInvestor]);
 
   const [type, setType] = useState<'individual' | 'ib'>('individual');
+  // branch: chosen at the top; an existing person's (or the IB's) branch is filled in until the admin changes it
+  const [branch, setBranch] = useState('');
+  const [branchTouched, setBranchTouched] = useState(false);
+  const [nbName, setNbName] = useState('');
+  const [nbCode, setNbCode] = useState('');
+  const [nbCity, setNbCity] = useState('');
   // individual
   const [pick, setPick] = useState('');
   const [phone, setPhone] = useState('');
@@ -256,15 +262,27 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const mine = amt > 0 && invRate ? Math.round(amt * invRate) / 100 : 0;
   const upMonthly = amt > 0 && b > 0 ? Math.round((Math.round(amt * r) / 100 - mine) * 100) / 100 : 0;
   const investorName = type === 'individual' ? name.trim() : withSub ? subName.trim() : ibName;
+  const subRow = withSub && subL.found ? all.find(x => x.id === subL.found!.id) : undefined;
+  const indRow = picked || (ind.found ? all.find(x => x.id === ind.found!.id) : undefined);
+  const suggested = (type === 'individual' ? indRow?.branch_id : withSub ? subRow?.branch_id || ib?.branch_id : ib?.branch_id) || '';
+  useEffect(() => { if (!branchTouched) setBranch(suggested); }, [suggested, branchTouched]);
+  const newBranch = branch === 'new';
+  const branchErr = newBranch ? (!nbName.trim() ? 'Enter the branch name.' : !nbCode.trim() ? 'Enter a short branch code, e.g. BLR.' : (opts.data?.branches || []).some(x => x.code.toLowerCase() === nbCode.trim().toLowerCase() || x.name.toLowerCase() === nbName.trim().toLowerCase()) ? 'A branch with this name or code already exists. Choose it from the list.' : null) : null;
 
   const save = async () => {
     setTried(true);
-    if (bad) return;
+    if (bad || branchErr) return;
     const res = await act.run(async () => {
+      let branchId = branch;
+      if (newBranch) {
+        branchId = await rpc<string>('admin_save_branch', { p_name: nbName.trim(), p_code: nbCode.trim(), p_city: nbCity.trim(), p_reason: 'Added from Record investment' });
+        // keep the new branch selected, so sending the form again does not add it twice
+        setBranch(branchId); setBranchTouched(true); opts.reload();
+      }
       const file = await uploadAttachment(proof[0], 'proofs');
       try {
         return await recordInvestmentFull({
-          p_type: type, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(),
+          p_type: type, p_branch: branchId || null, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(),
           ...(type === 'individual'
             ? { p_person: picked ? picked.id : null, p_name: name.trim(), p_phone: phone.trim(), p_password: needPw ? pw : '' }
             : {
@@ -292,6 +310,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
         <dl className="kv">
           <dt>Investor type</dt><dd>{type === 'ib' ? (withSub ? 'Sub-investor under IB ' + ibName : 'IB (own investment)') : 'Individual'}</dd>
           <dt>Investor</dt><dd>{done.investor}</dd>
+          <dt>Branch</dt><dd>{branchName(branch) || (newBranch ? nbName : 'No branch')}</dd>
           <dt>Investment</dt><dd className="mono">{done.code} · {money(amt)} at {rateShort(r)}</dd>
           {withSub && b > 0 && <><dt>IB bonus</dt><dd>{ibName} · {rateShort(b)} ({money(upMonthly)} / month), shown to them now</dd></>}
           <dt>Proof</dt><dd>{proof[0]?.name}</dd>
@@ -317,6 +336,20 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={save} disabled={act.busy || !opts.data}>{act.busy ? 'Saving…' : 'Record investment'}</button></>}>
       {opts.error ? <ErrorNote msg={opts.error} retry={opts.reload} /> : !opts.data ? <Loading rows={3} /> : (
         <div className="form">
+          <Field label="Branch" err={tried ? branchErr : null} hint={newBranch ? 'The branch is added when you record the investment.' : branch && branch === suggested && !branchTouched ? 'The investor’s current branch.' : 'The investor is placed in this branch. Branch totals on the Overview update straight away.'}>
+            <select className={'input ' + (tried && branchErr ? 'bad' : '')} value={branch} onChange={ev => { setBranch(ev.target.value); setBranchTouched(true); }}>
+              <option value="">No branch</option>
+              {opts.data.branches.filter(x => x.status === 'active' || x.id === branch).map(x => <option key={x.id} value={x.id}>{x.name} · {x.code}{x.city ? ' · ' + x.city : ''}</option>)}
+              <option value="new">+ Add a new branch…</option>
+            </select>
+            {newBranch && (
+              <div className="f-row three" style={{ marginTop: 8 }}>
+                <input className={'input ' + (tried && branchErr && !nbName.trim() ? 'bad' : '')} value={nbName} onChange={ev => setNbName(ev.target.value)} placeholder="Branch name, e.g. Bengaluru" aria-label="New branch name" />
+                <input className={'input mono ' + (tried && branchErr && !nbCode.trim() ? 'bad' : '')} value={nbCode} onChange={ev => setNbCode(ev.target.value.toUpperCase())} placeholder="Code, e.g. BLR" maxLength={12} aria-label="New branch code" />
+                <input className="input" value={nbCity} onChange={ev => setNbCity(ev.target.value)} placeholder="City (optional)" aria-label="New branch city" />
+              </div>
+            )}
+          </Field>
           <Field label="Investor type *">
             <div className="chips" role="radiogroup" aria-label="Investor type">
               <button type="button" role="radio" aria-checked={type === 'individual'} className={'chip ' + (type === 'individual' ? 'on' : '')} onClick={() => setType('individual')}>Individual</button>
@@ -433,6 +466,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             <div className="card-b">
               <dl className="kv">
                 <dt>Investor type</dt><dd>{type === 'ib' ? (withSub ? `Sub-investor under ${ibName || 'the IB'}` : 'IB · own investment') : 'Individual'}</dd>
+                <dt>Branch</dt><dd>{newBranch ? (nbName.trim() || '—') + ' (new)' : branchName(branch) || <span className="muted">No branch</span>}</dd>
                 <dt>Investment for</dt><dd>{investorName || '—'}</dd>
                 <dt>Monthly ROI</dt><dd>{r > 0 ? rate(r) : '—'}</dd>
                 <dt>Investor gets</dt><dd>{invRate ? <>{rate(invRate)}{amt > 0 && <> · <b>{money(mine)}</b> / month</>}</> : '—'}</dd>

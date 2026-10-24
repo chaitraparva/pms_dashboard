@@ -848,6 +848,8 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   const up = upId ? T('profiles').find(p => p.id === upId && p.role === 'investor') : null;
   if (upId && !up) fail('Choose the investor this person is under.');
   if (up && up.account_status !== 'active') fail(`${up.full_name} (IB) has a suspended account.`);
+  const branchId = blank(a.p_branch) ? null : String(a.p_branch);
+  if (branchId && !T('branches').some(b => b.id === branchId)) fail('Choose a valid branch.');
   if (person && upId && (upId === person.id || isUnder(upId, person.id))) fail(`${person.full_name} cannot be under ${up!.full_name}: ${up!.full_name} is already under ${person.full_name}.`);
   if (person && person.introduced_by && upId && person.introduced_by !== upId) {
     const cur = T('profiles').find(p => p.id === person!.introduced_by);
@@ -857,11 +859,17 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   if (!person) {
     if (!name) fail('Enter the name.');
     const id = uuid(), code = 'INVR-' + nextSeq('investor', 1001);
-    person = profileRow(id, '', name, code, 'investor', 'verified', { phone: a.p_phone, city: a.p_city, branch_id: up?.branch_id ?? (blank(a.p_branch) ? null : a.p_branch), introduced_by: upId });
+    person = profileRow(id, '', name, code, 'investor', 'verified', { phone: a.p_phone, city: a.p_city, branch_id: branchId ?? up?.branch_id ?? null, introduced_by: upId });
     T('profiles').push(person);
     audit('investor.create', 'profile', id, code, 'Added with a recorded investment', null, { full_name: name, phone: a.p_phone, under: up?.code || null });
   } else if (upId && !person.introduced_by) { person.introduced_by = upId; person.updated_at = nowIso(); }
   if (up && !up.is_ib) { up.is_ib = true; up.updated_at = nowIso(); }
+  // the branch chosen in Record investment moves an existing investor to that branch
+  if (!isNew && branchId && person.branch_id !== branchId) {
+    const old = T('branches').find(b => b.id === person!.branch_id)?.name ?? null;
+    person.branch_id = branchId; person.updated_at = nowIso();
+    audit('investor.branch', 'profile', person.id, person.code, 'Branch set while recording an investment', { branch: old }, { branch: T('branches').find(b => b.id === branchId)?.name ?? null });
+  }
   const upline = person.introduced_by ? T('profiles').find(p => p.id === person!.introduced_by) : null;
   const bonus = upline ? bonusIn : 0;
   if (bonus >= rate) fail('The bonus must be less than the monthly ROI.');
@@ -934,7 +942,7 @@ export async function adminRecordInvestment(a: Row): Promise<{ id: string; code:
   if (Number(proof!.size || 0) > 3 * 1024 * 1024) fail('The proof must be 3 MB or smaller.');
   let args: Row; let ib: Row | null = null;
   if (a.p_type === 'ib') {
-    if (a.p_new_ib) ib = await registerIB(a.p_new_ib);
+    if (a.p_new_ib) ib = await registerIB({ ...a.p_new_ib, branch_id: blank(a.p_new_ib.branch_id) ? a.p_branch : a.p_new_ib.branch_id });
     else {
       ib = T('profiles').find(p => p.id === a.p_ib && p.role === 'investor') || fail('Choose the IB.');
       if (ib!.account_status !== 'active') fail(`${ib!.full_name} has a suspended account.`);
