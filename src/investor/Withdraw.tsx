@@ -25,7 +25,7 @@ async function load(id: string) {
   const ids = [id, ...(acc?.subs || []).map(s => s.id)];
   const [invs, wds] = await Promise.all([
     fetchAll<Investment>((a, b) => api.from('investments').select('*').eq('investor_id', id).range(a, b)),
-    fetchAll<Withdrawal>((a, b) => api.from('withdrawals').select('*').in('investor_id', ids).order('requested_at', { ascending: false }).range(a, b))
+    fetchAll<Withdrawal>((a, b) => api.from('withdrawals').select('*').in('investor_id', ids).order('requested_on', { ascending: false }).order('requested_at', { ascending: false }).range(a, b))
   ]);
   return { acc, invs, wds };
 }

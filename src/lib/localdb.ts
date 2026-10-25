@@ -520,7 +520,7 @@ export function rpcCall(fn: string, a: Row): unknown {
     case 'withdrawal_preview': {
       // the Super Admin for anyone, an IB for a sub-investor under them, otherwise the signed-in investor
       const u = a.p_investor && (isAdmin() || isMySub(a.p_investor)) ? String(a.p_investor) : currentUid; if (!u) return [];
-      return planWithdrawal(u, Number(a.p_amount) || 0).map(p => (isAdmin() ? p : { ...p, plan_rate: undefined }));
+      return planWithdrawal(u, Number(a.p_amount) || 0, isAdmin() && !blank(a.p_date) ? String(a.p_date) : undefined).map(p => (isAdmin() ? p : { ...p, plan_rate: undefined }));
     }
     case 'my_account': return myAccount();
     case 'my_sub_investor': return mySubInvestor(String(a.p_id || ''));
@@ -539,7 +539,7 @@ export function rpcCall(fn: string, a: Row): unknown {
       [...new Set([r.requested_by, r.investor_id].filter(Boolean))].forEach(u => notify(u, 'investment_request', 'Investment request ' + r.code + ' was not approved', String(a.p_reason).trim(), '/portal/request-investment', 'investment_requests', r.id + ':rej'));
       audit('investment_request.reject', 'investment_request', r.id, r.code, a.p_reason, { status: 'pending' }, { status: 'rejected' }); touched('investment_requests', 'notifications'); return null;
     }
-    case 'request_withdrawal': { const id = requestWithdrawal(a); touched('withdrawals', 'investments', 'ledger_entries', 'notifications'); return id; }
+    case 'request_withdrawal': { const id = requestWithdrawal(a); touched('withdrawals', ...RET_TABLES); return id; }
     case 'admin_complete_withdrawal': completeWithdrawal(a); touched('withdrawals', 'ledger_entries', 'notifications'); return null;
     case 'admin_cancel_withdrawal': cancelWithdrawal(a); touched('withdrawals', 'investments', 'ledger_entries', 'notifications'); return null;
     case 'update_withdrawal': updateWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
@@ -1277,8 +1277,9 @@ export async function createIB(u: Row): Promise<{ id: string; code: string }> {
 /* ---------- withdrawals: always taken from the highest monthly ROI first, whatever the lock-in ---------- */
 const WD_LIVE = (i: Row) => LIVE.includes(i.status) && Number(i.principal) > 0;
 /** How a withdrawal is split: highest monthly ROI first, then the next, oldest first on equal rates. */
-function planWithdrawal(investorId: string, amount: number): Row[] {
-  const invs = T('investments').filter(i => i.investor_id === investorId && WD_LIVE(i))
+function planWithdrawal(investorId: string, amount: number, on?: string): Row[] {
+  // on a given date only investments that had started by then can be used
+  const invs = T('investments').filter(i => i.investor_id === investorId && WD_LIVE(i) && (!on || !i.start_date || String(i.start_date) <= on))
     .sort((x, y) => Number(y.monthly_rate) - Number(x.monthly_rate) || String(x.start_date).localeCompare(String(y.start_date)));
   let left = round2(amount); const out: Row[] = [];
   for (const i of invs) {
@@ -1297,6 +1298,58 @@ function wdHow(w: Row): string {
   if (w.method === 'ib') return 'transfer to IB ' + (T('profiles').find(p => p.id === w.ib_id)?.full_name || '');
   return 'bank transfer';
 }
+/** Withdrawals in the order they happened: by withdrawal date, then by when they were recorded. */
+const wdOrder = (x: Row, y: Row) => String(x.requested_on).localeCompare(String(y.requested_on)) || String(x.requested_at).localeCompare(String(y.requested_at));
+/** Takes a withdrawal's parts out of the investments (principal change from its date + ledger lines). */
+function applyWithdrawalParts(w: Row, parts: Row[]) {
+  const how = wdHow(w), done = w.status === 'completed';
+  parts.forEach(pt => {
+    const i = T('investments').find(x => x.id === pt.investment_id)!;
+    if (i.original_principal === undefined) i.original_principal = Number(i.principal);
+    i.principal_changes = [...(i.principal_changes || []), { date: w.requested_on, principal: pt.after, withdrawal_id: w.id }];
+    i.principal = pt.after; applySplit(i); i.updated_at = nowIso();
+    ledger({ investment_id: i.id, investor_id: w.investor_id, type: 'principal_redemption', amount: pt.amount, status: done ? 'confirmed' : 'pending', occurred_on: done ? w.completed_on || w.requested_on : w.requested_on,
+      reference: done ? w.payment_ref || w.code : w.code, note: (done ? 'Withdrawal paid · ' : 'Withdrawal requested · ') + how, source_table: 'withdrawals', source_id: w.id + ':' + i.id });
+  });
+  w.allocations = parts;
+}
+/** Records a new withdrawal in date order (first in, first out): withdrawals dated after it are taken out, the new one is
+ *  taken from the highest monthly ROI available on its date, then the later ones are applied again in order. Returns of the
+ *  investments that change are recalculated from the withdrawal date (refused if those are already approved or paid). */
+function placeWithdrawal(w: Row, who: Row): Row[] {
+  const d = String(w.requested_on);
+  const later = T('withdrawals').filter(x => x.investor_id === who.id && x.status !== 'cancelled' && String(x.requested_on) > d).sort(wdOrder);
+  const invs = T('investments').filter(i => i.investor_id === who.id);
+  const before = new Map(invs.map(i => [i.id, JSON.stringify(i.principal_changes || [])]));
+  const reopen = (i: Row) => {
+    i.principal = principalOn(i, '9999-12-31'); applySplit(i);
+    if (i.status === 'redeemed' && Number(i.principal) > 0) i.status = i.maturity_date && i.maturity_date <= today() ? 'matured' : 'active';
+  };
+  // 1. take the later withdrawals out
+  const laterIds = new Set(later.map(x => x.id));
+  invs.forEach(i => { i.principal_changes = (i.principal_changes || []).filter((c: Row) => !laterIds.has(c.withdrawal_id)); reopen(i); });
+  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'withdrawals' && laterIds.has(String(l.source_id).split(':')[0])));
+  // 2. the new withdrawal, on its date
+  const available = round2(invs.filter(i => WD_LIVE(i) && (!i.start_date || String(i.start_date) <= d)).reduce((x, i) => x + Number(i.principal), 0));
+  if (Number(w.amount) > available) fail(`${who.full_name} can withdraw up to ${fmtMoney(available)}${d < today() ? ' on ' + fmtDate(d) : ''}.`);
+  const parts = planWithdrawal(who.id, Number(w.amount), d);
+  applyWithdrawalParts(w, parts);
+  // 3. the later withdrawals again, oldest first
+  later.forEach(x => {
+    const p = planWithdrawal(who.id, Number(x.amount), String(x.requested_on));
+    if (round2(p.reduce((t, q) => t + Number(q.amount), 0)) < Number(x.amount))
+      fail(`With this withdrawal, ${x.code} of ${fmtDate(x.requested_on)} (${fmtMoney(x.amount)}) would be more than ${who.full_name} has left. Change or delete ${x.code} first.`);
+    applyWithdrawalParts(x, p); x.updated_at = nowIso();
+  });
+  // 4. recalculate returns of the investments that changed, from the withdrawal date
+  const changed = invs.filter(i => JSON.stringify(i.principal_changes || []) !== before.get(i.id));
+  if (d < today() || later.length) {
+    changed.forEach(i => resetReturnsFrom(i, d));
+    changed.forEach(i => runAccrualsFor(i, today()));
+  }
+  changed.forEach(i => closeIfEmpty(i));
+  return parts;
+}
 function requestWithdrawal(a: Row): string {
   const mePr = me() || fail('Not signed in.');
   let investorId = mePr.id;
@@ -1309,8 +1362,10 @@ function requestWithdrawal(a: Row): string {
   if (!isAdmin() && who.account_status !== 'active') fail(`${who.full_name}’s account is suspended.`);
   const amount = Number(a.p_amount);
   if (!(amount > 0) || round2(amount) !== amount) fail('Enter the amount to withdraw (at most 2 decimals).');
-  const available = round2(T('investments').filter(i => i.investor_id === who.id && WD_LIVE(i)).reduce((x, i) => x + Number(i.principal), 0));
-  if (amount > available) fail(`${who.id === mePr.id ? 'You' : who.full_name} can withdraw up to ${fmtMoney(available)}.`);
+  // the Super Admin can record a withdrawal on an earlier date; withdrawals are applied in date order (first in, first out)
+  const d = isAdmin() && !blank(a.p_date) ? String(a.p_date) : today();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d > today()) fail('Enter the withdrawal date (today or earlier).');
+  const paid = isAdmin() && !!a.p_paid;
   const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : 'bank';
   if (method === 'cash' && !isAdmin()) fail('Choose your bank account, your MT5 account or a transfer to your IB.');
   const mt5 = str(a.p_mt5).trim();
@@ -1318,26 +1373,18 @@ function requestWithdrawal(a: Row): string {
   const ib = who.introduced_by ? T('profiles').find(p => p.id === who.introduced_by && p.role === 'investor') || null : null;
   if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
   const attachments = cleanAttachments(a.p_attachments);
-  const d = today(), id = uuid(), code = 'WDR-' + pad(nextSeq('withdrawal', 1), 5);
-  const parts = planWithdrawal(who.id, amount);
-  const row: Row = { id, code, investor_id: who.id, amount, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null, note: str(a.p_note), status: 'pending', requested_on: d, requested_at: nowIso(), requested_by: currentUid,
-    allocations: parts, attachments, completed_on: null, completed_by: null, payment_ref: null, admin_note: null, cancelled_reason: null, updated_at: nowIso() };
+  const id = uuid(), code = 'WDR-' + pad(nextSeq('withdrawal', 1), 5);
+  const row: Row = { id, code, investor_id: who.id, amount, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null, note: str(a.p_note), status: paid ? 'completed' : 'pending', requested_on: d, requested_at: nowIso(), requested_by: currentUid,
+    allocations: [], attachments, completed_on: paid ? str(a.p_paid_on, d) : null, completed_by: paid ? currentUid : null, payment_ref: paid ? str(a.p_ref) || null : null, admin_note: null, cancelled_reason: null, updated_at: nowIso() };
   const how = wdHow(row);
-  parts.forEach(pt => {
-    const i = T('investments').find(x => x.id === pt.investment_id)!;
-    if (i.original_principal === undefined) i.original_principal = Number(i.principal);
-    // ROI on the lower principal from the request date
-    i.principal_changes = [...(i.principal_changes || []), { date: d, principal: pt.after, withdrawal_id: id }];
-    i.principal = pt.after; applySplit(i); i.updated_at = nowIso(); closeIfEmpty(i);
-    ledger({ investment_id: i.id, investor_id: who.id, type: 'principal_redemption', amount: pt.amount, status: 'pending', occurred_on: d, reference: code, note: 'Withdrawal requested · ' + how, source_table: 'withdrawals', source_id: id + ':' + i.id });
-  });
+  const parts = placeWithdrawal(row, who);
   T('withdrawals').push(row);
   const byIb = !isAdmin() && who.id !== mePr.id;
-  T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
+  if (!isAdmin()) T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
     notify(ad.id, 'withdrawal', (method === 'ib' ? 'Transfer to IB ' : 'Withdrawal request ') + code + ': ' + fmtMoney(amount), who.full_name + (byIb ? ' (requested by IB ' + mePr.full_name + ')' : '') + ' · ' + how + ' · from ' + parts.map(p => p.code + ' (' + p.plan_rate + '%)').join(', ') + (method === 'ib' ? ' · needs your approval' : ''), '/admin/withdrawals', 'withdrawals', id));
-  notify(who.id, 'withdrawal', 'Withdrawal ' + code + ' · payment processed', fmtMoney(amount) + ' · ' + how + ' · returns are now calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
+  notify(who.id, 'withdrawal', 'Withdrawal ' + code + (paid ? ' · payment fulfilled' : ' · payment processed'), fmtMoney(amount) + ' · ' + how + ' · returns are calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
   if (byIb) notify(mePr.id, 'withdrawal', 'Withdrawal ' + code + ' for ' + who.full_name + ' · payment processed', fmtMoney(amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', id + ':req-ib');
-  audit('withdrawal.request', 'withdrawal', id, code, str(a.p_note, 'Withdrawal requested'), null, { amount, method, mt5_account: row.mt5_account, ib: ib?.code || null, requested_by: mePr.code, parts: parts.map(p => ({ code: p.code, amount: p.amount })) });
+  audit('withdrawal.request', 'withdrawal', id, code, str(a.p_note, 'Withdrawal requested'), null, { amount, date: d, status: row.status, method, mt5_account: row.mt5_account, ib: ib?.code || null, requested_by: mePr.code, parts: parts.map(p => ({ code: p.code, amount: p.amount })) });
   return id;
 }
 function completeWithdrawal(a: Row) {
@@ -1463,7 +1510,7 @@ function removeInvestment(i: Row, reason: string, withWithdrawals = false) {
 /** Puts back what a withdrawal took out of the investments (principal, closed status, ledger lines) and recalculates
  *  the returns from its date. A later withdrawal of the same person must be removed first. */
 function undoWithdrawal(w: Row) {
-  const later = T('withdrawals').find(x => x.id !== w.id && x.investor_id === w.investor_id && x.status !== 'cancelled' && String(x.requested_at) > String(w.requested_at));
+  const later = T('withdrawals').find(x => x.id !== w.id && x.investor_id === w.investor_id && x.status !== 'cancelled' && wdOrder(x, w) > 0);
   if (later) fail(`${later.code} was requested after ${w.code}. Delete or edit ${later.code} first.`);
   const invs = (w.allocations || []).map((pt: Row) => T('investments').find(x => x.id === pt.investment_id)).filter(Boolean) as Row[];
   invs.forEach(i => resetReturnsFrom(i, w.requested_on));
@@ -1500,7 +1547,8 @@ function updateWithdrawal(a: Row) {
   const invs = undoWithdrawal(w);
   const available = round2(T('investments').filter(i => i.investor_id === who.id && WD_LIVE(i)).reduce((x, i) => x + Number(i.principal), 0));
   if (amount > available) fail(`Up to ${fmtMoney(available)} can be withdrawn.`);
-  const parts = planWithdrawal(who.id, amount);
+  const parts = planWithdrawal(who.id, amount, String(w.requested_on));
+  if (round2(parts.reduce((t, q) => t + Number(q.amount), 0)) < amount) fail(`Up to ${fmtMoney(round2(parts.reduce((t, q) => t + Number(q.amount), 0)))} can be withdrawn on ${fmtDate(w.requested_on)}.`);
   Object.assign(w, { amount, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null, note: a.p_note != null ? str(a.p_note).trim() : w.note, allocations: parts, updated_at: nowIso() });
   if (a.p_attachments != null) w.attachments = cleanAttachments(a.p_attachments);
   const how = wdHow(w), d = w.requested_on;

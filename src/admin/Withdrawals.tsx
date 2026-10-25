@@ -23,7 +23,7 @@ type Tab = 'pending' | 'completed' | 'cancelled' | 'all';
 
 async function load() {
   const [wds, people] = await Promise.all([
-    fetchAll<Withdrawal>((a, b) => api.from('withdrawals').select('*').order('requested_at', { ascending: false }).range(a, b)),
+    fetchAll<Withdrawal>((a, b) => api.from('withdrawals').select('*').order('requested_on', { ascending: false }).order('requested_at', { ascending: false }).range(a, b)),
     fetchAll<P>((a, b) => api.from('profiles').select('id,code,full_name,phone,introduced_by').eq('role', 'investor').order('full_name').range(a, b))
   ]);
   const pm = new Map(people.map(p => [p.id, p]));
@@ -45,7 +45,7 @@ export function Withdrawals() {
   const cols: Col<Row>[] = useMemo(() => [
     { h: 'Request', m: true, v: r => r.code },
     { h: 'Investor', v: r => r.who?.full_name || '', r: r => r.who ? <><Link to={'/admin/investors/' + r.who.code}>{r.who.full_name}</Link><span className="sub">{r.who.code} · {r.who.phone}</span>{r.by && <span className="sub">requested by IB {r.by.full_name}</span>}</> : '—' },
-    { h: 'Applied on', v: r => r.requested_on, r: r => date(r.requested_on) },
+    { h: 'Withdrawal date', v: r => r.requested_on, r: r => date(r.requested_on) },
     { h: 'Amount', n: true, v: r => Number(r.amount), r: r => <b>{money(r.amount)}</b> },
     { h: 'How', v: r => r.method, r: r => <>{methodText(r.method)}{r.method === 'mt5' && r.mt5_account && <span className="sub mono">{r.mt5_account}</span>}{r.method === 'ib' && <span className="sub">to {r.ib?.full_name || 'IB'} · needs approval</span>}</> },
     { h: 'Proof', v: r => (r.attachments || []).length, r: r => <AttachmentLinks items={r.attachments} /> },
@@ -147,16 +147,21 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
   const [method, setMethod] = useState<WithdrawalMethod>('bank');
   const [mt5, setMt5] = useState('');
   const [parts, setParts] = useState<WithdrawalPart[]>([]);
+  const [on, setOn] = useState(today());
+  const [paid, setPaid] = useState(false);
+  const [ref, setRef] = useState('');
   const hasIb = !!people.find(p => p.id === who)?.introduced_by;
   const amt = Number(amount);
-  const look = async (id: string, a: number) => { setParts(id && a > 0 ? await rpc<WithdrawalPart[]>('withdrawal_preview', { p_investor: id, p_amount: a }).catch(() => []) : []); };
+  const look = async (id: string, a: number, d = on) => { setParts(id && a > 0 ? await rpc<WithdrawalPart[]>('withdrawal_preview', { p_investor: id, p_amount: a, p_date: d }).catch(() => []) : []); };
+  const badDate = !on || on > today();
   const go = async () => {
-    const r = await act.run(() => rpc('request_withdrawal', { p_investor: who, p_amount: amt, p_method: method, p_mt5: mt5.trim(), p_note: 'Recorded by Super Admin' }), ['Withdrawal recorded', 'Shown as Payment processed until you mark it fulfilled.']);
+    const r = await act.run(() => rpc('request_withdrawal', { p_investor: who, p_amount: amt, p_method: method, p_mt5: mt5.trim(), p_note: 'Recorded by Super Admin', p_date: on, p_paid: paid, p_ref: ref.trim() }),
+      ['Withdrawal recorded', (on < today() ? 'Dated ' + date(on) + '. Returns recalculated from that date. ' : '') + (paid ? 'Shown as Payment fulfilled.' : 'Shown as Payment processed until you mark it fulfilled.')]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title="Record a withdrawal" sub="Taken from the investor’s highest monthly ROI first. Returns use the lower amount from today." onClose={onClose}
-      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !who || !(amt > 0) || (method === 'mt5' && !mt5.trim())}>Record withdrawal</button></>}>
+    <Modal title="Record a withdrawal" sub="Taken from the investor’s highest monthly ROI first. Withdrawals are applied in date order (first in, first out); returns use the lower amount from the withdrawal date." onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !who || !(amt > 0) || badDate || (method === 'mt5' && !mt5.trim())}>Record withdrawal</button></>}>
       <div className="form">
         <Field label="Investor *"><SearchSelect value={who} onChange={v => { setWho(v); look(v, amt); }}
           options={people.map(p => ({ value: p.id, label: p.full_name + ' · ' + p.code, sub: p.phone || undefined }))} /></Field>
@@ -166,6 +171,15 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
             {([['bank', 'Bank transfer'], ['mt5', 'MT5 account'], ['cash', 'Cash'], ...(hasIb ? [['ib', 'Transfer to IB']] : [])] as [WithdrawalMethod, string][]).map(([k, l]) =>
               <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k)}>{l}</button>)}
           </div></Field>
+        </div>
+        <div className="f-row">
+          <Field label="Withdrawal date *" err={badDate ? 'Today or an earlier date.' : null} hint={on < today() ? 'An earlier date: later withdrawals of this investor are re-applied after it, and returns are recalculated from this date.' : 'Today, or pick the date the withdrawal actually happened.'}>
+            <input className="input" type="date" max={today()} value={on} onChange={e => { setOn(e.target.value); look(who, amt, e.target.value); }} />
+          </Field>
+          <Field label="Status">
+            <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={paid} onChange={e => setPaid(e.target.checked)} /> Already paid (Payment fulfilled)</label>
+            {paid && <input className="input mono" style={{ marginTop: 8 }} value={ref} onChange={e => setRef(e.target.value)} placeholder="Payment reference (optional)" />}
+          </Field>
         </div>
         {method === 'mt5' && <Field label="MT5 account *"><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
         {parts.length > 0 && <p className="hint">Taken from {parts.map(p => `${p.code} (${rateShort(p.plan_rate ?? p.rate)}): ${money(p.amount)}`).join(', ')}.</p>}
