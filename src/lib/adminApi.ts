@@ -41,7 +41,7 @@ export async function createIbLogin(u: NewIB): Promise<{ id: string; code: strin
 }
 
 /** Record investment: Individual (chosen, or found / added by phone with a login) or IB (with an optional sub-investor). A proof is required. */
-export async function recordInvestmentFull(a: Record<string, unknown>): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
+export async function recordInvestmentFull(a: Record<string, unknown>): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null; more: { id: string; code: string }[] }> {
   try { return await call('fn', { name: 'adminRecordInvestment', args: { ...a } }); } catch (e) { throw new Error(friendly((e as Error).message)); }
 }
 

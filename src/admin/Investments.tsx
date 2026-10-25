@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
@@ -162,6 +162,8 @@ function usePhoneLookup(phone: string, enabled = true) {
   return { digits, found };
 }
 
+interface Item { roi: string; bonus: string; lock: string; customLock: string; amount: string; start: string; ref: string; notes: string; roiWay: string; roiUpi: string; proof: File[] }
+
 /** Super Admin records an investment. Investor type comes first:
  *  Individual: choose an existing investor, or find / add one by phone number (a new person gets their login now).
  *  IB: choose (or register) the IB; their details fill in. Optionally add a sub-investor: the investment is then the
@@ -217,8 +219,10 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const [roiUpi, setRoiUpi] = useState('');
   const [notes, setNotes] = useState('');
   const [proof, setProof] = useState<File[]>([]);
+  // + Add another investment: investments 2, 3, … for the same person (investment 1 uses the fields above)
+  const [more, setMore] = useState<Item[]>([]);
   const [tried, setTried] = useState(false);
-  const [done, setDone] = useState<null | { code: string | null; investorCode: string; investor: string; logins: [string, string, string][] }>(null);
+  const [done, setDone] = useState<null | { code: string | null; investorCode: string; investor: string; logins: [string, string, string][]; more: { code: string; amt: number; r: number }[] }>(null);
 
   const ind = usePhoneLookup(phone, type === 'individual');
   const subL = usePhoneLookup(subPhone, type === 'ib' && hasSub && subMode === 'new');
@@ -246,7 +250,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const months = lock === 'custom' ? Number(customLock) : Number(lock);
   const r = Number(roi), b = withSub ? Number(bonus || 0) : 0, amt = Number(amount);
   // an IB can be registered with principal 0: the IB (and the sub-investor) are added without an investment
-  const regOnly = type === 'ib' && (!amount.trim() || amt === 0) && DEC(amount.trim() || '0', 2);
+  const regOnly = type === 'ib' && !more.length && (!amount.trim() || amt === 0) && DEC(amount.trim() || '0', 2);
   const picked = pick ? all.find(x => x.id === pick) : undefined;
   const needPw = type === 'individual' && !(picked?.has_login || ind.found?.has_login);
   const needIbPw = type === 'ib' && ibMode === 'existing' && !!ib && !ib.has_login;
@@ -279,7 +283,28 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
     proof: null,
     roiWay: regOnly ? null : !roiWay ? (withSub ? null : 'Choose cash, UPI or bank transfer.') : roiWay === 'upi' && roiUpi.trim() && !/^[\w.\-]{1,64}@[\w.\-]{2,64}$/.test(roiUpi.trim()) ? 'Enter a valid UPI ID, e.g. name@okaxis, or leave it empty.' : null
   };
-  const bad = Object.values(errs).some(Boolean);
+  const itemErrs = (it: Item): Record<string, string | null> => {
+    const ir = Number(it.roi), ib2 = Number(it.bonus || 0), im = it.lock === 'custom' ? Number(it.customLock) : Number(it.lock), ia = Number(it.amount);
+    return {
+      roi: !(ir > 0 && ir <= 100) || !DEC(it.roi, 4) ? 'Enter the monthly ROI, e.g. 0.25, 2.3, 4.3 or 6.' : null,
+      bonus: withSub && (!DEC(it.bonus || '0', 4) || ib2 > 100) ? 'Enter the bonus as 0 or more.' : null,
+      lock: !(Number.isInteger(im) && im >= 0 && im <= 120) ? 'Enter the lock-in in months (0 to 120).' : null,
+      amount: !(ia > 0) || !DEC(it.amount, 2) ? 'Enter the principal (at most 2 decimals).' : null,
+      start: !it.start ? 'Enter the start date.' : null,
+      roiWay: !it.roiWay ? (withSub ? null : 'Choose cash, UPI or bank transfer.') : it.roiWay === 'upi' && it.roiUpi.trim() && !/^[\w.\-]{1,64}@[\w.\-]{2,64}$/.test(it.roiUpi.trim()) ? 'Enter a valid UPI ID, or leave it empty.' : null
+    };
+  };
+  const moreErrs = more.map(itemErrs);
+  const bad = Object.values(errs).some(Boolean) || moreErrs.some(x => Object.values(x).some(Boolean));
+  const addMore = () => {
+    const last = more[more.length - 1];
+    const src = last ? { roi: last.roi, bonus: last.bonus, lock: last.lock, customLock: last.customLock, roiWay: last.roiWay, roiUpi: last.roiUpi } : { roi, bonus, lock, customLock, roiWay, roiUpi };
+    setMore([...more, { ...src, amount: '', start: t, ref: '', notes: '', proof: [] }]);
+  };
+  const setItem = (k: number, patch: Partial<Item>) => setMore(more.map((x, j) => (j === k ? { ...x, ...patch } : x)));
+  const itemMonthly = (it: Item) => { const a = Number(it.amount), x = Number(it.roi); return a > 0 && x > 0 ? Math.round(a * x) / 100 : 0; };
+  const totalAmt = amt + more.reduce((s2, x) => s2 + (Number(x.amount) || 0), 0);
+  const totalMonthly = (amt > 0 && r > 0 ? Math.round(amt * r) / 100 : 0) + more.reduce((s2, x) => s2 + itemMonthly(x), 0);
   // with a sub-investor only the name is mandatory: the investment fields are needed only when a principal is entered
   const star = regOnly ? '' : ' *';
   const e = (k: string) => (tried ? errs[k] : null);
@@ -306,8 +331,10 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
         setBranch(branchId); setBranchTouched(true); opts.reload();
       }
       const file = proof.length ? await uploadAttachment(proof[0], 'proofs') : null;
+      const files = await Promise.all(more.map(x => (x.proof.length ? uploadAttachment(x.proof[0], 'proofs') : Promise.resolve(null))));
       try {
         return await recordInvestmentFull({
+          p_more: more.map((x, k) => ({ p_proof: files[k], p_rate: x.roi.trim(), p_bonus: withSub ? (x.bonus.trim() || '0') : '0', p_lockin_months: x.lock === 'custom' ? Number(x.customLock) : Number(x.lock), p_principal: Number(x.amount), p_start_date: x.start, p_reference: x.ref.trim(), p_notes: x.notes.trim(), p_roi_method: x.roiWay, p_roi_upi: x.roiWay === 'upi' ? x.roiUpi.trim() : '' })),
           p_type: type, p_branch: branchId || null, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: regOnly ? 0 : amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_roi_method: roiWay, p_roi_upi: roiWay === 'upi' ? roiUpi.trim() : '',
           ...(type === 'individual'
             ? { p_person: picked ? picked.id : null, p_name: name.trim(), p_phone: phone.trim(), p_password: needPw ? pw : '' }
@@ -316,8 +343,12 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
               p_sub: withSub ? (subChosen ? { id: subChosen.id, password: subLogin ? subPw : '' } : { name: subName.trim(), phone: subPhone.trim(), password: subLogin ? subPw : '' }) : null
             })
         });
-      } catch (err) { if (file) await api.storage.from('documents').remove([file.path]).catch(() => undefined); throw err; }
-    }, regOnly ? [withSub ? 'Sub-investor added' : 'IB registered', withSub ? `${investorName} · under ${ibName}` : ibName] : ['Investment recorded', `${investorName} · ${money(amt)} at ${rateShort(r)} a month`]);
+      } catch (err) {
+        const paths = [file, ...files].filter(Boolean).map(f => f!.path);
+        if (paths.length) await api.storage.from('documents').remove(paths).catch(() => undefined);
+        throw err;
+      }
+    }, more.length ? [`${more.length + 1} investments recorded`, `${investorName} · ${money(totalAmt)} in total`] : regOnly ? [withSub ? 'Sub-investor added' : 'IB registered', withSub ? `${investorName} · under ${ibName}` : ibName] : ['Investment recorded', `${investorName} · ${money(amt)} at ${rateShort(r)} a month`]);
     if (res) {
       refreshAll();
       const logins: [string, string, string][] = [];
@@ -325,12 +356,12 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
       if (type === 'ib' && ibMode === 'new') logins.push([nibName.trim() + ' (IB)', nibPhone.trim(), nibPw]);
       if (needIbPw && ib) logins.push([ib.full_name + ' (IB)', ib.phone || '', ibPw]);
       if (withSub && subLogin) logins.push([investorName + ' (sub-investor)', (subChosen ? subChosen.phone : subPhone.trim()) || '', subPw]);
-      setDone({ code: res.code, investorCode: res.investor, investor: investorName, logins });
+      setDone({ code: res.code, investorCode: res.investor, investor: investorName, logins, more: (res.more || []).map((m, k) => ({ code: m.code, amt: Number(more[k]?.amount) || 0, r: Number(more[k]?.roi) || 0 })) });
     }
   };
 
   if (done) return (
-    <Drawer title={done.code ? 'Investment recorded' : withSub ? 'Sub-investor added' : 'IB registered'} sub={done.logins.length ? 'Share the login details offline. Each person can change their password after signing in.' : done.code ? 'Added to the investor’s account.' : 'No investment was recorded (principal 0). You can record one later.'} onClose={() => onDone(done.code || done.investorCode)}
+    <Drawer title={done.more.length ? `${done.more.length + 1} investments recorded` : done.code ? 'Investment recorded' : withSub ? 'Sub-investor added' : 'IB registered'} sub={done.logins.length ? 'Share the login details offline. Each person can change their password after signing in.' : done.code ? 'Added to the investor’s account.' : 'No investment was recorded (principal 0). You can record one later.'} onClose={() => onDone(done.code || done.investorCode)}
       foot={<button className="btn primary" onClick={() => onDone(done.code || done.investorCode)}>{done.code ? 'Open investment' : 'Open investor'}</button>}>
       <div className="form">
         <dl className="kv">
@@ -338,7 +369,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
           <dt>Investor</dt><dd>{done.investor}</dd>
           <dt>Branch</dt><dd>{branchName(branch) || (newBranch ? nbName : 'No branch')}</dd>
           {done.code ? <>
-            <dt>Investment</dt><dd className="mono">{done.code} · {money(amt)} at {rateShort(r)}</dd>
+            <dt>{done.more.length ? 'Investment 1' : 'Investment'}</dt><dd className="mono"><a style={{ cursor: 'pointer' }} onClick={() => onDone(done.code!)}>{done.code}</a> · {money(amt)} at {rateShort(r)}</dd>
+            {done.more.map((m, k) => <Fragment key={m.code}><dt>Investment {k + 2}</dt><dd className="mono"><a style={{ cursor: 'pointer' }} onClick={() => onDone(m.code)}>{m.code}</a> · {money(m.amt)} at {rateShort(m.r)}</dd></Fragment>)}
             {withSub && b > 0 && <><dt>IB bonus</dt><dd>{ibName} · {rateShort(b)} ({money(upMonthly)} / month), shown to them now</dd></>}
             <dt>Monthly ROI taken by</dt><dd>{roiWayText(roiWay, roiUpi.trim())}</dd>
             <dt>Proof</dt><dd>{proof[0]?.name || <span className="muted">None attached</span>}</dd>
@@ -482,6 +514,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             </>
           )}
 
+          <div className="sec">
+          <h4>Investment 1</h4>
           <div className="f-row">
             <Field label={'Monthly ROI (% per month)' + star} err={e('roi')} hint="Any rate, e.g. 0.25, 2.3, 3.3, 4.3, 6.">
               <input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} placeholder="e.g. 6" />
@@ -506,6 +540,35 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
           </div>
           <FilePicker label="Payment proof (optional)" files={proof} onChange={setProof} max={1} err={e('proof')} hint="Bank receipt, transfer screenshot or signed document (image, PDF, Word or Excel, 3 MB). The investor sees it in their documents." />
           {!regOnly && <RoiWayField way={roiWay} setWay={setRoiWay} upi={roiUpi} setUpi={setRoiUpi} err={e('roiWay')} required={!withSub} />}
+          </div>
+          {more.map((it, k) => {
+            const er = (f: string) => (tried ? moreErrs[k][f] : null);
+            return (
+              <div className="sec" key={k}>
+                <h4 style={{ display: 'flex', alignItems: 'center' }}>Investment {k + 2}
+                  <button type="button" className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => setMore(more.filter((_, j) => j !== k))}>✕ Remove</button></h4>
+                <div className="f-row">
+                  <Field label="Monthly ROI (% per month) *" err={er('roi')}><input className={'input num ' + (er('roi') ? 'bad' : '')} inputMode="decimal" value={it.roi} onChange={ev => setItem(k, { roi: ev.target.value })} placeholder="e.g. 6" /></Field>
+                  <Field label={withSub && ibName ? `Bonus to ${ibName} (% per month)` : 'IB bonus (% per month)'} err={er('bonus')}><input className={'input num ' + (er('bonus') ? 'bad' : '')} inputMode="decimal" value={withSub ? it.bonus : ''} onChange={ev => setItem(k, { bonus: ev.target.value })} disabled={!withSub} placeholder={withSub ? 'e.g. 2' : '—'} /></Field>
+                </div>
+                <Field label="Lock-in period *" err={er('lock')}>
+                  <div className="chips">{LOCKS.map(([v, l]) => <button key={v} type="button" className={'chip ' + (it.lock === v ? 'on' : '')} onClick={() => setItem(k, { lock: v })}>{l}</button>)}</div>
+                  {it.lock === 'custom' && <input className="input num" style={{ marginTop: 8 }} inputMode="numeric" value={it.customLock} onChange={ev => setItem(k, { customLock: ev.target.value })} placeholder="Months, e.g. 3" />}
+                </Field>
+                <div className="f-row">
+                  <Field label="Principal (INR) *" err={er('amount')}><input className={'input num ' + (er('amount') ? 'bad' : '')} inputMode="decimal" value={it.amount} onChange={ev => setItem(k, { amount: ev.target.value })} placeholder="e.g. 500000" /></Field>
+                  <Field label="Start date *" err={er('start')}><input className="input" type="date" value={it.start} onChange={ev => setItem(k, { start: ev.target.value })} /></Field>
+                </div>
+                <div className="f-row">
+                  <Field label="Reference" hint="Optional."><input className="input mono" value={it.ref} onChange={ev => setItem(k, { ref: ev.target.value })} /></Field>
+                  <Field label="Notes (internal)"><input className="input" value={it.notes} onChange={ev => setItem(k, { notes: ev.target.value })} /></Field>
+                </div>
+                <FilePicker label="Payment proof (optional)" files={it.proof} onChange={f => setItem(k, { proof: f })} max={1} />
+                <RoiWayField way={it.roiWay} setWay={v => setItem(k, { roiWay: v })} upi={it.roiUpi} setUpi={v => setItem(k, { roiUpi: v })} err={er('roiWay')} required={!withSub} />
+              </div>
+            );
+          })}
+          <button type="button" className="btn" onClick={addMore} style={{ alignSelf: 'flex-start' }}><Icon name="plus" />Add another investment for {investorName || 'the same person'}</button>
           <div className="card" style={{ boxShadow: 'none' }}>
             <div className="card-h"><h3>Summary</h3></div>
             <div className="card-b">
@@ -519,6 +582,11 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                 <dt>First return</dt><dd>{start ? firstPeriodText(start, Number.isInteger(months) ? months : 0) : '—'}</dd>
                 <dt>Lock-in ends</dt><dd>{start && months > 0 ? date(addMonths(start, months)) : months === 0 ? 'No lock-in' : '—'}</dd>
                 <dt>Monthly ROI taken by</dt><dd>{roiWay ? roiWayText(roiWay, roiUpi.trim()) : '—'}</dd>
+                {more.length > 0 && <>
+                  {more.map((x, k) => <Fragment key={k}><dt>Investment {k + 2}</dt><dd>{Number(x.amount) > 0 ? money(Number(x.amount)) : '—'} at {Number(x.roi) > 0 ? rate(Number(x.roi)) : '—'}{x.start ? ' · from ' + date(x.start) : ''}{x.roiWay ? ' · ' + roiWayText(x.roiWay, x.roiUpi.trim()) : ''}</dd></Fragment>)}
+                  <dt>Total principal</dt><dd><b>{money(totalAmt)}</b> in {more.length + 1} investments</dd>
+                  <dt>Total monthly ROI</dt><dd><b>{money(totalMonthly)}</b> / month</dd>
+                </>}
               </dl>
             </div>
           </div>

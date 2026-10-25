@@ -128,7 +128,7 @@ const FNS: Record<string, (a: any) => Promise<unknown>> = {
   adminResetPassword: a => db.adminResetPassword(String(a.userId), String(a.password)),
   createIB: a => db.createIB(a),
   adminSetLogin: a => db.adminSetLogin(String(a.userId), String(a.password)),
-  adminRecordInvestment: a => db.adminRecordInvestment(a),
+  adminRecordInvestment: a => db.adminRecordInvestments(a),
   adminApproveInvestmentRequest: a => db.adminApproveInvestmentRequest(a)
 };
 async function act(pool: PoolLike, body: Row, uid: string | null): Promise<{ out: unknown; uid: string | null; after?: () => Promise<unknown> }> {

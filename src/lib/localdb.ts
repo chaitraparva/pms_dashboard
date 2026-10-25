@@ -1057,7 +1057,7 @@ const PROOF_MIME = ATTACH_MIME;
  *  IB: the IB is chosen (or registered); with an optional sub-investor the investment is the sub-investor's, under the IB
  *  (the IB earns the bonus); without one it is the IB's own investment. A payment proof can be attached (optional). */
 /** IB registered with principal 0: adds the sub-investor (name only is required) under the IB, without an investment. */
-async function registerOnly(a: Row, ib: Row): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
+async function registerOnly(a: Row, ib: Row): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null; ib_id: string | null }> {
   const branchId = blank(a.p_branch) ? null : String(a.p_branch);
   if (branchId && !T('branches').some(b => b.id === branchId)) fail('Choose a valid branch.');
   if (branchId && !ib.branch_id) ib.branch_id = branchId;
@@ -1085,9 +1085,9 @@ async function registerOnly(a: Row, ib: Row): Promise<{ id: string | null; code:
   }
   ib.is_ib = true; ib.updated_at = nowIso();
   persist('profiles', 'audit_logs', 'notifications');
-  return { id: null, code: null, investor: person.code, investor_id: person.id, is_new: isNew, ib: ib.full_name };
+  return { id: null, code: null, investor: person.code, investor_id: person.id, is_new: isNew, ib: ib.full_name, ib_id: ib.id };
 }
-export async function adminRecordInvestment(a: Row): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
+export async function adminRecordInvestment(a: Row): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null; ib_id: string | null }> {
   requireAdmin();
   const proof = a.p_proof && !blank((a.p_proof as Row).path) ? a.p_proof as Row : null;
   if (proof && !blank(proof.mime) && !PROOF_MIME.includes(String(proof.mime))) fail('The proof must be an image, PDF, Word or Excel file.');
@@ -1124,7 +1124,29 @@ export async function adminRecordInvestment(a: Row): Promise<{ id: string | null
     const inv = T('investments').find(i => i.id === r.id); if (inv) inv.proof_path = String(proof.path);
   }
   persist('profiles', 'investments', 'ledger_entries', 'accruals', 'payouts', 'notifications', 'admin_bonuses', 'audit_logs', 'documents');
-  return { ...r, ib: ib ? ib.full_name : null };
+  return { ...r, ib: ib ? ib.full_name : null, ib_id: ib ? ib.id : null };
+}
+/** Record investment with several investments for the same person (the + button): the person is set up once with the
+ *  first investment, then each further investment is recorded for them. All or nothing: one error and nothing is saved. */
+export async function adminRecordInvestments(a: Row) {
+  const more: Row[] = Array.isArray(a.p_more) ? a.p_more : [];
+  const first = await adminRecordInvestment({ ...a, p_more: undefined });
+  if (!more.length) return { ...first, more: [] as { id: string; code: string }[] };
+  if (!first.id) fail('Investment 1: enter the principal.');
+  const sub = !!first.ib_id && first.investor_id !== first.ib_id;
+  const out: { id: string; code: string }[] = [];
+  for (let k = 0; k < more.length; k++) {
+    const it = more[k] || {};
+    const base: Row = { p_type: a.p_type, p_branch: a.p_branch, p_proof: it.p_proof, p_rate: it.p_rate, p_bonus: it.p_bonus, p_lockin_months: it.p_lockin_months,
+      p_principal: it.p_principal, p_start_date: it.p_start_date, p_reference: it.p_reference, p_notes: it.p_notes, p_roi_method: it.p_roi_method, p_roi_upi: it.p_roi_upi };
+    if (a.p_type === 'ib') { base.p_ib = first.ib_id; base.p_sub = sub ? { id: first.investor_id } : null; }
+    else base.p_person = first.investor_id;
+    if (blank(base.p_principal) || !(Number(base.p_principal) > 0)) fail(`Investment ${k + 2}: enter the principal.`);
+    let r: Row;
+    try { r = await adminRecordInvestment(base); } catch (e) { fail(`Investment ${k + 2}: ${(e as Error).message}`); }
+    out.push({ id: String(r!.id), code: String(r!.code) });
+  }
+  return { ...first, more: out };
 }
 
 /* ---------- investment requests: an investor (for themselves) or an IB (for a sub-investor) asks; the Super Admin approves ---------- */
