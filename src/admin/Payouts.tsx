@@ -3,14 +3,14 @@ import { Link } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useAuth } from '../lib/auth';
-import { money, date, today } from '../lib/format';
+import { money, date, today, roiWayText } from '../lib/format';
 import { downloadCsv } from '../lib/csv';
 import type { Dashboard, Payout, PayoutStatus } from '../lib/types';
 import { PayBadge, Kpi, ErrorNote, Loading, PageHead, Modal, Field, IconBtn, useAction } from '../ui/kit';
 import { DataTable, Col } from '../ui/DataTable';
 
 type Person = { id: string; code: string | null; full_name: string; email: string; bank_name: string; bank_account_masked: string; bank_ifsc: string };
-type Inv = { id: string; code: string; plan_name: string };
+type Inv = { id: string; code: string; plan_name: string; roi_method?: string | null; roi_upi?: string | null };
 type AccLite = { id: string; period_no: number; kind: string };
 
 interface Row extends Payout { inv?: Inv; investor?: Person; acc?: AccLite }
@@ -25,7 +25,7 @@ const nameOf = (p?: Person) => (p ? p.full_name || p.email : '—');
 async function load() {
   const [pays, invs, people, accs, dash] = await Promise.all([
     fetchAll<Payout>((a, b) => api.from('payouts').select('*').order('due_date', { ascending: false }).range(a, b)),
-    fetchAll<Inv>((a, b) => api.from('investments').select('id, code, plan_name').range(a, b)),
+    fetchAll<Inv>((a, b) => api.from('investments').select('id, code, plan_name, roi_method, roi_upi').range(a, b)),
     fetchAll<Person>((a, b) => api.from('profiles').select('id, code, full_name, email, bank_name, bank_account_masked, bank_ifsc').range(a, b)),
     fetchAll<AccLite>((a, b) => api.from('accruals').select('id, period_no, kind').neq('kind', 'reversal').range(a, b)),
     rpc<Dashboard>('admin_dashboard')
@@ -79,9 +79,9 @@ export function Payouts() {
   };
 
   const exportCsv = () => downloadCsv(`payouts-${tab}-${t}`,
-    ['Payout', 'Investor ID', 'Investor', 'Investment', 'Plan', 'Period', 'Due date', 'Amount', 'Status', 'Bank', 'Account', 'IFSC', 'Batch reference', 'Payment reference', 'Paid on', 'Failure reason'],
+    ['Payout', 'Investor ID', 'Investor', 'Investment', 'Plan', 'Period', 'Due date', 'Amount', 'Status', 'Bank', 'Account', 'IFSC', 'Batch reference', 'Payment reference', 'Paid on', 'Failure reason', 'ROI taken by'],
     rows.map(r => [r.code, r.investor?.code, nameOf(r.investor), r.inv?.code, r.inv?.plan_name, r.acc ? r.acc.period_no + (r.acc.kind === 'stub' ? ' (stub)' : '') : '', r.due_date,
-      Number(r.amount).toFixed(2), r.status, r.investor?.bank_name, r.investor?.bank_account_masked, r.investor?.bank_ifsc, r.batch_ref, r.payment_ref, r.paid_on, r.failure_reason]));
+      Number(r.amount).toFixed(2), r.status, r.investor?.bank_name, r.investor?.bank_account_masked, r.investor?.bank_ifsc, r.batch_ref, r.payment_ref, r.paid_on, r.failure_reason, roiWayText(r.inv?.roi_method, r.inv?.roi_upi)]));
 
   const cols: Col<Row>[] = [
     { h: 'Payout', m: true, v: r => r.code },
@@ -90,6 +90,7 @@ export function Payouts() {
     { h: 'Period', v: r => r.acc?.period_no ?? 0, r: r => r.acc ? `#${r.acc.period_no}${r.acc.kind === 'stub' ? ' (stub)' : ''}` : '—' },
     { h: 'Due', v: r => r.due_date, r: r => <span style={r.due_date <= t && !['paid', 'cancelled'].includes(r.status) ? { color: 'var(--amber)' } : undefined}>{date(r.due_date)}</span> },
     { h: 'Amount', n: true, v: r => Number(r.amount), r: r => money(r.amount) },
+    { h: 'Taken by', v: r => r.inv?.roi_method || '', r: r => r.inv?.roi_method ? <>{roiWayText(r.inv.roi_method)}{r.inv.roi_upi && <span className="sub mono">{r.inv.roi_upi}</span>}</> : <span className="muted">Not set</span> },
     { h: 'Bank', v: r => r.investor?.bank_name || '', r: r => r.investor?.bank_name || r.investor?.bank_account_masked ? <>{r.investor.bank_name || '—'}<span className="sub mono">{r.investor.bank_account_masked}</span></> : <span className="muted">Not on file</span> },
     {
       h: 'Reference', v: r => r.payment_ref || r.batch_ref || r.failure_reason || '', r: r => r.payment_ref

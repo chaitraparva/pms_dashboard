@@ -4,7 +4,7 @@ import { api, must } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery } from '../lib/useQuery';
 import { openDocument } from '../lib/docs';
-import { date, dateShort, investmentLabel, isUnlocked, LEDGER_TYPE, lockinText, money, pct, rate, rateShort } from '../lib/format';
+import { date, dateShort, investmentLabel, isUnlocked, LEDGER_TYPE, lockinText, money, pct, rate, rateShort, roiWayText } from '../lib/format';
 import { Badge, Empty, ErrorNote, InvBadge, Kpi, LedgerBadge, Loading, PageHead, PayBadge, useAction } from '../ui/kit';
 import { DataTable } from '../ui/DataTable';
 import { Icon } from '../ui/Icon';
@@ -256,6 +256,7 @@ export function InvestmentDetail() {
                 <dt>Lock-in period</dt><dd>{lockinText(i.lockin_months)}</dd>
                 <dt>Lock-in end</dt><dd>{date(i.lockin_end_date)}</dd>
                 <dt>Maturity date</dt><dd>{date(i.maturity_date)}</dd>
+                {i.roi_method && <><dt>Monthly ROI paid by</dt><dd>{roiWayText(i.roi_method, i.roi_upi)}</dd></>}
                 <dt>Payout timing</dt><dd>{i.payout_lag_days} day{i.payout_lag_days === 1 ? '' : 's'} after accrual</dd>
                 <dt>Principal status</dt><dd>{i.status === 'redeemed' ? 'Closed' : !i.lockin_end_date ? '—' : unlocked ? 'Unlocked' : 'Locked'}</dd>
                 <dt>Agreement reference</dt><dd className="mono">{i.agreement_ref || '—'}</dd>

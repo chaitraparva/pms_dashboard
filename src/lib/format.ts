@@ -149,6 +149,9 @@ export const INV_BADGE: Record<string, string> = {
 export const lockinText = (m: number) => (!m ? 'No lock-in' : m === 12 ? '1 year (12 months)' : m % 12 === 0 ? `${m / 12} years (${m} months)` : `${m} months`);
 /** Monthly rate as a short label: 2%, 3.3%, 4%, 5%, 6%. */
 export const rateShort = (r: number | string) => String(Number(Number(r).toFixed(4))) + '%';
+/** How the investor takes their monthly ROI. */
+export const ROI_WAY: Record<string, string> = { cash: 'Cash', upi: 'UPI', bank: 'Bank transfer' };
+export const roiWayText = (m?: string | null, upi?: string | null) => (m ? ROI_WAY[m] + (m === 'upi' && upi ? ' · ' + upi : '') : '');
 export const PAY_BADGE: Record<string, [string, string]> = {
   accrued: ['Accrued', 'b-grey'], approved: ['Approved', 'b-blue'], processing: ['Payment processed', 'b-amber'], paid: ['Payment fulfilled', 'b-green'], failed: ['Failed', 'b-red'], cancelled: ['Reversed', 'b-grey']
 };

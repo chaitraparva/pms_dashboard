@@ -924,6 +924,16 @@ function lookupPhone(phone: unknown): Row | null {
 
 /** Records an investment in one step: the person (found or created by phone number), individual or under another investor,
  *  the monthly ROI and bonus typed by the Super Admin, lock-in (0 = no lock-in), principal and start date. */
+/** How an investor takes their monthly ROI: cash, UPI (with an optional UPI ID) or bank transfer. */
+export const ROI_METHODS = ['cash', 'upi', 'bank'];
+function roiMethodOf(a: Row, required: boolean): { roi_method: string | null; roi_upi: string | null } {
+  const m = blank(a.p_roi_method) ? null : String(a.p_roi_method);
+  if (!m) { if (required) fail('Choose how the investor takes their monthly ROI: cash, UPI or bank transfer.'); return { roi_method: null, roi_upi: null }; }
+  if (!ROI_METHODS.includes(m)) fail('Choose cash, UPI or bank transfer for the monthly ROI.');
+  const upi = m === 'upi' ? str(a.p_roi_upi).trim() : '';
+  if (upi && !/^[\w.\-]{1,64}@[\w.\-]{2,64}$/.test(upi)) fail('Enter a valid UPI ID, e.g. name@okaxis, or leave it empty.');
+  return { roi_method: m, roi_upi: upi || null };
+}
 function recordDirect(a: Row): { id: string; code: string; investor: string; investor_id: string; is_new: boolean } {
   requireAdmin();
   const s = settings();
@@ -940,6 +950,7 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   if (!(Number.isInteger(lock) && lock >= 0 && lock <= 120)) fail('Lock-in must be 0 (no lock-in) to 120 months.');
   if (!(principal > 0) || round2(principal) !== principal) fail('Enter the principal (at most 2 decimals).');
   const start = str(a.p_start_date); if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) fail('Enter the start date.');
+  const roiWay = roiMethodOf(a, !!a.p_roi_required);
   let person = byId || (key.length === 10 ? findByPhone(key) : null);
   const upId = blank(a.p_ib) ? null : String(a.p_ib);
   const up = upId ? T('profiles').find(p => p.id === upId && p.role === 'investor') : null;
@@ -971,7 +982,7 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   const bonus = upline ? bonusIn : 0;
   const id = uuid(), code = 'INV-' + nextSeq('investment', 1001);
   const maturity = lock > 0 ? addMonths(start, lock) : null;
-  const v = applySplit({ bonus_on_top: true, admin_bonus_rate: bonus, id, code, investor_id: person.id, plan_id: null, plan_version_id: null, plan_name: rate + '% Monthly', plan_version: 1, monthly_rate: rate,
+  const v = applySplit({ ...roiWay, bonus_on_top: true, admin_bonus_rate: bonus, id, code, investor_id: person.id, plan_id: null, plan_version_id: null, plan_name: rate + '% Monthly', plan_version: 1, monthly_rate: rate,
     lockin_months: lock, early_redemption: 'not_permitted', early_fee_pct: 0, payout_lag_days: s.default_payout_lag_days, terms: s.default_terms, risk_disclosure: s.default_risk_disclosure,
     principal, original_principal: principal, principal_changes: [], monthly_return: monthlyReturn(principal, rate), accrual_mode: 'calendar', status: 'active', expected_start: start, start_date: start, lockin_end_date: maturity || start, maturity_date: maturity,
     request_from_date: maturity ? addDays(maturity, -s.request_window_days) : null, agreement_ref: str(a.p_reference), deposit_ref: str(a.p_reference), notes: str(a.p_notes), cancelled_reason: null,
@@ -1059,6 +1070,7 @@ export async function adminRecordInvestment(a: Row): Promise<{ id: string; code:
       args = { ...a, p_person: blank(sub.id) ? null : sub.id, p_name: sub.name, p_phone: sub.phone, p_city: sub.city, p_ib: ib!.id, p_password: sub.password };
     } else args = { ...a, p_person: ib!.id, p_ib: null, p_bonus: '0', p_password: '' };
   } else args = { ...a, p_ib: null, p_bonus: '0' };
+  args.p_roi_required = true;
   const r = await recordWithLogin(args);
   if (proof) {
     T('documents').push({ id: uuid(), owner_id: r.investor_id, investment_id: r.id, kind: 'proof', title: str(proof.name, 'Payment proof') + ' · ' + r.code, storage_path: String(proof.path),
@@ -1113,7 +1125,8 @@ export async function adminApproveInvestmentRequest(a: Row): Promise<{ id: strin
   const r = T('investment_requests').find(x => x.id === a.p_id) || fail('Request not found.');
   if (r.status !== 'pending') fail(`${r.code} is already ${r.status}.`);
   const args: Row = { p_rate: a.p_rate, p_bonus: blank(a.p_bonus) ? '0' : a.p_bonus, p_lockin_months: a.p_lockin_months ?? r.lockin_months, p_principal: blank(a.p_principal) ? r.amount : Number(a.p_principal),
-    p_start_date: str(a.p_start_date, r.start_date), p_reference: str(a.p_reference, r.reference), p_notes: 'From request ' + r.code + (r.note ? ' · ' + r.note : ''), p_password: a.p_password };
+    p_start_date: str(a.p_start_date, r.start_date), p_reference: str(a.p_reference, r.reference), p_notes: 'From request ' + r.code + (r.note ? ' · ' + r.note : ''), p_password: a.p_password,
+    p_roi_method: a.p_roi_method, p_roi_upi: a.p_roi_upi };
   if (r.investor_id) { args.p_person = r.investor_id; args.p_ib = r.kind === 'sub' ? r.requested_by : null; }
   else { args.p_name = r.new_sub?.name; args.p_phone = r.new_sub?.phone; args.p_city = r.new_sub?.city; args.p_ib = r.requested_by; }
   const res = await recordWithLogin(args);
@@ -1322,7 +1335,7 @@ function updateInvestment(a: Row) {
   requireAdmin();
   const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
   if (['cancelled', 'redeemed'].includes(i.status)) fail(`${i.code} is closed and cannot be edited.`);
-  const before = { monthly_rate: i.monthly_rate, admin_bonus_rate: i.admin_bonus_rate, lockin_months: i.lockin_months, principal: i.original_principal ?? i.principal, start_date: i.start_date || i.expected_start, reference: i.deposit_ref, notes: i.notes };
+  const before = { monthly_rate: i.monthly_rate, admin_bonus_rate: i.admin_bonus_rate, lockin_months: i.lockin_months, principal: i.original_principal ?? i.principal, start_date: i.start_date || i.expected_start, reference: i.deposit_ref, notes: i.notes, roi_method: i.roi_method ?? null, roi_upi: i.roi_upi ?? null };
   const rate = blank(a.p_rate) ? Number(i.monthly_rate) : Number(a.p_rate);
   const bonus = blank(a.p_bonus) ? Number(i.admin_bonus_rate || 0) : Number(a.p_bonus);
   const lock = blank(a.p_lockin_months) ? Number(i.lockin_months) : Number(a.p_lockin_months);
@@ -1353,11 +1366,12 @@ function updateInvestment(a: Row) {
     applySplit(i);
     ledgerFor('investments', i.id).forEach(l => Object.assign(l, { amount: principal, occurred_on: start, updated_at: nowIso() }));
   }
+  if (a.p_roi_method !== undefined) Object.assign(i, roiMethodOf(a, false));
   if (a.p_reference != null) { i.deposit_ref = str(a.p_reference).trim(); i.agreement_ref = i.deposit_ref; }
   if (a.p_notes != null) i.notes = str(a.p_notes).trim();
   i.updated_at = nowIso();
   audit('investment.update', 'investment', i.id, i.code, str(a.p_reason, financial ? 'Terms changed; returns recalculated' : 'Details changed'), before,
-    { monthly_rate: i.monthly_rate, admin_bonus_rate: i.admin_bonus_rate, lockin_months: i.lockin_months, principal: i.original_principal ?? i.principal, start_date: i.start_date || i.expected_start, reference: i.deposit_ref, notes: i.notes });
+    { monthly_rate: i.monthly_rate, admin_bonus_rate: i.admin_bonus_rate, lockin_months: i.lockin_months, principal: i.original_principal ?? i.principal, start_date: i.start_date || i.expected_start, reference: i.deposit_ref, notes: i.notes, roi_method: i.roi_method ?? null, roi_upi: i.roi_upi ?? null });
   if (financial) runAccrualsFor(i, today());
 }
 

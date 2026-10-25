@@ -59,6 +59,9 @@ export interface Investment {
   proof_path?: string | null;
   /** The IB bonus is paid on top of the ROI (investor keeps the whole ROI). Older plan-based investments take it from the plan rate. */
   bonus_on_top?: boolean;
+  /** How the investor takes the monthly ROI. */
+  roi_method?: 'cash' | 'upi' | 'bank' | null;
+  roi_upi?: string | null;
 }
 
 export interface AdminBonus {

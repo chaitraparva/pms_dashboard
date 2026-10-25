@@ -106,6 +106,8 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
   const [start, setStart] = useState(r.start_date);
   const [ref, setRef] = useState(r.reference || '');
   const [note, setNote] = useState('');
+  const [roiWay, setRoiWay] = useState('');
+  const [roiUpi, setRoiUpi] = useState('');
   const [pw, setPw] = useState(genPw);
   const [tried, setTried] = useState(false);
   const [done, setDone] = useState<null | { code: string; pw: string | null }>(null);
@@ -127,7 +129,7 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
   const e = (k: string) => (tried ? errs[k] : null);
   const go = async () => {
     setTried(true); if (Object.values(errs).some(Boolean)) return;
-    const res = await act.run(() => approveInvestmentRequest({ p_id: r.id, p_rate: roi.trim(), p_bonus: underIb ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_note: note.trim(), p_password: needPw ? pw : '' }),
+    const res = await act.run(() => approveInvestmentRequest({ p_id: r.id, p_rate: roi.trim(), p_bonus: underIb ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_note: note.trim(), p_password: needPw ? pw : '', p_roi_method: roiWay || null, p_roi_upi: roiWay === 'upi' ? roiUpi.trim() : '' }),
       ['Request approved', `${r.code} · ${money(amt)} for ${r.forName}`]);
     if (res) { refreshAll(); setDone({ code: res.code, pw: needPw && pw ? pw : null }); }
   };
@@ -174,6 +176,11 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
             <div style={{ display: 'flex', gap: 6 }}><input className={'input mono ' + (e('pw') ? 'bad' : '')} value={pw} onChange={ev => setPw(ev.target.value)} autoComplete="new-password" /><button type="button" className="btn" onClick={() => setPw(genPw())}><Icon name="refresh" /></button></div>
           </Field>
         )}
+        <Field label="Monthly ROI taken by" hint="Cash, UPI or bank transfer every month. Shown on Payouts.">
+          <div className="chips">{([['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Bank transfer']] as [string, string][]).map(([k, l]) =>
+            <button key={k} type="button" className={'chip ' + (roiWay === k ? 'on' : '')} onClick={() => setRoiWay(roiWay === k ? '' : k)}>{l}</button>)}</div>
+          {roiWay === 'upi' && <input className="input mono" style={{ marginTop: 8 }} value={roiUpi} onChange={ev => setRoiUpi(ev.target.value)} placeholder="UPI ID (optional)" />}
+        </Field>
         <Field label="Note to the investor (optional)"><input className="input" value={note} onChange={ev => setNote(ev.target.value)} /></Field>
         {rr > 0 && amt > 0 && <div className="note info">{rate(rr)} on {money(amt)}{underIb && b > 0 ? ` · ${rateShort(b)} to ${ibName}` : ''} · first return {firstPeriodText(start, months)}{months > 0 ? ` · lock-in ends ${date(addMonths(start, months))}` : ' · no lock-in'}.</div>}
       </div>

@@ -6,7 +6,7 @@ import { useAuth, useSettings } from '../lib/auth';
 import { uploadDocument, openDocument, deleteDocument, uploadAttachment } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
 import { recordInvestmentFull } from '../lib/adminApi';
-import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText } from '../lib/format';
+import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText, roiWayText } from '../lib/format';
 import type { Investment, Balance, Branch, Profile, Plan, Accrual, Payout, LedgerEntry } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, InvBadge, PayBadge, LedgerBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
@@ -89,9 +89,9 @@ export function Investments() {
 
   const livePrincipal = rows.filter(r => LIVE.includes(r.status)).reduce((x, r) => x + Number(r.principal), 0);
   const exportCsv = () => downloadCsv(`investments-${today()}`,
-    ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Version', 'Rate %/month', 'Investor rate %', 'Bonus %', 'Bonus / month', 'Bonus to', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Maturity', 'Accrued', 'Paid', 'Outstanding', 'Status', 'Agreement ref', 'Deposit ref'],
+    ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Version', 'Rate %/month', 'Investor rate %', 'Bonus %', 'Bonus / month', 'Bonus to', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Maturity', 'Accrued', 'Paid', 'Outstanding', 'Status', 'Agreement ref', 'Deposit ref', 'Monthly ROI taken by'],
     rows.map(r => [r.code, r.investor?.code, r.investor?.full_name, r.branch, r.plan_name, r.plan_version, r.monthly_rate, r.investor_rate ?? r.monthly_rate, r.admin_bonus_rate ?? 0, r.admin_bonus ?? 0, r.bonusTo ? r.bonusTo.full_name || r.bonusTo.email : '', r.principal, r.monthly_return, r.lockin_months, r.start_date, r.maturity_date,
-      r.bal?.accrued ?? 0, r.bal?.paid ?? 0, r.outstanding, r.label, r.agreement_ref, r.deposit_ref]));
+      r.bal?.accrued ?? 0, r.bal?.paid ?? 0, r.outstanding, r.label, r.agreement_ref, r.deposit_ref, roiWayText(r.roi_method, r.roi_upi)]));
 
   return (
     <>
@@ -135,6 +135,19 @@ type Person = Lite & { phone?: string; has_login?: boolean; is_ib?: boolean; can
 const LOCKS: [string, string][] = [['0', 'No lock-in'], ['6', '6 months'], ['12', '12 months'], ['custom', 'Custom']];
 const genPw = () => { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'; let s = ''; for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)]; return 'Parva@' + s; };
 const DEC = (v: string, d: number) => new RegExp('^\\d+(\\.\\d{1,' + d + '})?$').test(v.trim());
+
+/** How the investor takes their monthly ROI: cash, UPI (with an optional UPI ID) or bank transfer. */
+function RoiWayField({ way, setWay, upi, setUpi, err, required = true }: { way: string; setWay: (v: string) => void; upi: string; setUpi: (v: string) => void; err?: string | null; required?: boolean }) {
+  return (
+    <Field label={'Monthly ROI taken by' + (required ? ' *' : '')} err={err} hint="How the investor receives the return every month. Shown on Payouts.">
+      <div className="chips">
+        {([['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Bank transfer']] as [string, string][]).map(([k, l]) =>
+          <button key={k} type="button" className={'chip ' + (way === k ? 'on' : '')} onClick={() => setWay(way === k && !required ? '' : k)}>{l}</button>)}
+      </div>
+      {way === 'upi' && <input className="input mono" style={{ marginTop: 8 }} value={upi} onChange={e => setUpi(e.target.value)} placeholder="UPI ID (optional), e.g. name@okaxis" />}
+    </Field>
+  );
+}
 
 /** Looks a phone number up as it is typed: an existing person keeps their record, login and IB. */
 function usePhoneLookup(phone: string, enabled = true) {
@@ -197,6 +210,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const [amount, setAmount] = useState('');
   const [start, setStart] = useState(t);
   const [ref, setRef] = useState('');
+  const [roiWay, setRoiWay] = useState('');
+  const [roiUpi, setRoiUpi] = useState('');
   const [notes, setNotes] = useState('');
   const [proof, setProof] = useState<File[]>([]);
   const [tried, setTried] = useState(false);
@@ -251,7 +266,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
     lock: !(Number.isInteger(months) && months >= 0 && months <= 120) ? 'Enter the lock-in in months (0 to 120).' : null,
     amount: !(amt > 0) || !DEC(amount, 2) ? 'Enter the principal (at most 2 decimals).' : null,
     start: !start ? 'Enter the start date.' : null,
-    proof: null
+    proof: null,
+    roiWay: !roiWay ? 'Choose cash, UPI or bank transfer.' : roiWay === 'upi' && roiUpi.trim() && !/^[\w.\-]{1,64}@[\w.\-]{2,64}$/.test(roiUpi.trim()) ? 'Enter a valid UPI ID, e.g. name@okaxis, or leave it empty.' : null
   };
   const bad = Object.values(errs).some(Boolean);
   const e = (k: string) => (tried ? errs[k] : null);
@@ -280,7 +296,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
       const file = proof.length ? await uploadAttachment(proof[0], 'proofs') : null;
       try {
         return await recordInvestmentFull({
-          p_type: type, p_branch: branchId || null, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(),
+          p_type: type, p_branch: branchId || null, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_roi_method: roiWay, p_roi_upi: roiWay === 'upi' ? roiUpi.trim() : '',
           ...(type === 'individual'
             ? { p_person: picked ? picked.id : null, p_name: name.trim(), p_phone: phone.trim(), p_password: needPw ? pw : '' }
             : {
@@ -311,6 +327,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
           <dt>Branch</dt><dd>{branchName(branch) || (newBranch ? nbName : 'No branch')}</dd>
           <dt>Investment</dt><dd className="mono">{done.code} · {money(amt)} at {rateShort(r)}</dd>
           {withSub && b > 0 && <><dt>IB bonus</dt><dd>{ibName} · {rateShort(b)} ({money(upMonthly)} / month), shown to them now</dd></>}
+          <dt>Monthly ROI taken by</dt><dd>{roiWayText(roiWay, roiUpi.trim())}</dd>
           <dt>Proof</dt><dd>{proof[0]?.name || <span className="muted">None attached</span>}</dd>
         </dl>
         {done.logins.map(([who, ph, p]) => (
@@ -458,6 +475,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             <Field label="Reference" hint="Bank / UTR or agreement number (optional)."><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
             <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
           </div>
+          <RoiWayField way={roiWay} setWay={setRoiWay} upi={roiUpi} setUpi={setRoiUpi} err={e('roiWay')} />
           <FilePicker label="Payment proof (optional)" files={proof} onChange={setProof} max={1} err={e('proof')} hint="Bank receipt, transfer screenshot or signed document (image, PDF, Word or Excel, 3 MB). The investor sees it in their documents." />
           <div className="card" style={{ boxShadow: 'none' }}>
             <div className="card-h"><h3>Summary</h3></div>
@@ -471,6 +489,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                 <dt>IB bonus</dt><dd>{withSub && b > 0 ? <>{rate(b)}{amt > 0 && <> · <b>{money(upMonthly)}</b> / month</>} <span className="muted">to {ibName}</span></> : <span className="muted">None</span>}</dd>
                 <dt>First return</dt><dd>{start ? firstPeriodText(start, Number.isInteger(months) ? months : 0) : '—'}</dd>
                 <dt>Lock-in ends</dt><dd>{start && months > 0 ? date(addMonths(start, months)) : months === 0 ? 'No lock-in' : '—'}</dd>
+                <dt>Monthly ROI taken by</dt><dd>{roiWay ? roiWayText(roiWay, roiUpi.trim()) : '—'}</dd>
               </dl>
             </div>
           </div>
@@ -673,6 +692,7 @@ export function InvestmentDetail() {
                 <dt>Payout lag</dt><dd>{i.payout_lag_days} day{i.payout_lag_days === 1 ? '' : 's'} after accrual</dd>
                 <dt>Agreement</dt><dd className="mono">{i.agreement_ref || '—'}</dd>
                 <dt>Deposit reference</dt><dd className="mono">{i.deposit_ref || '—'}</dd>
+                <dt>Monthly ROI taken by</dt><dd>{roiWayText(i.roi_method, i.roi_upi) || <span className="muted">Not set · use Edit</span>}</dd>
                 <dt>Payment proof</dt><dd>{i.proof_path ? <button className="btn sm" onClick={() => openAmendDoc(i.proof_path!)}><Icon name="doc" />Open proof</button> : <span className="muted">—</span>}</dd>
                 <dt>Recorded by</dt><dd>{nm(i.created_by)} · {dateTime(i.created_at)}</dd>
                 <dt>Activated by</dt><dd>{i.activated_by ? `${nm(i.activated_by)} · ${dateTime(i.activated_at)}` : '—'}</dd>
@@ -782,6 +802,8 @@ function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underI
   const [start, setStart] = useState(i.start_date || i.expected_start || today());
   const [ref, setRef] = useState(i.deposit_ref || '');
   const [notes, setNotes] = useState(i.notes || '');
+  const [roiWay, setRoiWay] = useState<string>(i.roi_method || '');
+  const [roiUpi, setRoiUpi] = useState(i.roi_upi || '');
   const [reason, setReason] = useState('');
   const [tried, setTried] = useState(false);
   const r = Number(roi), b = Number(bonus || 0), m = Number(lock), amt = Number(amount);
@@ -796,7 +818,7 @@ function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underI
   const financial = r !== Number(i.monthly_rate) || (underIb && b !== Number(i.admin_bonus_rate || 0)) || m !== i.lockin_months || amt !== orig || start !== (i.start_date || i.expected_start);
   const go = async () => {
     setTried(true); if (Object.values(errs).some(Boolean)) return;
-    const res = await act.run(() => rpc('admin_update_investment', { p_id: i.id, p_rate: roi.trim(), p_bonus: underIb ? (bonus.trim() || '0') : '0', p_lockin_months: m, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_reason: reason.trim() }),
+    const res = await act.run(() => rpc('admin_update_investment', { p_id: i.id, p_rate: roi.trim(), p_bonus: underIb ? (bonus.trim() || '0') : '0', p_lockin_months: m, p_principal: amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_roi_method: roiWay || null, p_roi_upi: roiWay === 'upi' ? roiUpi.trim() : '', p_reason: reason.trim() }),
       ['Investment updated', financial ? `${i.code} · returns recalculated` : i.code]);
     if (res !== undefined) { refreshAll(); onClose(); }
   };
@@ -819,6 +841,7 @@ function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underI
           <Field label="Reference"><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
         </div>
         <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
+        <RoiWayField way={roiWay} setWay={setRoiWay} upi={roiUpi} setUpi={setRoiUpi} required={false} />
         <Field label="Reason (saved to the history)"><input className="input" value={reason} onChange={ev => setReason(ev.target.value)} placeholder="e.g. ROI corrected" /></Field>
         {financial && <div className="note info">The returns of {i.code} will be recalculated with the new terms. The investor sees the new figures straight away.</div>}
       </div>
