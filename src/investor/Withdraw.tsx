@@ -9,6 +9,7 @@ import type { Investment, MyAccount, Withdrawal, WithdrawalMethod, WithdrawalPar
 import { Badge, Empty, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
 import { AttachmentLinks, FilePicker } from '../ui/Attach';
 import { loadAccount } from './data';
+import { AmountWords } from '../ui/AmountWords';
 
 /* Withdrawals. The amount is always taken from the highest monthly ROI first, whatever the lock-in.
    From the day of the request, returns are calculated on the lower amount. The company pays and marks it completed.
@@ -129,6 +130,7 @@ export function Withdraw() {
               <div className="form">
                 <Field label="Amount (INR) *" err={tried ? err : null} hint={`Up to ${money(available)}.`}>
                   <input className={'input num ' + (tried && err ? 'bad' : '')} inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="e.g. 100000" />
+                  <AmountWords v={amount} />
                 </Field>
                 <Field label="Where should the money go? *">
                   <div style={{ display: 'grid', gap: 8 }} role="radiogroup">
@@ -221,7 +223,7 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
     <Modal title={`Edit ${w.code}`} sub={`${who ? who + ' · ' : ''}taken again from the highest monthly ROI first, from ${date(w.requested_on)}.`} onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !!err}>{act.busy ? 'Saving…' : 'Save'}</button></>}>
       <div className="form">
-        <Field label="Amount (INR) *" err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
+        <Field label="Amount (INR) *" err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /><AmountWords v={amount} /></Field>
         <Field label="Where should the money go?"><div className="chips">
           {ways.map(([k, l]) => <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k)}>{l}</button>)}
         </div></Field>

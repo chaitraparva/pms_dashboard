@@ -12,6 +12,7 @@ import { WdBadge, methodText, EditWithdrawal, DeleteWithdrawal } from '../invest
 import { AttachmentLinks } from '../ui/Attach';
 import type { WithdrawalMethod } from '../lib/types';
 import { SearchSelect } from '../ui/SearchSelect';
+import { AmountWords } from '../ui/AmountWords';
 
 /* Withdrawals: requested by investors (or recorded here for them), taken from the highest monthly ROI first.
    Returns already use the lower amount from the request date. The Super Admin pays and marks them completed. */
@@ -160,7 +161,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
         <Field label="Investor *"><SearchSelect value={who} onChange={v => { setWho(v); look(v, amt); }}
           options={people.map(p => ({ value: p.id, label: p.full_name + ' · ' + p.code, sub: p.phone || undefined }))} /></Field>
         <div className="f-row">
-          <Field label="Amount (INR) *"><input className="input num" inputMode="decimal" value={amount} onChange={e => { setAmount(e.target.value); look(who, Number(e.target.value)); }} /></Field>
+          <Field label="Amount (INR) *"><input className="input num" inputMode="decimal" value={amount} onChange={e => { setAmount(e.target.value); look(who, Number(e.target.value)); }} /><AmountWords v={amount} /></Field>
           <Field label="How"><div className="chips">
             {([['bank', 'Bank transfer'], ['mt5', 'MT5 account'], ['cash', 'Cash'], ...(hasIb ? [['ib', 'Transfer to IB']] : [])] as [WithdrawalMethod, string][]).map(([k, l]) =>
               <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k)}>{l}</button>)}

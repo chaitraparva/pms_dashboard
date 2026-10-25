@@ -10,6 +10,7 @@ import { Badge, Drawer, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useActi
 import { DataTable, Col } from '../ui/DataTable';
 import { AttachmentLinks } from '../ui/Attach';
 import { Icon } from '../ui/Icon';
+import { AmountWords } from '../ui/AmountWords';
 
 /* Investment requests from the portal: an investor for themselves, or an IB for a sub-investor.
    The Super Admin sets the ROI (and the IB bonus) and approves; the investment then shows in the portal. */
@@ -164,7 +165,7 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
           </Field>
         </div>
         <div className="f-row">
-          <Field label="Principal (INR) *" err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} /></Field>
+          <Field label="Principal (INR) *" err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} /><AmountWords v={amount} /></Field>
           <Field label="Lock-in (months) *" err={e('lock')} hint="0 = no lock-in."><input className={'input num ' + (e('lock') ? 'bad' : '')} inputMode="numeric" value={lock} onChange={ev => setLock(ev.target.value)} /></Field>
         </div>
         <div className="f-row">
@@ -226,7 +227,7 @@ function EditRequest({ r, onClose }: { r: Row; onClose: () => void }) {
           <Field label="Phone (optional)"><input className="input num" inputMode="tel" value={subPhone} onChange={e => setSubPhone(e.target.value)} /></Field>
         </div>}
         <div className="f-row">
-          <Field label="Amount (INR) *"><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
+          <Field label="Amount (INR) *"><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /><AmountWords v={amount} /></Field>
           <Field label="Lock-in (months)" hint="0 = no lock-in."><input className="input num" inputMode="numeric" value={lock} onChange={e => setLock(e.target.value)} /></Field>
         </div>
         <div className="f-row">

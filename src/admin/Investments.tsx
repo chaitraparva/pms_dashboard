@@ -13,6 +13,7 @@ import { Kpi, Empty, ErrorNote, Loading, PageHead, InvBadge, PayBadge, LedgerBad
 import { Icon } from '../ui/Icon';
 import { FilePicker } from '../ui/Attach';
 import { SearchSelect } from '../ui/SearchSelect';
+import { AmountWords } from '../ui/AmountWords';
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 type Lite = Pick<Profile, 'id' | 'full_name' | 'code' | 'email'> & { branch_id?: string | null; introduced_by?: string | null; role?: string };
@@ -511,6 +512,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
 
           <div className="sec">
           <h4>Investment 1</h4>
+          <Field label={type === 'ib' ? 'Principal (INR)' : 'Principal (INR) *'} err={e('amount')} hint={type === 'ib' ? (withSub ? 'Optional. Leave empty to only add the sub-investor (name is enough); fill it to record an investment too.' : 'Optional. Leave empty or 0 to only register the IB.') : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder="e.g. 500000" /><AmountWords v={amount} /></Field>
           <div className="f-row">
             <Field label={'Monthly ROI (% per month)' + star} err={e('roi')} hint="Any rate, e.g. 0.25, 2.3, 3.3, 4.3, 6.">
               <input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} placeholder="e.g. 6" />
@@ -526,13 +528,10 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             {lock === 'custom' && <input className="input num" style={{ marginTop: 8 }} inputMode="numeric" value={customLock} onChange={ev => setCustomLock(ev.target.value)} placeholder="Months, e.g. 3" />}
           </Field>
           <div className="f-row">
-            <Field label={type === 'ib' ? 'Principal (INR)' : 'Principal (INR) *'} err={e('amount')} hint={type === 'ib' ? (withSub ? 'Optional. Leave empty to only add the sub-investor (name is enough); fill it to record an investment too.' : 'Optional. Leave empty or 0 to only register the IB.') : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder="e.g. 500000" /></Field>
             <Field label={'Start date' + star} err={e('start')} hint="Returns accrue monthly from this date."><input className="input" type="date" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
-          </div>
-          <div className="f-row">
             <Field label="Reference" hint="Bank / UTR or agreement number (optional)."><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
-            <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
           </div>
+          <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
           <FilePicker label="Payment proof (optional)" files={proof} onChange={setProof} max={1} err={e('proof')} hint="Bank receipt, transfer screenshot or signed document (image, PDF, Word or Excel, 3 MB). The investor sees it in their documents." />
           {!regOnly && <RoiWayField way={roiWay} setWay={setRoiWay} upi={roiUpi} setUpi={setRoiUpi} err={e('roiWay')} required={!withSub} />}
           </div>
@@ -542,6 +541,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
               <div className="sec" key={k}>
                 <h4 style={{ display: 'flex', alignItems: 'center' }}>Investment {k + 2}
                   <button type="button" className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => setMore(more.filter((_, j) => j !== k))}>✕ Remove</button></h4>
+                <Field label="Principal (INR) *" err={er('amount')}><input className={'input num ' + (er('amount') ? 'bad' : '')} inputMode="decimal" value={it.amount} onChange={ev => setItem(k, { amount: ev.target.value })} placeholder="e.g. 500000" /><AmountWords v={it.amount} /></Field>
                 <div className="f-row">
                   <Field label="Monthly ROI (% per month) *" err={er('roi')}><input className={'input num ' + (er('roi') ? 'bad' : '')} inputMode="decimal" value={it.roi} onChange={ev => setItem(k, { roi: ev.target.value })} placeholder="e.g. 6" /></Field>
                   <Field label={withSub && ibName ? `Bonus to ${ibName} (% per month)` : 'IB bonus (% per month)'} err={er('bonus')}><input className={'input num ' + (er('bonus') ? 'bad' : '')} inputMode="decimal" value={withSub ? it.bonus : ''} onChange={ev => setItem(k, { bonus: ev.target.value })} disabled={!withSub} placeholder={withSub ? 'e.g. 2' : '—'} /></Field>
@@ -551,13 +551,10 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                   {it.lock === 'custom' && <input className="input num" style={{ marginTop: 8 }} inputMode="numeric" value={it.customLock} onChange={ev => setItem(k, { customLock: ev.target.value })} placeholder="Months, e.g. 3" />}
                 </Field>
                 <div className="f-row">
-                  <Field label="Principal (INR) *" err={er('amount')}><input className={'input num ' + (er('amount') ? 'bad' : '')} inputMode="decimal" value={it.amount} onChange={ev => setItem(k, { amount: ev.target.value })} placeholder="e.g. 500000" /></Field>
                   <Field label="Start date *" err={er('start')}><input className="input" type="date" value={it.start} onChange={ev => setItem(k, { start: ev.target.value })} /></Field>
-                </div>
-                <div className="f-row">
                   <Field label="Reference" hint="Optional."><input className="input mono" value={it.ref} onChange={ev => setItem(k, { ref: ev.target.value })} /></Field>
-                  <Field label="Notes (internal)"><input className="input" value={it.notes} onChange={ev => setItem(k, { notes: ev.target.value })} /></Field>
                 </div>
+                <Field label="Notes (internal)"><input className="input" value={it.notes} onChange={ev => setItem(k, { notes: ev.target.value })} /></Field>
                 <FilePicker label="Payment proof (optional)" files={it.proof} onChange={f => setItem(k, { proof: f })} max={1} />
                 <RoiWayField way={it.roiWay} setWay={v => setItem(k, { roiWay: v })} upi={it.roiUpi} setUpi={v => setItem(k, { roiUpi: v })} err={er('roiWay')} required={!withSub} />
               </div>
@@ -925,7 +922,7 @@ function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underI
           </Field>
         </div>
         <div className="f-row">
-          <Field label="Principal (INR) *" err={e('amount')} hint={hasWd ? 'This investment has withdrawals, so the principal cannot be changed.' : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} disabled={hasWd} /></Field>
+          <Field label="Principal (INR) *" err={e('amount')} hint={hasWd ? 'This investment has withdrawals, so the principal cannot be changed.' : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} disabled={hasWd} /><AmountWords v={amount} /></Field>
           <Field label="Lock-in (months) *" err={e('lock')} hint="0 = no lock-in."><input className={'input num ' + (e('lock') ? 'bad' : '')} inputMode="numeric" value={lock} onChange={ev => setLock(ev.target.value)} /></Field>
         </div>
         <div className="f-row">
