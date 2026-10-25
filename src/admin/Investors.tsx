@@ -11,6 +11,7 @@ import type { AuditLog, Branch, Profile, Investment, Balance, LedgerEntry, Docum
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, KycBadge, AcctBadge, InvBadge, LedgerBadge, Drawer, Modal, Field, useAction, Badge, PayBadge } from '../ui/kit';
 import { Icon } from '../ui/Icon';
+import { SearchSelect } from '../ui/SearchSelect';
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 const DOC_KINDS: [DocumentRow['kind'], string][] = [['kyc', 'KYC document'], ['agreement', 'Agreement'], ['statement', 'Statement'], ['proof', 'Proof of payment'], ['attachment', 'Attachment'], ['other', 'Other']];
@@ -540,10 +541,8 @@ function EditInvestor({ p, onClose }: { p: Profile; onClose: () => void }) {
         <Field label="Full name *" err={tried ? errs.name : null}><input className="input" value={f.full_name} onChange={set('full_name')} /></Field>
         {p.role === 'investor' && (
           <Field label="Under" hint="Receives the bonus. Unpaid bonuses move to the investor you choose.">
-            <select className="input" value={f.introduced_by} onChange={set('introduced_by')}>
-              <option value="">Individual (nobody)</option>
-              {(aq.data || []).filter(a => a.id !== p.id && (a.account_status === 'active' || a.id === f.introduced_by)).map(a => <option key={a.id} value={a.id}>{introLabel(a)}</option>)}
-            </select>
+            <SearchSelect value={f.introduced_by} onChange={v => setF({ ...f, introduced_by: v })} empty="Individual (nobody)"
+              options={(aq.data || []).filter(a => a.id !== p.id && (a.account_status === 'active' || a.id === f.introduced_by)).map(a => ({ value: a.id, label: introLabel(a) }))} />
           </Field>
         )}
         <div className="f-row">

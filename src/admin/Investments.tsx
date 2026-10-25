@@ -12,6 +12,7 @@ import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, InvBadge, PayBadge, LedgerBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
 import { Icon } from '../ui/Icon';
 import { FilePicker } from '../ui/Attach';
+import { SearchSelect } from '../ui/SearchSelect';
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 type Lite = Pick<Profile, 'id' | 'full_name' | 'code' | 'email'> & { branch_id?: string | null; introduced_by?: string | null; role?: string };
@@ -423,10 +424,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             <div className="sec">
               <h4>Investor</h4>
               <Field label="Existing investor" hint="Or leave this empty and type a phone number to find or add the person.">
-                <select className="input" value={pick} onChange={ev => choose(ev.target.value)}>
-                  <option value="">New investor / search by phone…</option>
-                  {all.map(x => <option key={x.id} value={x.id}>{x.full_name} · {x.code}{x.phone ? ' · ' + x.phone : ''}</option>)}
-                </select>
+                <SearchSelect value={pick} onChange={choose} empty="New investor / search by phone…"
+                  options={all.map(x => ({ value: x.id, label: x.full_name + ' · ' + x.code, sub: x.phone || undefined }))} />
               </Field>
               <div className="f-row">
                 <Field label="Phone number *" err={e('phone')} hint={ind.found ? <>Existing investor: <b>{ind.found.full_name}</b> ({ind.found.code}){ind.found.ib_name ? ` · sub-investor of ${ind.found.ib_name}` : ''}</> : 'The investor signs in with this number.'}>
@@ -450,11 +449,9 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                 </div>
                 {ibMode === 'existing' ? (
                   <>
-                    <Field label="IB *" err={e('ib')} hint="IBs are listed first. Choosing any other investor makes them an IB.">
-                      <select className={'input ' + (e('ib') ? 'bad' : '')} value={ibId} onChange={ev => setIbId(ev.target.value)}>
-                        <option value="">Choose the IB…</option>
-                        {ibList.map(x => <option key={x.id} value={x.id}>{x.full_name} · {x.code}{x.phone ? ' · ' + x.phone : ''}{isIb(x) ? ' · IB' : ''}</option>)}
-                      </select>
+                    <Field label="IB *" err={e('ib')} hint="Type to search. IBs are listed first. Choosing any other investor makes them an IB.">
+                      <SearchSelect value={ibId} onChange={setIbId} bad={!!e('ib')} placeholder="Type the IB’s name, ID or phone number…"
+                        options={ibList.map(x => ({ value: x.id, label: x.full_name + ' · ' + x.code + (isIb(x) ? ' · IB' : ''), sub: x.phone || undefined }))} />
                     </Field>
                     {ib && (
                       <div className="ib-card">
@@ -491,10 +488,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                     </div>
                     {subMode === 'existing' ? (
                       <Field label="Sub-investor *" err={e('subPick')} hint={subIbId ? 'People already under this IB are listed first. Their details are reused, nothing to type again.' : 'Their details are reused, nothing to type again.'}>
-                        <select className={'input ' + (e('subPick') ? 'bad' : '')} value={subPick} onChange={ev => setSubPick(ev.target.value)}>
-                          <option value="">Choose the sub-investor…</option>
-                          {subList.map(x => <option key={x.id} value={x.id}>{x.full_name} · {x.code}{x.phone ? ' · ' + x.phone : ''}{subIbId && x.introduced_by === subIbId ? ' · under this IB' : ''}</option>)}
-                        </select>
+                        <SearchSelect value={subPick} onChange={setSubPick} bad={!!e('subPick')} placeholder="Type the sub-investor’s name, ID or phone number…"
+                          options={subList.map(x => ({ value: x.id, label: x.full_name + ' · ' + x.code + (subIbId && x.introduced_by === subIbId ? ' · under this IB' : ''), sub: x.phone || undefined }))} />
                       </Field>
                     ) : (
                     <div className="f-row">

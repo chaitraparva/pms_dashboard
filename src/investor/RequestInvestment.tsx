@@ -9,6 +9,7 @@ import type { InvestmentRequest } from '../lib/types';
 import { Badge, Empty, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
 import { AttachmentLinks, FilePicker } from '../ui/Attach';
 import { loadAccount } from './data';
+import { SearchSelect } from '../ui/SearchSelect';
 
 /* Request an investment. An investor requests for themselves; an IB also for a sub-investor (existing or new).
    Every request goes to the Super Admin, who sets the ROI and approves it. Approved investments then show in the portal. */
@@ -104,11 +105,10 @@ export function RequestInvestment() {
                     <button type="button" className={'chip ' + (forWho === 'sub' ? 'on' : '')} onClick={() => setForWho('sub')}>A sub-investor</button>
                   </div>
                   {forWho === 'sub' && (
-                    <select className={'input ' + (e('sub') ? 'bad' : '')} style={{ marginTop: 8 }} value={subId} onChange={ev => setSubId(ev.target.value)}>
-                      <option value="">Choose…</option>
-                      {subs.map(s => <option key={s.id} value={s.id}>{s.full_name} · {s.code}{s.phone ? ' · ' + s.phone : ''}</option>)}
-                      <option value="new">+ A new sub-investor</option>
-                    </select>
+                    <div style={{ marginTop: 8 }}>
+                      <SearchSelect value={subId} onChange={setSubId} bad={!!e('sub')} placeholder="Type the sub-investor’s name or phone number…"
+                        options={[...subs.map(s => ({ value: s.id, label: s.full_name + ' · ' + s.code, sub: s.phone || undefined })), { value: 'new', label: '+ A new sub-investor' }]} />
+                    </div>
                   )}
                 </Field>
               )}

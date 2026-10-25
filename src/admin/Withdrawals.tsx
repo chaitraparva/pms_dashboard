@@ -11,6 +11,7 @@ import { Icon } from '../ui/Icon';
 import { WdBadge, methodText, EditWithdrawal, DeleteWithdrawal } from '../investor/Withdraw';
 import { AttachmentLinks } from '../ui/Attach';
 import type { WithdrawalMethod } from '../lib/types';
+import { SearchSelect } from '../ui/SearchSelect';
 
 /* Withdrawals: requested by investors (or recorded here for them), taken from the highest monthly ROI first.
    Returns already use the lower amount from the request date. The Super Admin pays and marks them completed. */
@@ -156,9 +157,8 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
     <Modal title="Record a withdrawal" sub="Taken from the investor’s highest monthly ROI first. Returns use the lower amount from today." onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !who || !(amt > 0) || (method === 'mt5' && !mt5.trim())}>Record withdrawal</button></>}>
       <div className="form">
-        <Field label="Investor *"><select className="input" value={who} onChange={e => { setWho(e.target.value); look(e.target.value, amt); }}>
-          <option value="">Choose…</option>{people.map(p => <option key={p.id} value={p.id}>{p.full_name} · {p.code} · {p.phone}</option>)}
-        </select></Field>
+        <Field label="Investor *"><SearchSelect value={who} onChange={v => { setWho(v); look(v, amt); }}
+          options={people.map(p => ({ value: p.id, label: p.full_name + ' · ' + p.code, sub: p.phone || undefined }))} /></Field>
         <div className="f-row">
           <Field label="Amount (INR) *"><input className="input num" inputMode="decimal" value={amount} onChange={e => { setAmount(e.target.value); look(who, Number(e.target.value)); }} /></Field>
           <Field label="How"><div className="chips">
