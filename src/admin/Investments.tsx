@@ -202,6 +202,9 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const [subPhone, setSubPhone] = useState('');
   const [subName, setSubName] = useState('');
   const [subPw, setSubPw] = useState('');
+  // an existing sub-investor can be chosen, so their details are not typed again for every investment
+  const [subMode, setSubMode] = useState<'new' | 'existing'>('new');
+  const [subPick, setSubPick] = useState('');
   // investment
   const [roi, setRoi] = useState('');
   const [bonus, setBonus] = useState('');
@@ -218,7 +221,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const [done, setDone] = useState<null | { code: string | null; investorCode: string; investor: string; logins: [string, string, string][] }>(null);
 
   const ind = usePhoneLookup(phone, type === 'individual');
-  const subL = usePhoneLookup(subPhone, type === 'ib' && hasSub);
+  const subL = usePhoneLookup(subPhone, type === 'ib' && hasSub && subMode === 'new');
   const nib = usePhoneLookup(nibPhone, type === 'ib' && ibMode === 'new');
   const all = opts.data?.all || [];
   const people = (id: string) => all.filter(x => x.introduced_by === id).length;
@@ -248,8 +251,12 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const needPw = type === 'individual' && !(picked?.has_login || ind.found?.has_login);
   const needIbPw = type === 'ib' && ibMode === 'existing' && !!ib && !ib.has_login;
   // a sub-investor needs only a name: phone number and login are optional (a login needs both)
-  const needSubPw = withSub && subL.digits.length === 10 && (!subL.found || !subL.found.has_login);
+  const subChosen = withSub && subMode === 'existing' ? all.find(x => x.id === subPick) : undefined;
+  // a password is optional for a sub-investor; only someone with a phone number can have a login
+  const needSubPw = withSub && (subMode === 'existing' ? !!subChosen && !!subChosen.phone && !subChosen.has_login : subL.digits.length === 10 && (!subL.found || !subL.found.has_login));
   const subLogin = needSubPw && !!subPw;
+  const subIbId = ibMode === 'existing' ? ibId : '';
+  const subList = [...all.filter(x => subIbId && x.introduced_by === subIbId), ...all.filter(x => x.id !== subIbId && !x.introduced_by && !(subIbId && x.introduced_by === subIbId))].filter(x => x.account_status !== 'suspended');
   const subClash = withSub && subL.found && subL.found.ib_id && subL.found.ib_id !== ibId ? `${subL.found.full_name} is already under ${subL.found.ib_name}.` : null;
   const errs: Record<string, string | null> = {
     phone: type === 'individual' && !picked && ind.digits.length !== 10 ? 'Enter a 10-digit phone number, or choose an existing investor.' : null,
@@ -260,9 +267,10 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
     nibName: type === 'ib' && ibMode === 'new' && !nibName.trim() ? 'Enter the IB’s name.' : null,
     nibPhone: type === 'ib' && ibMode === 'new' ? (nib.digits.length !== 10 ? 'Enter a 10-digit phone number.' : nib.found ? `Already registered to ${nib.found.full_name}. Choose them under “Existing IB”.` : null) : null,
     nibPw: type === 'ib' && ibMode === 'new' && nibPw.length < 8 ? 'At least 8 characters.' : null,
-    subPhone: withSub && subPhone.trim() ? (subL.digits.length !== 10 ? 'Enter a 10-digit phone number, or leave it empty.' : subL.digits === (ibMode === 'new' ? nib.digits : (ib?.phone || '').replace(/\D/g, '').slice(-10)) ? 'Must be different from the IB’s phone number.' : subClash) : null,
-    subName: withSub && !subName.trim() ? 'Enter the sub-investor’s name.' : null,
-    subPw: needSubPw && subPw && subPw.length < 8 ? 'At least 8 characters, or leave it empty for no login.' : null,
+    subPick: withSub && subMode === 'existing' && !subChosen ? 'Choose the sub-investor.' : null,
+    subPhone: withSub && subMode === 'new' && subPhone.trim() ? (subL.digits.length !== 10 ? 'Enter a 10-digit phone number, or leave it empty.' : subL.digits === (ibMode === 'new' ? nib.digits : (ib?.phone || '').replace(/\D/g, '').slice(-10)) ? 'Must be different from the IB’s phone number.' : subClash) : null,
+    subName: withSub && subMode === 'new' && !subName.trim() ? 'Enter the sub-investor’s name.' : null,
+    subPw: subLogin && subPw.length < 8 ? 'At least 8 characters, or leave it empty for no login.' : null,
     roi: regOnly ? null : !(r > 0 && r <= 100) || !DEC(roi, 4) ? 'Enter the monthly ROI, e.g. 0.25, 2.3, 4.3 or 6.' : null,
     bonus: regOnly ? null : withSub && (!DEC(bonus || '0', 4) || b > 100) ? 'Enter the bonus as 0 or more, e.g. 1, 2.5 or 3.' : null,
     lock: regOnly ? null : !(Number.isInteger(months) && months >= 0 && months <= 120) ? 'Enter the lock-in in months (0 to 120).' : null,
@@ -279,8 +287,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const invRate = r > 0 ? r : 0;
   const mine = amt > 0 && invRate ? Math.round(amt * invRate) / 100 : 0;
   const upMonthly = amt > 0 && b > 0 ? Math.round(amt * b) / 100 : 0;
-  const investorName = type === 'individual' ? name.trim() : withSub ? subName.trim() : ibName;
-  const subRow = withSub && subL.found ? all.find(x => x.id === subL.found!.id) : undefined;
+  const investorName = type === 'individual' ? name.trim() : withSub ? (subChosen ? subChosen.full_name : subName.trim()) : ibName;
+  const subRow = subChosen || (withSub && subL.found ? all.find(x => x.id === subL.found!.id) : undefined);
   const indRow = picked || (ind.found ? all.find(x => x.id === ind.found!.id) : undefined);
   const suggested = (type === 'individual' ? indRow?.branch_id : withSub ? subRow?.branch_id || ib?.branch_id : ib?.branch_id) || '';
   useEffect(() => { if (!branchTouched) setBranch(suggested); }, [suggested, branchTouched]);
@@ -305,7 +313,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             ? { p_person: picked ? picked.id : null, p_name: name.trim(), p_phone: phone.trim(), p_password: needPw ? pw : '' }
             : {
               ...(ibMode === 'new' ? { p_new_ib: { name: nibName.trim(), phone: nibPhone.trim(), password: nibPw } } : { p_ib: ibId, p_ib_password: needIbPw ? ibPw : '' }),
-              p_sub: withSub ? { name: subName.trim(), phone: subPhone.trim(), password: subLogin ? subPw : '' } : null
+              p_sub: withSub ? (subChosen ? { id: subChosen.id, password: subLogin ? subPw : '' } : { name: subName.trim(), phone: subPhone.trim(), password: subLogin ? subPw : '' }) : null
             })
         });
       } catch (err) { if (file) await api.storage.from('documents').remove([file.path]).catch(() => undefined); throw err; }
@@ -316,7 +324,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
       if (type === 'individual' && needPw) logins.push([name.trim(), phone.trim(), pw]);
       if (type === 'ib' && ibMode === 'new') logins.push([nibName.trim() + ' (IB)', nibPhone.trim(), nibPw]);
       if (needIbPw && ib) logins.push([ib.full_name + ' (IB)', ib.phone || '', ibPw]);
-      if (withSub && subLogin) logins.push([subName.trim() + ' (sub-investor)', subPhone.trim(), subPw]);
+      if (withSub && subLogin) logins.push([investorName + ' (sub-investor)', (subChosen ? subChosen.phone : subPhone.trim()) || '', subPw]);
       setDone({ code: res.code, investorCode: res.investor, investor: investorName, logins });
     }
   };
@@ -445,13 +453,28 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                   <label className="check" style={{ marginLeft: 'auto', fontWeight: 400 }}><input type="checkbox" checked={hasSub} onChange={ev => setHasSub(ev.target.checked)} /> Add a sub-investor</label></h4>
                 {!hasSub ? <p className="hint">Without a sub-investor, this is {ibName ? ibName + '’s' : 'the IB’s'} own investment.</p> : (
                   <>
+                    <div className="chips">
+                      <button type="button" className={'chip ' + (subMode === 'new' ? 'on' : '')} onClick={() => setSubMode('new')}>New sub-investor</button>
+                      <button type="button" className={'chip ' + (subMode === 'existing' ? 'on' : '')} onClick={() => setSubMode('existing')}>Choose existing sub-investor</button>
+                    </div>
+                    {subMode === 'existing' ? (
+                      <Field label="Sub-investor *" err={e('subPick')} hint={subIbId ? 'People already under this IB are listed first. Their details are reused, nothing to type again.' : 'Their details are reused, nothing to type again.'}>
+                        <select className={'input ' + (e('subPick') ? 'bad' : '')} value={subPick} onChange={ev => setSubPick(ev.target.value)}>
+                          <option value="">Choose the sub-investor…</option>
+                          {subList.map(x => <option key={x.id} value={x.id}>{x.full_name} · {x.code}{x.phone ? ' · ' + x.phone : ''}{subIbId && x.introduced_by === subIbId ? ' · under this IB' : ''}</option>)}
+                        </select>
+                      </Field>
+                    ) : (
                     <div className="f-row">
-                      <Field label="Sub-investor phone number (optional)" err={e('subPhone')} hint={subL.found ? <>Existing investor: <b>{subL.found.full_name}</b> ({subL.found.code}){subL.found.ib_name ? ` · under ${subL.found.ib_name}` : ''}</> : 'Needed only if they should sign in.'}>
+                      <Field label="Sub-investor phone number (optional)" err={e('subPhone')} hint={subL.found ? <>Existing investor: <b>{subL.found.full_name}</b> ({subL.found.code}){subL.found.ib_name ? ` · under ${subL.found.ib_name}` : ''}</> : 'Optional. Needed only if they should log in.'}>
                         <input className={'input num ' + (e('subPhone') ? 'bad' : '')} inputMode="tel" value={subPhone} onChange={ev => setSubPhone(ev.target.value)} />
                       </Field>
                       <Field label="Sub-investor name *" err={e('subName')}><input className={'input ' + (e('subName') ? 'bad' : '')} value={subName} onChange={ev => setSubName(ev.target.value)} disabled={!!subL.found} /></Field>
                     </div>
-                    {needSubPw ? pwField('Sub-investor login password (optional)', subPw, setSubPw, 'subPw', 'Leave empty for no login. If set, the sub-investor') : subL.found?.has_login ? <p className="hint">{subL.found.full_name} already has a login.</p> : <p className="hint">Without a phone number the sub-investor has no login. You can add one later from their page.</p>}
+                    )}
+                    {needSubPw ? pwField('Sub-investor login password (optional)', subPw, setSubPw, 'subPw', 'Leave empty for no login. If set, the sub-investor')
+                      : (subChosen || subL.found)?.has_login ? <p className="hint">{(subChosen || subL.found)!.full_name} already has a login.</p> : null}
+                    {!needSubPw && !(subChosen || subL.found)?.has_login && <p className="hint">Without a phone number the sub-investor has no login.</p>}
                     <p className="hint">The sub-investor is placed under {ibName || 'the IB'}. The IB sees them, their investments and the bonus below in their own login.</p>
                   </>
                 )}
