@@ -50,7 +50,7 @@ export function Withdrawals() {
     { h: 'Taken from (highest ROI first)', v: r => (r.allocations || []).map(p => p.code).join(' '), r: r => <>{(r.allocations || []).map((p: WithdrawalPart) => <div key={p.investment_id} className="sub" style={{ display: 'block' }}><span className="mono">{p.code}</span> · {rateShort(p.plan_rate ?? p.rate)} · {money(p.amount)} → {money(p.after)} left</div>)}</> },
     { h: 'Status', v: r => r.status, r: r => <><WdBadge s={r.status} />{r.status === 'completed' && <span className="sub">{date(r.completed_on)}{r.payment_ref ? ' · ' + r.payment_ref : ''}</span>}{r.status === 'cancelled' && <span className="sub">{r.cancelled_reason}</span>}</> },
     { h: '', r: r => <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-      {r.status === 'pending' && <><button className="btn sm primary" onClick={e => { e.stopPropagation(); setDone(r); }}>{r.method === 'ib' ? 'Approve transfer' : 'Mark completed'}</button>
+      {r.status === 'pending' && <><button className="btn sm primary" onClick={e => { e.stopPropagation(); setDone(r); }}>{r.method === 'ib' ? 'Approve transfer' : 'Mark fulfilled'}</button>
         <button className="btn sm" onClick={e => { e.stopPropagation(); setEditing(r); }}>Edit</button>
         <button className="btn sm" onClick={e => { e.stopPropagation(); setCancel(r); }}>Cancel</button></>}
       <button className="btn sm danger" onClick={e => { e.stopPropagation(); setDel(r); }}>Delete</button>
@@ -58,7 +58,7 @@ export function Withdrawals() {
   ], []);
   return (
     <>
-      <PageHead crumbs={['Withdrawals']} title="Withdrawals" sub="Taken automatically from the investor’s highest monthly ROI first, whatever the lock-in. Returns already use the lower amount from the request date. Pay the investor, then mark it completed."
+      <PageHead crumbs={['Withdrawals']} title="Withdrawals" sub="Taken automatically from the investor’s highest monthly ROI first, whatever the lock-in. Returns already use the lower amount from the request date. Pay the investor, then click Mark fulfilled."
         actions={<>
           <button className="btn" disabled={!rows.length} onClick={() => downloadCsv('withdrawals-' + tab, ['Request', 'Investor ID', 'Investor', 'Phone', 'Applied on', 'Amount', 'How', 'Taken from', 'Status', 'Paid on', 'Reference'],
             rows.map(r => [r.code, r.who?.code, r.who?.full_name, r.who?.phone, r.requested_on, Number(r.amount).toFixed(2), methodText(r.method) + (r.mt5_account ? ' ' + r.mt5_account : '') + (r.ib ? ' ' + r.ib.full_name : ''), (r.allocations || []).map(p => `${p.code} ${p.amount}`).join('; '), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export to Excel</button>
@@ -67,18 +67,18 @@ export function Withdrawals() {
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : (
         <>
           <div className="kpis k4">
-            <Kpi label="Pending" value={money(sum(all.filter(r => r.status === 'pending')))} sub={`${n('pending')} to pay`} subCls={n('pending') ? 'warn' : ''} />
-            <Kpi label="Completed" cls="pos" value={money(sum(all.filter(r => r.status === 'completed')))} sub={`${n('completed')} paid`} />
+            <Kpi label="Payment processed" value={money(sum(all.filter(r => r.status === 'pending')))} sub={`${n('pending')} to pay`} subCls={n('pending') ? 'warn' : ''} />
+            <Kpi label="Payment fulfilled" cls="pos" value={money(sum(all.filter(r => r.status === 'completed')))} sub={`${n('completed')} fulfilled`} />
             <Kpi label="To bank accounts" value={money(sum(all.filter(r => r.status !== 'cancelled' && r.method === 'bank')))} sub={'cash ' + money(sum(all.filter(r => r.status !== 'cancelled' && r.method === 'cash')))} />
             <Kpi label="To MT5 / to IB" value={money(sum(all.filter(r => r.status !== 'cancelled' && (r.method === 'mt5' || r.method === 'ib'))))} sub={`${all.filter(r => r.status === 'pending' && r.method === 'ib').length} IB transfer${all.filter(r => r.status === 'pending' && r.method === 'ib').length === 1 ? '' : 's'} to approve`} />
           </div>
           <div style={{ display: 'grid', gap: 8 }}>
             <div className="card"><div className="tabs" style={{ padding: '0 12px' }} role="tablist">
-              {([['pending', 'Pending'], ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['all', 'All']] as [Tab, string][]).map(([k, l]) =>
+              {([['pending', 'Payment processed'], ['completed', 'Payment fulfilled'], ['cancelled', 'Cancelled'], ['all', 'All']] as [Tab, string][]).map(([k, l]) =>
                 <button key={k} role="tab" aria-selected={tab === k} className={'tab ' + (tab === k ? 'on' : '')} onClick={() => setTab(k)}>{l}<span className="c">{n(k)}</span></button>)}
             </div></div>
             <DataTable key={tab} rows={rows} cols={cols} rowKey={r => r.id} searchPh="Search request, investor, phone" text={r => `${r.who?.code || ''} ${r.who?.phone || ''}`} sort={2} dir={-1} per={20}
-              emptyTitle="No withdrawals here" empty="Requests from investors show here as Pending." />
+              emptyTitle="No withdrawals here" empty="Requests from investors show here as Payment processed." />
           </div>
         </>
       )}
@@ -98,13 +98,13 @@ function CompleteDialog({ w, onClose }: { w: Row; onClose: () => void }) {
   const [mt5, setMt5] = useState(w.mt5_account || '');
   const [ref, setRef] = useState('');
   const go = async () => {
-    const r = await act.run(() => rpc('admin_complete_withdrawal', { p_id: w.id, p_paid_on: on, p_method: method, p_mt5: mt5.trim(), p_ref: ref.trim() }), [method === 'ib' ? 'Transfer approved' : 'Withdrawal completed', `${w.code} · ${money(w.amount)} · the investor now sees Completed`]);
+    const r = await act.run(() => rpc('admin_complete_withdrawal', { p_id: w.id, p_paid_on: on, p_method: method, p_mt5: mt5.trim(), p_ref: ref.trim() }), [method === 'ib' ? 'Transfer approved' : 'Payment fulfilled', `${w.code} · ${money(w.amount)} · the investor now sees Payment fulfilled`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title={w.method === 'ib' ? `Approve transfer ${w.code} to ${w.ib?.full_name || 'the IB'}?` : `Mark ${w.code} completed?`}
+    <Modal title={w.method === 'ib' ? `Approve transfer ${w.code} to ${w.ib?.full_name || 'the IB'}?` : `Mark ${w.code} as payment fulfilled?`}
       sub={w.method === 'ib' ? `${money(w.amount)} from ${w.who?.full_name || 'the investor'} is transferred to their IB ${w.ib?.full_name || ''}. Both are notified.` : `Only after ${w.who?.full_name || 'the investor'} has received ${money(w.amount)}.`} onClose={onClose}
-      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || (method === 'mt5' && !mt5.trim())}>{method === 'ib' ? 'Approve transfer' : 'Mark completed'}</button></>}>
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || (method === 'mt5' && !mt5.trim())}>{method === 'ib' ? 'Approve transfer' : 'Mark fulfilled'}</button></>}>
       <div className="form">
         {(w.attachments || []).length > 0 && <Field label="Attached by the investor"><AttachmentLinks items={w.attachments} /></Field>}
         {w.note && <p className="hint">Note: {w.note}</p>}
@@ -149,7 +149,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
   const amt = Number(amount);
   const look = async (id: string, a: number) => { setParts(id && a > 0 ? await rpc<WithdrawalPart[]>('withdrawal_preview', { p_investor: id, p_amount: a }).catch(() => []) : []); };
   const go = async () => {
-    const r = await act.run(() => rpc('request_withdrawal', { p_investor: who, p_amount: amt, p_method: method, p_mt5: mt5.trim(), p_note: 'Recorded by Super Admin' }), ['Withdrawal recorded', 'Pending until you mark it completed.']);
+    const r = await act.run(() => rpc('request_withdrawal', { p_investor: who, p_amount: amt, p_method: method, p_mt5: mt5.trim(), p_note: 'Recorded by Super Admin' }), ['Withdrawal recorded', 'Shown as Payment processed until you mark it fulfilled.']);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (

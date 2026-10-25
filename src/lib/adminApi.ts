@@ -29,6 +29,11 @@ export async function resetUserPassword(userId: string, password: string): Promi
   try { await call('fn', { name: 'adminResetPassword', args: { userId, password } }); return true; } catch (e) { throw new Error(friendly((e as Error).message)); }
 }
 
+/** Sets a person's password, or creates their login (phone number + password) if they have none. */
+export async function setInvestorLogin(userId: string, password: string): Promise<boolean> {
+  try { await call('fn', { name: 'adminSetLogin', args: { userId, password } }); return true; } catch (e) { throw new Error(friendly((e as Error).message)); }
+}
+
 export interface NewIB { full_name?: string; phone: string; password: string; email?: string; city?: string; branch_id?: string | null; person_id?: string }
 /** Creates an IB login (phone number + password), or gives an existing person an IB login. */
 export async function createIbLogin(u: NewIB): Promise<{ id: string; code: string }> {
@@ -36,7 +41,7 @@ export async function createIbLogin(u: NewIB): Promise<{ id: string; code: strin
 }
 
 /** Record investment: Individual (chosen, or found / added by phone with a login) or IB (with an optional sub-investor). A proof is required. */
-export async function recordInvestmentFull(a: Record<string, unknown>): Promise<{ id: string; code: string; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
+export async function recordInvestmentFull(a: Record<string, unknown>): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
   try { return await call('fn', { name: 'adminRecordInvestment', args: { ...a } }); } catch (e) { throw new Error(friendly((e as Error).message)); }
 }
 

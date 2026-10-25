@@ -16,7 +16,7 @@ import { loadAccount } from './data';
    Paid to the bank account, to an MT5 account, or transferred to the IB (the Super Admin approves). */
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
-export const WdBadge = ({ s }: { s: string }) => s === 'completed' ? <Badge cls="b-green">Completed</Badge> : s === 'cancelled' ? <Badge cls="b-grey">Cancelled</Badge> : <Badge cls="b-amber">Pending</Badge>;
+export const WdBadge = ({ s }: { s: string }) => s === 'completed' ? <Badge cls="b-green">Payment fulfilled</Badge> : s === 'cancelled' ? <Badge cls="b-grey">Cancelled</Badge> : <Badge cls="b-amber">Payment processed</Badge>;
 export const methodText = (m: string) => (m === 'cash' ? 'Cash' : m === 'mt5' ? 'MT5 account' : m === 'ib' ? 'Transfer to IB' : 'Bank transfer');
 
 async function load(id: string) {
@@ -91,7 +91,7 @@ export function Withdraw() {
       const attachments = [];
       for (const f of files) attachments.push(await uploadAttachment(f, me));
       return rpc('request_withdrawal', { ...forArg, p_amount: amt, p_method: method, p_mt5: method === 'mt5' ? mt5.trim() : '', p_note: note.trim(), p_attachments: attachments });
-    }, [method === 'ib' ? 'Transfer to IB requested' : 'Withdrawal requested', method === 'ib' ? 'The company approves it. It shows as Pending until then.' : 'It shows as Pending until the company pays it.']);
+    }, [method === 'ib' ? 'Transfer to IB requested' : 'Withdrawal requested', method === 'ib' ? 'The company approves it. It shows as Payment processed until then.' : 'It shows as Payment processed; it becomes Payment fulfilled when the company pays it.']);
     if (r !== undefined) { setConfirm(false); setAmount(''); setNote(''); setFiles([]); setTried(false); refreshAll(); q.reload(); }
   };
   const ways: [WithdrawalMethod, string, string][] = [
@@ -117,7 +117,7 @@ export function Withdraw() {
       <div className="kpis k4">
         <Kpi label="Available to withdraw" value={order ? money(available) : '…'} sub={`${parts.length} live investment${parts.length === 1 ? '' : 's'}${forMe ? '' : ' · ' + sub!.full_name}`} />
         <Kpi label="Monthly return now" value={money(nowMonthly)} sub="on the current amount" />
-        <Kpi label="Pending withdrawals" value={money(pending.reduce((s, w) => s + Number(w.amount), 0))} sub={`${pending.length} waiting for the company`} subCls={pending.length ? 'warn' : ''} />
+        <Kpi label="Payment processed" value={money(pending.reduce((s, w) => s + Number(w.amount), 0))} sub={`${pending.length} waiting for the company`} subCls={pending.length ? 'warn' : ''} />
         <Kpi label="Withdrawn so far" cls="pos" value={money(mine.filter(w => w.status === 'completed').reduce((s, w) => s + Number(w.amount), 0))} sub="completed" />
       </div>
 
@@ -189,7 +189,7 @@ export function Withdraw() {
               </tr>
             ))}</tbody>
           </table></div>
-        ) : <div className="card-b"><Empty title="No withdrawals yet">Requests show here as Pending until the company completes them.</Empty></div>}
+        ) : <div className="card-b"><Empty title="No withdrawals yet">Requests show here as Payment processed, then Payment fulfilled once paid.</Empty></div>}
       </div>
 
       {editing && <EditWithdrawal w={editing} who={whoName(editing.investor_id)} hasIb={editing.investor_id === me ? !!acc?.ib : true} ibLabel={editing.investor_id === me ? 'Transfer to my IB' : 'Transfer to me (IB)'} onClose={() => setEditing(null)} />}

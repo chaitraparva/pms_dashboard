@@ -593,8 +593,20 @@ export function rpcCall(fn: string, a: Row): unknown {
       audit('settings.update', 'settings', null, 'settings', a.p_reason || 'Settings updated', before, { ...s }); touched('settings'); return null;
     }
     case 'admin_update_investor': {
-      requireAdmin(); if (blank(a.p_reason)) fail('A reason is required.');
+      requireAdmin();
       const p = T('profiles').find(x => x.id === a.p_id) || fail('Investor not found.'); const before = { ...p };
+      if (a.p && 'full_name' in a.p && blank(a.p.full_name)) fail('The name cannot be empty.');
+      if (a.p && a.p.phone != null && phoneKey(a.p.phone) !== phoneKey(p.phone)) {
+        const key = phoneKey(a.p.phone);
+        if (blank(a.p.phone)) { if (hasLogin(p.id)) fail('This person signs in with their phone number, so it cannot be empty.'); }
+        else {
+          if (key.length !== 10) fail('Enter a 10-digit phone number.');
+          const clash = T('profiles').find(x => x.id !== p.id && phoneKey(x.phone) === key);
+          if (clash) fail(`This phone number already belongs to ${clash.full_name} (${clash.code}).`);
+          // the login follows the new phone number
+          const u = S.users.find(x => x.id === p.id); if (u && /@investor\.login$/.test(u.email)) u.email = key + '@investor.login';
+        }
+      }
       ['full_name', 'phone', 'address', 'city', 'id_number_masked', 'bank_name', 'bank_account_masked', 'bank_ifsc'].forEach(k => { if (a.p?.[k] != null) p[k] = a.p[k]; });
       if (a.p && 'introduced_by' in a.p) {
         const by = blank(a.p.introduced_by) ? null : String(a.p.introduced_by);
@@ -604,7 +616,7 @@ export function rpcCall(fn: string, a: Row): unknown {
         // unpaid bonuses follow the admin who introduced the investor
         T('admin_bonuses').forEach(b => { if (b.investor_id === p.id && b.status === 'accrued') { b.admin_id = by; b.updated_at = nowIso(); } });
       }
-      p.updated_at = nowIso(); audit('investor.update', 'profile', p.id, p.code, a.p_reason, before, { ...p }); touched('profiles', 'admin_bonuses'); return null;
+      p.updated_at = nowIso(); audit('investor.update', 'profile', p.id, p.code, str(a.p_reason, 'Details edited'), before, { ...p }); touched('profiles', 'admin_bonuses'); return null;
     }
     case 'admin_set_investor_status': {
       requireAdmin(); if (blank(a.p_reason)) fail('A reason is required.'); if (a.p_id === currentUid) fail('You cannot change your own account status.');
@@ -1044,7 +1056,38 @@ const PROOF_MIME = ATTACH_MIME;
  *  Individual: the investor is chosen (or found / added by phone number), with a login if they have none.
  *  IB: the IB is chosen (or registered); with an optional sub-investor the investment is the sub-investor's, under the IB
  *  (the IB earns the bonus); without one it is the IB's own investment. A payment proof can be attached (optional). */
-export async function adminRecordInvestment(a: Row): Promise<{ id: string; code: string; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
+/** IB registered with principal 0: adds the sub-investor (name only is required) under the IB, without an investment. */
+async function registerOnly(a: Row, ib: Row): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
+  const branchId = blank(a.p_branch) ? null : String(a.p_branch);
+  if (branchId && !T('branches').some(b => b.id === branchId)) fail('Choose a valid branch.');
+  if (branchId && !ib.branch_id) ib.branch_id = branchId;
+  let person: Row = ib, isNew = false;
+  if (!blank(a.p_ib)) {
+    const key = phoneKey(a.p_phone);
+    if (!blank(a.p_phone) && key.length !== 10) fail('Enter a 10-digit phone number for the sub-investor, or leave it empty.');
+    const found = !blank(a.p_person) ? T('profiles').find(p => p.id === String(a.p_person) && p.role === 'investor') || fail('Investor not found.')
+      : key.length === 10 ? findByPhone(key) : null;
+    if (found) {
+      if (found.id === ib.id || isUnder(ib.id, found.id)) fail(`${found.full_name} cannot be under ${ib.full_name}.`);
+      if (found.introduced_by && found.introduced_by !== ib.id) fail(`${found.full_name} (this phone number) is already under another investor.`);
+      found.introduced_by = ib.id; found.updated_at = nowIso(); person = found;
+    } else {
+      const name = str(a.p_name).trim(); if (!name) fail('Enter the sub-investor’s name.');
+      const id = uuid(), code = 'INVR-' + nextSeq('investor', 1001);
+      person = profileRow(id, '', name, code, 'investor', 'verified', { phone: blank(a.p_phone) ? null : a.p_phone, city: a.p_city, branch_id: branchId ?? ib.branch_id ?? null, introduced_by: ib.id });
+      T('profiles').push(person); isNew = true;
+      audit('investor.create', 'profile', id, code, 'Added under IB ' + ib.code, null, { full_name: name, phone: a.p_phone || null, under: ib.code });
+    }
+    if (!blank(a.p_password) && !hasLogin(person.id)) {
+      if (String(a.p_password).length < PW_MIN) fail(`The password must be at least ${PW_MIN} characters.`);
+      addLogin(person.id, person.phone, await hash(String(a.p_password)));
+    }
+  }
+  ib.is_ib = true; ib.updated_at = nowIso();
+  persist('profiles', 'audit_logs', 'notifications');
+  return { id: null, code: null, investor: person.code, investor_id: person.id, is_new: isNew, ib: ib.full_name };
+}
+export async function adminRecordInvestment(a: Row): Promise<{ id: string | null; code: string | null; investor: string; investor_id: string; is_new: boolean; ib: string | null }> {
   requireAdmin();
   const proof = a.p_proof && !blank((a.p_proof as Row).path) ? a.p_proof as Row : null;
   if (proof && !blank(proof.mime) && !PROOF_MIME.includes(String(proof.mime))) fail('The proof must be an image, PDF, Word or Excel file.');
@@ -1070,7 +1113,10 @@ export async function adminRecordInvestment(a: Row): Promise<{ id: string; code:
       args = { ...a, p_person: blank(sub.id) ? null : sub.id, p_name: sub.name, p_phone: sub.phone, p_city: sub.city, p_ib: ib!.id, p_password: sub.password };
     } else args = { ...a, p_person: ib!.id, p_ib: null, p_bonus: '0', p_password: '' };
   } else args = { ...a, p_ib: null, p_bonus: '0' };
-  args.p_roi_required = true;
+  // IB with principal 0 (or empty): only register the IB (and the sub-investor under them); no investment is recorded
+  if (a.p_type === 'ib' && (blank(a.p_principal) || Number(a.p_principal) === 0)) return registerOnly(args, ib!);
+  // the way the ROI is taken is required, except for a sub-investor (only their name is mandatory)
+  args.p_roi_required = !(a.p_type === 'ib' && !blank(args.p_ib));
   const r = await recordWithLogin(args);
   if (proof) {
     T('documents').push({ id: uuid(), owner_id: r.investor_id, investment_id: r.id, kind: 'proof', title: str(proof.name, 'Payment proof') + ' · ' + r.code, storage_path: String(proof.path),
@@ -1267,8 +1313,8 @@ function requestWithdrawal(a: Row): string {
   const byIb = !isAdmin() && who.id !== mePr.id;
   T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
     notify(ad.id, 'withdrawal', (method === 'ib' ? 'Transfer to IB ' : 'Withdrawal request ') + code + ': ' + fmtMoney(amount), who.full_name + (byIb ? ' (requested by IB ' + mePr.full_name + ')' : '') + ' · ' + how + ' · from ' + parts.map(p => p.code + ' (' + p.plan_rate + '%)').join(', ') + (method === 'ib' ? ' · needs your approval' : ''), '/admin/withdrawals', 'withdrawals', id));
-  notify(who.id, 'withdrawal', 'Withdrawal ' + code + ' is pending', fmtMoney(amount) + ' · ' + how + ' · returns are now calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
-  if (byIb) notify(mePr.id, 'withdrawal', 'Withdrawal ' + code + ' for ' + who.full_name + ' is pending', fmtMoney(amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', id + ':req-ib');
+  notify(who.id, 'withdrawal', 'Withdrawal ' + code + ' · payment processed', fmtMoney(amount) + ' · ' + how + ' · returns are now calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
+  if (byIb) notify(mePr.id, 'withdrawal', 'Withdrawal ' + code + ' for ' + who.full_name + ' · payment processed', fmtMoney(amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', id + ':req-ib');
   audit('withdrawal.request', 'withdrawal', id, code, str(a.p_note, 'Withdrawal requested'), null, { amount, method, mt5_account: row.mt5_account, ib: ib?.code || null, requested_by: mePr.code, parts: parts.map(p => ({ code: p.code, amount: p.amount })) });
   return id;
 }
@@ -1284,10 +1330,10 @@ function completeWithdrawal(a: Row) {
   Object.assign(w, { status: 'completed', completed_on: on, completed_by: adminId, payment_ref: str(a.p_ref), method, mt5_account: method === 'mt5' ? str(a.p_mt5, w.mt5_account) : w.mt5_account ?? null, ib_id: method === 'ib' ? ibId : w.ib_id ?? null, admin_note: str(a.p_note), updated_at: nowIso() });
   const how = wdHow(w);
   T('ledger_entries').filter(l => l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')).forEach(l => Object.assign(l, { status: 'confirmed', occurred_on: on, reference: w.payment_ref || w.code, note: 'Withdrawal paid · ' + how, updated_at: nowIso() }));
-  notify(w.investor_id, 'withdrawal', 'Withdrawal ' + w.code + ' completed', fmtMoney(w.amount) + ' · ' + how + ' on ' + fmtDate(on) + (w.payment_ref ? ' · ' + w.payment_ref : ''), '/portal/withdraw', 'withdrawals', w.id + ':done');
+  notify(w.investor_id, 'withdrawal', 'Withdrawal ' + w.code + ' · payment fulfilled', fmtMoney(w.amount) + ' · ' + how + ' on ' + fmtDate(on) + (w.payment_ref ? ' · ' + w.payment_ref : ''), '/portal/withdraw', 'withdrawals', w.id + ':done');
   if (method === 'ib' && w.ib_id) notify(w.ib_id, 'withdrawal', 'Transfer received: ' + fmtMoney(w.amount), 'From ' + (T('profiles').find(p => p.id === w.investor_id)?.full_name || 'your sub-investor') + ' · ' + w.code + ' approved by the company', '/portal/network/' + w.investor_id, 'withdrawals', w.id + ':ib');
   if (w.requested_by && w.requested_by !== w.investor_id && w.requested_by !== w.ib_id && T('profiles').some(p => p.id === w.requested_by && p.role === 'investor'))
-    notify(w.requested_by, 'withdrawal', 'Withdrawal ' + w.code + ' completed', fmtMoney(w.amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', w.id + ':done-ib');
+    notify(w.requested_by, 'withdrawal', 'Withdrawal ' + w.code + ' · payment fulfilled', fmtMoney(w.amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', w.id + ':done-ib');
   audit('withdrawal.complete', 'withdrawal', w.id, w.code, str(a.p_note, 'Paid'), { status: 'pending' }, { status: 'completed', paid_on: on, reference: w.payment_ref });
 }
 function cancelWithdrawal(a: Row) {
@@ -1551,6 +1597,16 @@ export async function changePassword(userId: string, current: string, next: stri
 export async function adminResetPassword(userId: string, pw: string) {
   requireAdmin(); await setPassword(userId, pw);
   const p = T('profiles').find(x => x.id === userId); audit('user.password_reset', 'profile', userId, p?.code || p?.email || '', 'Temporary password set by administrator', null, null); persist('audit_logs');
+}
+/** Sets a person's login password, or creates their login (phone number + password) if they have none. */
+export async function adminSetLogin(userId: string, pw: string) {
+  requireAdmin();
+  if (pw.length < PW_MIN) fail(`The password must be at least ${PW_MIN} characters.`);
+  const p = T('profiles').find(x => x.id === userId) || fail('Investor not found.');
+  if (S.users.some(u => u.id === userId)) await setPassword(userId, pw);
+  else addLogin(userId, p.phone, await hash(pw));
+  p.has_login = true; p.updated_at = nowIso();
+  audit('user.password_reset', 'profile', userId, p.code || '', 'Password set by administrator', null, null); persist('profiles', 'audit_logs');
 }
 export async function checkLogin(email: string, pw: string): Promise<string | null> {
   // an IB signs in with the phone number the Super Admin registered

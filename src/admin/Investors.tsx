@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useAuth, useSettings } from '../lib/auth';
-import { createIbLogin, resetUserPassword } from '../lib/adminApi';
+import { createIbLogin, resetUserPassword, setInvestorLogin } from '../lib/adminApi';
 import { uploadDocument, openDocument, deleteDocument } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
 import { money, date, dateTime, initials, isUnlocked, lockinText, rate, today, LEDGER_TYPE } from '../lib/format';
@@ -508,24 +508,34 @@ function EditInvestor({ p, onClose }: { p: Profile; onClose: () => void }) {
   const init = { introduced_by: p.introduced_by || '', full_name: p.full_name, phone: p.phone, address: p.address, city: p.city, id_number_masked: p.id_number_masked, bank_name: p.bank_name, bank_account_masked: p.bank_account_masked, bank_ifsc: p.bank_ifsc };
   const [f, setF] = useState(init);
   const [reason, setReason] = useState('');
+  const [newPw, setNewPw] = useState('');
   const [tried, setTried] = useState(false);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   const changed = (Object.keys(f) as (keyof typeof f)[]).filter(k => f[k] !== init[k]);
-  const errs = { name: !f.full_name.trim() ? 'Name cannot be empty.' : null, reason: !reason.trim() ? 'A reason is required for the audit log.' : null };
+  const digits = f.phone.replace(/\D/g, '');
+  const errs = {
+    name: !f.full_name.trim() ? 'Name cannot be empty.' : null,
+    phone: f.phone !== init.phone && f.phone.trim() && digits.slice(-10).length !== 10 ? 'Enter a 10-digit phone number.' : f.phone !== init.phone && !f.phone.trim() && p.has_login ? 'This person signs in with the phone number; it cannot be empty.' : null,
+    pw: newPw && newPw.length < 8 ? 'At least 8 characters.' : newPw && !p.has_login && digits.slice(-10).length !== 10 ? 'Add a 10-digit phone number to create a login.' : null
+  };
   const save = async () => {
     setTried(true);
-    if (errs.name || errs.reason || !changed.length) return;
+    if (errs.name || errs.phone || errs.pw || (!changed.length && !newPw)) return;
     const patch: Record<string, string> = {};
     changed.forEach(k => {
       const v = f[k].trim();
       patch[k] = k === 'introduced_by' ? f[k] : k === 'id_number_masked' || k === 'bank_account_masked' ? maskId(v) : k === 'bank_ifsc' ? v.toUpperCase() : v;
     });
-    const r = await act.run(() => rpc('admin_update_investor', { p_id: p.id, p: patch, p_reason: reason.trim() }), ['Investor details saved', `${changed.length} field${changed.length === 1 ? '' : 's'} updated · recorded in audit log`]);
+    const r = await act.run(async () => {
+      if (changed.length) await rpc('admin_update_investor', { p_id: p.id, p: patch, p_reason: reason.trim() });
+      if (newPw) await setInvestorLogin(p.id, newPw);
+      return true;
+    }, ['Details saved', [changed.length ? `${changed.length} field${changed.length === 1 ? '' : 's'} updated` : '', newPw ? (p.has_login ? 'password changed' : 'login created') : ''].filter(Boolean).join(' · ')]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Drawer title={'Edit ' + (p.full_name || p.email)} sub="Email address is the sign-in identity and cannot be changed here." onClose={onClose}
-      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={save} disabled={act.busy || !changed.length}>Save changes</button></>}>
+    <Drawer title={'Edit ' + (p.full_name || p.email)} sub="Change anything: name, phone number, password, address, ID or bank details." onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={save} disabled={act.busy || (!changed.length && !newPw)}>Save changes</button></>}>
       <div className="form">
         <Field label="Full name *" err={tried ? errs.name : null}><input className="input" value={f.full_name} onChange={set('full_name')} /></Field>
         {p.role === 'investor' && (
@@ -537,7 +547,7 @@ function EditInvestor({ p, onClose }: { p: Profile; onClose: () => void }) {
           </Field>
         )}
         <div className="f-row">
-          <Field label="Phone"><input className="input" value={f.phone} onChange={set('phone')} /></Field>
+          <Field label="Phone" err={tried ? errs.phone : null} hint={p.has_login ? 'They sign in with this number. Changing it changes their login.' : undefined}><input className={'input ' + (tried && errs.phone ? 'bad' : '')} value={f.phone || ''} onChange={set('phone')} /></Field>
           <Field label="City"><input className="input" value={f.city} onChange={set('city')} /></Field>
         </div>
         <Field label="Address"><textarea className="input" rows={2} value={f.address} onChange={set('address')} /></Field>
@@ -551,10 +561,19 @@ function EditInvestor({ p, onClose }: { p: Profile; onClose: () => void }) {
         <Field label="Bank account" hint={f.bank_account_masked !== init.bank_account_masked && f.bank_account_masked ? <>Stored as <span className="mono">{maskId(f.bank_account_masked)}</span></> : 'Masked. Type a new number to replace it.'}>
           <input className="input mono" value={f.bank_account_masked} onChange={set('bank_account_masked')} autoComplete="off" />
         </Field>
-        <Field label="Reason for change *" err={tried ? errs.reason : null} hint="Saved to the audit log with the before and after values.">
-          <input className={'input ' + (tried && errs.reason ? 'bad' : '')} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Investor submitted new cancelled cheque" />
+        {p.role === 'investor' && (
+          <Field label={p.has_login ? 'New password' : 'Login password'} err={tried ? errs.pw : null} hint={p.has_login ? 'Leave empty to keep the current password.' : 'Leave empty for no login. Set one to let them sign in with their phone number.'}>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input className={'input mono ' + (tried && errs.pw ? 'bad' : '')} value={newPw} onChange={e => setNewPw(e.target.value)} autoComplete="new-password" placeholder="At least 8 characters" />
+              <button type="button" className="btn" onClick={() => setNewPw(Math.random().toString(36).slice(2, 6) + '-' + Math.random().toString(36).slice(2, 6))}>Generate</button>
+            </div>
+            {newPw && <p className="hint">Share it offline: login {f.phone || '—'} · password <span className="mono">{newPw}</span></p>}
+          </Field>
+        )}
+        <Field label="Reason for change (optional)" hint="Saved to the audit log with the before and after values.">
+          <input className="input" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Investor submitted new cancelled cheque" />
         </Field>
-        {tried && !changed.length && <p className="hint err">Nothing has changed yet.</p>}
+        {tried && !changed.length && !newPw && <p className="hint err">Nothing has changed yet.</p>}
       </div>
     </Drawer>
   );

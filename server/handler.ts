@@ -127,6 +127,7 @@ const FNS: Record<string, (a: any) => Promise<unknown>> = {
   createAccount: a => db.createAccount(a),
   adminResetPassword: a => db.adminResetPassword(String(a.userId), String(a.password)),
   createIB: a => db.createIB(a),
+  adminSetLogin: a => db.adminSetLogin(String(a.userId), String(a.password)),
   adminRecordInvestment: a => db.adminRecordInvestment(a),
   adminApproveInvestmentRequest: a => db.adminApproveInvestmentRequest(a)
 };
