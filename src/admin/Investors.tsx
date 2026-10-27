@@ -25,7 +25,6 @@ function maskId(v: string): string {
   return '•'.repeat(Math.min(8, clean.length - 4)) + clean.slice(-4);
 }
 
-const outstandingOf = (b?: Balance) => (b ? Number(b.unapproved) + Number(b.approved) + Number(b.processing) : 0);
 const fmtBytes = (n: number) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
 
 interface Row extends Profile { principal: number; unlocked: number; accrued: number; paid: number; next: string | null; branch: string; introducer: string }
@@ -205,12 +204,11 @@ export function InvestorDetail() {
   const { p, invs, bal, history, ledger, payouts, docs, invCode, branches, introducer, brought, bonus } = q.data;
   const live = invs.filter(i => LIVE.includes(i.status));
   const principal = live.reduce((x, i) => x + Number(i.principal), 0);
-  const unlocked = live.filter(i => isUnlocked(i)).reduce((x, i) => x + Number(i.principal), 0);
+  // every month across the live investments: the investor's ROI, and the IB bonus paid on top to the IB
+  const monthlyRoi = live.reduce((x, i) => x + Number(i.monthly_return || 0), 0);
+  const monthlyBonus = live.reduce((x, i) => x + Number(i.admin_bonus || 0), 0);
   const branch = branches.find(b => b.id === p.branch_id) || null;
-  const accrued = invs.reduce((x, i) => x + Number(bal.get(i.id)?.accrued || 0), 0);
   const paid = invs.reduce((x, i) => x + Number(bal.get(i.id)?.paid || 0), 0);
-  const outstanding = invs.reduce((x, i) => x + outstandingOf(bal.get(i.id)), 0);
-  const next = live.filter(i => !isUnlocked(i)).map(i => i.lockin_end_date).filter((x): x is string => !!x).sort()[0] || null;
   const self = me?.id === p.id;
 
   const openDoc = (d: DocumentRow) => act.run(() => openDocument(d.storage_path));
@@ -253,11 +251,10 @@ export function InvestorDetail() {
       )}
 
       <div className="kpis">
-        <Kpi label="Principal (live)" value={money(principal)} sub={`${live.length} live investment${live.length === 1 ? '' : 's'}`} />
-        <Kpi label="Unlocked principal" value={money(unlocked)} sub={next ? `Next unlock ${date(next)}` : 'Nothing in lock-in'} tip="Principal of investments whose lock-in has ended. A status only: nothing is paid out automatically." />
-        <Kpi label="Accrued returns" value={money(accrued)} tip="Sum of accruals on all of this investor’s investments, net of reversals." />
+        <Kpi label="Principal" value={money(principal)} sub={`${live.length} investment${live.length === 1 ? '' : 's'}`} />
+        <Kpi label="Total monthly ROI" value={money(monthlyRoi)} sub={`/ month to ${p.full_name || 'the investor'}`} />
+        <Kpi label="Total IB bonus" value={monthlyBonus > 0 ? money(monthlyBonus) : 'None'} sub={monthlyBonus > 0 ? `/ month to ${introducer?.full_name || 'the IB'}, on top of the ROI` : introducer ? `Under ${introducer.full_name || 'an IB'} · no bonus set` : 'Not under an IB'} />
         <Kpi label="Returns paid" value={money(paid)} cls="pos" sub="Confirmed with bank reference" />
-        <Kpi label="Outstanding" value={money(outstanding)} sub="Accrued, not yet paid" subCls={outstanding ? 'warn' : ''} />
       </div>
 
       {introducer && introducer.role === 'investor' && (
