@@ -540,10 +540,23 @@ export function rpcCall(fn: string, a: Row): unknown {
       audit('investment_request.reject', 'investment_request', r.id, r.code, a.p_reason, { status: 'pending' }, { status: 'rejected' }); touched('investment_requests', 'notifications'); return null;
     }
     case 'request_withdrawal': { const id = requestWithdrawal(a); touched('withdrawals', ...RET_TABLES); return id; }
+    case 'admin_record_withdrawals': {
+      // several withdrawals of one investor at once (past or offline ones), saved in date order; one error and nothing is saved
+      requireAdmin();
+      const items: Row[] = Array.isArray(a.p_items) ? a.p_items : [];
+      if (!items.length) fail('Add at least one withdrawal.');
+      const order = items.map((it, k) => ({ it, k })).sort((x, y) => String(x.it.p_date || '').localeCompare(String(y.it.p_date || '')) || x.k - y.k);
+      const ids: string[] = [];
+      for (const { it, k } of order) {
+        try { ids.push(requestWithdrawal({ ...it, p_investor: a.p_investor })); }
+        catch (e) { fail(`Withdrawal ${k + 1}: ${(e as Error).message}`); }
+      }
+      touched('withdrawals', ...RET_TABLES); return ids;
+    }
     case 'admin_complete_withdrawal': completeWithdrawal(a); touched('withdrawals', 'ledger_entries', 'notifications'); return null;
     case 'admin_cancel_withdrawal': cancelWithdrawal(a); touched('withdrawals', 'investments', 'ledger_entries', 'notifications'); return null;
-    case 'update_withdrawal': updateWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
-    case 'delete_withdrawal': deleteWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
+    case 'update_withdrawal': if (isAdmin()) adminEditWithdrawal(a); else updateWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
+    case 'delete_withdrawal': if (isAdmin()) adminDeleteWithdrawal(T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.')); else deleteWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
     case 'admin_update_investment': updateInvestment(a); touched(...RET_TABLES); return null;
     case 'admin_delete_investment': {
       requireAdmin(); const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
@@ -1313,42 +1326,79 @@ function applyWithdrawalParts(w: Row, parts: Row[]) {
   });
   w.allocations = parts;
 }
-/** Records a new withdrawal in date order (first in, first out): withdrawals dated after it are taken out, the new one is
- *  taken from the highest monthly ROI available on its date, then the later ones are applied again in order. Returns of the
- *  investments that change are recalculated from the withdrawal date (refused if those are already approved or paid). */
-function placeWithdrawal(w: Row, who: Row): Row[] {
-  const d = String(w.requested_on);
-  const later = T('withdrawals').filter(x => x.investor_id === who.id && x.status !== 'cancelled' && String(x.requested_on) > d).sort(wdOrder);
+/** Applies an investor's withdrawals in date order (first in, first out). Every withdrawal dated on or after `from` is taken
+ *  out and applied again, oldest first, together with `w` (a new or edited one); `drop` (a deleted one) is left out. Each is
+ *  taken from the highest monthly ROI available on its own date. Returns of the investments that change are recalculated
+ *  from `from` (refused if those are already approved or paid). */
+function applyInOrder(who: Row, from: string, w: Row | null, drop: string | null = null, before?: Map<string, string>): Row[] {
   const invs = T('investments').filter(i => i.investor_id === who.id);
-  const before = new Map(invs.map(i => [i.id, JSON.stringify(i.principal_changes || [])]));
-  const reopen = (i: Row) => {
+  const snap = before || new Map(invs.map(i => [i.id, JSON.stringify(i.principal_changes || [])]));
+  const lifted = T('withdrawals').filter(x => x.investor_id === who.id && x.status !== 'cancelled' && x.id !== w?.id && x.id !== drop && String(x.requested_on) >= from);
+  const out = new Set([...lifted.map(x => x.id), ...(w ? [w.id] : []), ...(drop ? [drop] : [])]);
+  // 1. take them out
+  invs.forEach(i => {
+    i.principal_changes = (i.principal_changes || []).filter((c: Row) => !out.has(c.withdrawal_id));
     i.principal = principalOn(i, '9999-12-31'); applySplit(i);
     if (i.status === 'redeemed' && Number(i.principal) > 0) i.status = i.maturity_date && i.maturity_date <= today() ? 'matured' : 'active';
-  };
-  // 1. take the later withdrawals out
-  const laterIds = new Set(later.map(x => x.id));
-  invs.forEach(i => { i.principal_changes = (i.principal_changes || []).filter((c: Row) => !laterIds.has(c.withdrawal_id)); reopen(i); });
-  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'withdrawals' && laterIds.has(String(l.source_id).split(':')[0])));
-  // 2. the new withdrawal, on its date
-  const available = round2(invs.filter(i => WD_LIVE(i) && (!i.start_date || String(i.start_date) <= d)).reduce((x, i) => x + Number(i.principal), 0));
-  if (Number(w.amount) > available) fail(`${who.full_name} can withdraw up to ${fmtMoney(available)}${d < today() ? ' on ' + fmtDate(d) : ''}.`);
-  const parts = planWithdrawal(who.id, Number(w.amount), d);
-  applyWithdrawalParts(w, parts);
-  // 3. the later withdrawals again, oldest first
-  later.forEach(x => {
-    const p = planWithdrawal(who.id, Number(x.amount), String(x.requested_on));
-    if (round2(p.reduce((t, q) => t + Number(q.amount), 0)) < Number(x.amount))
-      fail(`With this withdrawal, ${x.code} of ${fmtDate(x.requested_on)} (${fmtMoney(x.amount)}) would be more than ${who.full_name} has left. Change or delete ${x.code} first.`);
-    applyWithdrawalParts(x, p); x.updated_at = nowIso();
   });
-  // 4. recalculate returns of the investments that changed, from the withdrawal date
-  const changed = invs.filter(i => JSON.stringify(i.principal_changes || []) !== before.get(i.id));
-  if (d < today() || later.length) {
-    changed.forEach(i => resetReturnsFrom(i, d));
+  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'withdrawals' && out.has(String(l.source_id).split(':')[0])));
+  // 2. apply them again, oldest first
+  [...lifted, ...(w ? [w] : [])].sort(wdOrder).forEach(x => {
+    const plan = planWithdrawal(who.id, Number(x.amount), String(x.requested_on));
+    const got = round2(plan.reduce((t, q) => t + Number(q.amount), 0));
+    if (got < Number(x.amount)) {
+      if (x === w) fail(`${who.full_name} can withdraw up to ${fmtMoney(got)} on ${fmtDate(x.requested_on)}.`);
+      fail(`With this, ${x.code} of ${fmtDate(x.requested_on)} (${fmtMoney(x.amount)}) would be more than ${who.full_name} has left. Change or delete ${x.code} first.`);
+    }
+    applyWithdrawalParts(x, plan); if (x !== w) x.updated_at = nowIso();
+  });
+  // 3. recalculate returns of the investments that changed
+  const changed = invs.filter(i => JSON.stringify(i.principal_changes || []) !== snap.get(i.id));
+  if (from < today() || lifted.length || drop) {
+    changed.forEach(i => resetReturnsFrom(i, from));
     changed.forEach(i => runAccrualsFor(i, today()));
   }
   changed.forEach(i => closeIfEmpty(i));
-  return parts;
+  return w ? w.allocations : [];
+}
+const placeWithdrawal = (w: Row, who: Row) => applyInOrder(who, String(w.requested_on), w);
+/** Super Admin: change anything of a withdrawal (amount, date, how, paid or not, paid-on, reference). It is applied again
+ *  in date order with the investor's other withdrawals. */
+function adminEditWithdrawal(a: Row) {
+  requireAdmin();
+  const w = T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.');
+  if (w.status === 'cancelled') fail(`${w.code} is cancelled. Delete it and record it again instead.`);
+  const who = T('profiles').find(p => p.id === w.investor_id) || fail('Investor not found.');
+  const before = { amount: w.amount, date: w.requested_on, method: w.method, mt5_account: w.mt5_account, status: w.status, completed_on: w.completed_on, payment_ref: w.payment_ref, note: w.note };
+  const amount = blank(a.p_amount) ? Number(w.amount) : Number(a.p_amount);
+  if (!(amount > 0) || round2(amount) !== amount) fail('Enter the amount (at most 2 decimals).');
+  const d = blank(a.p_date) ? String(w.requested_on) : String(a.p_date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d > today()) fail('Enter the withdrawal date (today or earlier).');
+  const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : w.method;
+  const mt5 = str(a.p_mt5, w.mt5_account || '').trim();
+  if (method === 'mt5' && mt5 && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5)) fail('Enter the MT5 account number (letters and digits only).');
+  const ib = who.introduced_by ? T('profiles').find(p => p.id === who.introduced_by && p.role === 'investor') || null : null;
+  if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
+  const paid = a.p_paid == null ? w.status === 'completed' : !!a.p_paid;
+  const paidOn = paid ? str(a.p_paid_on, w.status === 'completed' && w.completed_on >= d ? w.completed_on : d) : null;
+  if (paid && (!/^\d{4}-\d{2}-\d{2}$/.test(String(paidOn)) || String(paidOn) < d || String(paidOn) > today())) fail('The paid-on date must be on or after the withdrawal date, and not after today.');
+  const snap = new Map(T('investments').filter(i => i.investor_id === who.id).map(i => [i.id, JSON.stringify(i.principal_changes || [])]));
+  const from = d < String(w.requested_on) ? d : String(w.requested_on);
+  Object.assign(w, { amount, requested_on: d, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null,
+    status: paid ? 'completed' : 'pending', completed_on: paidOn, completed_by: paid ? (w.completed_by || currentUid) : null,
+    payment_ref: paid ? (a.p_ref != null ? str(a.p_ref).trim() || null : w.payment_ref) : null, note: a.p_note != null ? str(a.p_note).trim() : w.note, updated_at: nowIso() });
+  applyInOrder(who, from, w, null, snap);
+  audit('withdrawal.update', 'withdrawal', w.id, w.code, str(a.p_reason, 'Withdrawal changed'), before,
+    { amount, date: d, method, mt5_account: w.mt5_account, status: w.status, completed_on: w.completed_on, payment_ref: w.payment_ref, note: w.note });
+}
+/** Super Admin: delete a withdrawal; the investor's later withdrawals are applied again in date order. */
+function adminDeleteWithdrawal(w: Row) {
+  const who = T('profiles').find(p => p.id === w.investor_id);
+  if (who && w.status !== 'cancelled') applyInOrder(who, String(w.requested_on), null, w.id);
+  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')));
+  S.tables.withdrawals = T('withdrawals').filter(x => x.id !== w.id);
+  S.tables.notifications = T('notifications').filter(n => !(n.source_table === 'withdrawals' && String(n.source_id).startsWith(w.id)));
+  audit('withdrawal.delete', 'withdrawal', w.id, w.code, 'Withdrawal deleted', { amount: w.amount, date: w.requested_on, method: w.method, status: w.status }, null);
 }
 function requestWithdrawal(a: Row): string {
   const mePr = me() || fail('Not signed in.');
@@ -1366,10 +1416,11 @@ function requestWithdrawal(a: Row): string {
   const d = isAdmin() && !blank(a.p_date) ? String(a.p_date) : today();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d > today()) fail('Enter the withdrawal date (today or earlier).');
   const paid = isAdmin() && !!a.p_paid;
+  if (paid && !blank(a.p_paid_on) && (!/^\d{4}-\d{2}-\d{2}$/.test(String(a.p_paid_on)) || String(a.p_paid_on) < d || String(a.p_paid_on) > today())) fail('The paid-on date must be on or after the withdrawal date, and not after today.');
   const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : 'bank';
   if (method === 'cash' && !isAdmin()) fail('Choose your bank account, your MT5 account or a transfer to your IB.');
   const mt5 = str(a.p_mt5).trim();
-  if (method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5)) fail('Enter the MT5 account number (letters and digits only).');
+  if (method === 'mt5' && (mt5 || !isAdmin()) && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5)) fail('Enter the MT5 account number (letters and digits only).');
   const ib = who.introduced_by ? T('profiles').find(p => p.id === who.introduced_by && p.role === 'investor') || null : null;
   if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
   const attachments = cleanAttachments(a.p_attachments);
@@ -1393,7 +1444,6 @@ function completeWithdrawal(a: Row) {
   if (w.status !== 'pending') fail(`${w.code} is already ${w.status}.`);
   const on = str(a.p_paid_on, today());
   const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : w.method;
-  if (method === 'mt5' && blank(a.p_mt5) && blank(w.mt5_account)) fail('Enter the MT5 account the money was sent to.');
   let ibId = w.ib_id;
   if (method === 'ib' && !ibId) { ibId = T('profiles').find(p => p.id === w.investor_id)?.introduced_by || null; if (!ibId) fail('This investor is not under an IB.'); }
   Object.assign(w, { status: 'completed', completed_on: on, completed_by: adminId, payment_ref: str(a.p_ref), method, mt5_account: method === 'mt5' ? str(a.p_mt5, w.mt5_account) : w.mt5_account ?? null, ib_id: method === 'ib' ? ibId : w.ib_id ?? null, admin_note: str(a.p_note), updated_at: nowIso() });

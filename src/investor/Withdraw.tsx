@@ -3,13 +3,14 @@ import { useSearchParams } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { money, date, rateShort } from '../lib/format';
+import { money, date, rateShort, today } from '../lib/format';
 import { uploadAttachment } from '../lib/docs';
 import type { Investment, MyAccount, Withdrawal, WithdrawalMethod, WithdrawalPart } from '../lib/types';
 import { Badge, Empty, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
 import { AttachmentLinks, FilePicker } from '../ui/Attach';
 import { loadAccount } from './data';
 import { AmountWords } from '../ui/AmountWords';
+import { DateInput } from '../ui/DateInput';
 
 /* Withdrawals. The amount is always taken from the highest monthly ROI first, whatever the lock-in.
    From the day of the request, returns are calculated on the lower amount. The company pays and marks it completed.
@@ -212,23 +213,43 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
   const [method, setMethod] = useState<WithdrawalMethod>(w.method);
   const [mt5, setMt5] = useState(w.mt5_account || '');
   const [note, setNote] = useState(w.note || '');
+  // Super Admin only: date, paid or not, paid-on and reference
+  const [on, setOn] = useState(w.requested_on);
+  const [paid, setPaid] = useState(w.status === 'completed');
+  const [paidOn, setPaidOn] = useState(w.completed_on || '');
+  const [ref, setRef] = useState(w.payment_ref || '');
+  const t = today();
   const amt = Number(amount);
-  const err = !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount.' : method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5.trim()) ? 'Enter the MT5 account number.' : null;
+  const err = !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount.' : !admin && method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5.trim()) ? 'Enter the MT5 account number.'
+    : admin && on && on > t ? 'The withdrawal date must be today or earlier.' : admin && paid && paidOn && (paidOn < on || paidOn > t) ? 'Paid on must be on or after the withdrawal date.' : null;
   const ways: [WithdrawalMethod, string][] = [['bank', 'Bank account'], ['mt5', 'MT5 account'], ...(hasIb ? [['ib', ibLabel] as [WithdrawalMethod, string]] : []), ...(admin ? [['cash', 'Cash'] as [WithdrawalMethod, string]] : [])];
   const go = async () => {
-    const r = await act.run(() => rpc('update_withdrawal', { p_id: w.id, p_amount: amt, p_method: method, p_mt5: method === 'mt5' ? mt5.trim() : '', p_note: note.trim() }), ['Withdrawal updated', `${w.code} · ${money(amt)}`]);
+    const r = await act.run(() => rpc('update_withdrawal', { p_id: w.id, p_amount: amt, p_method: method, p_mt5: method === 'mt5' ? mt5.trim() : '', p_note: note.trim(),
+      ...(admin ? { p_date: on, p_paid: paid, p_paid_on: paid ? (paidOn || on) : '', p_ref: ref.trim() } : {}) }), ['Withdrawal updated', `${w.code} · ${money(amt)}`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title={`Edit ${w.code}`} sub={`${who ? who + ' · ' : ''}taken again from the highest monthly ROI first, from ${date(w.requested_on)}.`} onClose={onClose}
+    <Modal title={`Edit ${w.code}`} sub={admin ? `${who ? who + ' · ' : ''}change anything. It is applied again in date order with the investor’s other withdrawals, from the highest monthly ROI first.` : `${who ? who + ' · ' : ''}taken again from the highest monthly ROI first, from ${date(w.requested_on)}.`} onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !!err}>{act.busy ? 'Saving…' : 'Save'}</button></>}>
       <div className="form">
+        {admin && <Field label="Withdrawal date" hint="Empty = keep the current date."><DateInput className="input" max={t} value={on} onChange={e => setOn(e.target.value)} /></Field>}
         <Field label="Amount (INR) *" err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /><AmountWords v={amount} /></Field>
         <Field label="Where should the money go?"><div className="chips">
           {ways.map(([k, l]) => <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k)}>{l}</button>)}
         </div></Field>
-        {method === 'mt5' && <Field label="MT5 account number *"><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
+        {method === 'mt5' && <Field label={admin ? 'MT5 account number' : 'MT5 account number *'}><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
+        {admin && <>
+          <Field label="Status"><div className="chips">
+            <button type="button" className={'chip ' + (paid ? 'on' : '')} onClick={() => setPaid(true)}>Payment fulfilled (paid)</button>
+            <button type="button" className={'chip ' + (!paid ? 'on' : '')} onClick={() => setPaid(false)}>Payment processed (not paid yet)</button>
+          </div></Field>
+          {paid && <div className="f-row">
+            <Field label="Paid on" hint="Leave empty if paid on the withdrawal date."><DateInput className="input" min={on || undefined} max={t} value={paidOn} onChange={e => setPaidOn(e.target.value)} /></Field>
+            <Field label="Payment reference"><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>
+          </div>}
+        </>}
         <Field label="Note"><input className="input" value={note} onChange={e => setNote(e.target.value)} /></Field>
+        {err && amt > 0 && <p className="hint" style={{ color: 'var(--red)' }}>{err}</p>}
       </div>
     </Modal>
   );

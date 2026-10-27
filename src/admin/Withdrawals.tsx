@@ -5,7 +5,7 @@ import { useQuery, refreshAll } from '../lib/useQuery';
 import { money, date, rateShort, today } from '../lib/format';
 import { downloadCsv } from '../lib/csv';
 import type { Profile, Withdrawal, WithdrawalPart } from '../lib/types';
-import { ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
+import { Drawer, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
 import { DataTable, Col } from '../ui/DataTable';
 import { Icon } from '../ui/Icon';
 import { WdBadge, methodText, EditWithdrawal, DeleteWithdrawal } from '../investor/Withdraw';
@@ -54,8 +54,8 @@ export function Withdrawals() {
     { h: 'Status', v: r => r.status, r: r => <><WdBadge s={r.status} />{r.status === 'completed' && <span className="sub">{date(r.completed_on)}{r.payment_ref ? ' · ' + r.payment_ref : ''}</span>}{r.status === 'cancelled' && <span className="sub">{r.cancelled_reason}</span>}</> },
     { h: '', r: r => <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
       {r.status === 'pending' && <><button className="btn sm primary" onClick={e => { e.stopPropagation(); setDone(r); }}>{r.method === 'ib' ? 'Approve transfer' : 'Mark fulfilled'}</button>
-        <button className="btn sm" onClick={e => { e.stopPropagation(); setEditing(r); }}>Edit</button>
         <button className="btn sm" onClick={e => { e.stopPropagation(); setCancel(r); }}>Cancel</button></>}
+      {r.status !== 'cancelled' && <button className="btn sm" onClick={e => { e.stopPropagation(); setEditing(r); }}>Edit</button>}
       <button className="btn sm danger" onClick={e => { e.stopPropagation(); setDel(r); }}>Delete</button>
     </span> }
   ], []);
@@ -65,7 +65,7 @@ export function Withdrawals() {
         actions={<>
           <button className="btn" disabled={!rows.length} onClick={() => downloadCsv('withdrawals-' + tab, ['Request', 'Investor ID', 'Investor', 'Phone', 'Applied on', 'Amount', 'How', 'Taken from', 'Status', 'Paid on', 'Reference'],
             rows.map(r => [r.code, r.who?.code, r.who?.full_name, r.who?.phone, r.requested_on, Number(r.amount).toFixed(2), methodText(r.method) + (r.mt5_account ? ' ' + r.mt5_account : '') + (r.ib ? ' ' + r.ib.full_name : ''), (r.allocations || []).map(p => `${p.code} ${p.amount}`).join('; '), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export to Excel</button>
-          <button className="btn accent" onClick={() => setAdding(true)}><Icon name="plus" />Record a withdrawal</button>
+          <button className="btn accent" onClick={() => setAdding(true)}><Icon name="plus" />Record withdrawals</button>
         </>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : (
         <>
@@ -107,7 +107,7 @@ function CompleteDialog({ w, onClose }: { w: Row; onClose: () => void }) {
   return (
     <Modal title={w.method === 'ib' ? `Approve transfer ${w.code} to ${w.ib?.full_name || 'the IB'}?` : `Mark ${w.code} as payment fulfilled?`}
       sub={w.method === 'ib' ? `${money(w.amount)} from ${w.who?.full_name || 'the investor'} is transferred to their IB ${w.ib?.full_name || ''}. Both are notified.` : `Only after ${w.who?.full_name || 'the investor'} has received ${money(w.amount)}.`} onClose={onClose}
-      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || (method === 'mt5' && !mt5.trim())}>{method === 'ib' ? 'Approve transfer' : 'Mark fulfilled'}</button></>}>
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{method === 'ib' ? 'Approve transfer' : 'Mark fulfilled'}</button></>}>
       <div className="form">
         {(w.attachments || []).length > 0 && <Field label="Attached by the investor"><AttachmentLinks items={w.attachments} /></Field>}
         {w.note && <p className="hint">Note: {w.note}</p>}
@@ -115,7 +115,7 @@ function CompleteDialog({ w, onClose }: { w: Row; onClose: () => void }) {
           {(w.method === 'ib' ? [['ib', 'Transfer to IB']] : [['bank', 'Bank transfer'], ['mt5', 'MT5 account'], ['cash', 'Cash']]).map(([k, l]) =>
             <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k as WithdrawalMethod)}>{l}</button>)}
         </div></Field>
-        {method === 'mt5' && <Field label="MT5 account *"><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
+        {method === 'mt5' && <Field label="MT5 account"><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
         <div className="f-row">
           <Field label={method === 'ib' ? 'Approved on' : 'Paid on'}><DateInput className="input" value={on} onChange={e => setOn(e.target.value)} /></Field>
           <Field label={method === 'cash' ? 'Receipt number' : method === 'ib' ? 'Reference (optional)' : method === 'mt5' ? 'MT5 deposit / ticket reference' : 'Bank / UTR reference'}><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>
@@ -140,51 +140,85 @@ function CancelDialog({ w, onClose }: { w: Row; onClose: () => void }) {
   );
 }
 
-/** For a request made offline: same rules as when the investor applies. */
+interface WdRow { amount: string; on: string; method: WithdrawalMethod; mt5: string; paid: boolean; paidOn: string; ref: string; parts: WithdrawalPart[] }
+const newRow = (prev?: WdRow): WdRow => ({ amount: '', on: today(), method: prev?.method || 'bank', mt5: prev?.mt5 || '', paid: prev ? prev.paid : true, paidOn: '', ref: '', parts: [] });
+
+/** Record withdrawals made offline or in the past: one investor, as many withdrawals as needed (+), each with its date,
+ *  amount, how it was paid and whether it is already paid. All are saved together, in date order (first in, first out). */
 function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void }) {
   const act = useAction();
   const [who, setWho] = useState('');
-  const [amount, setAmount] = useState('');
-  const [method, setMethod] = useState<WithdrawalMethod>('bank');
-  const [mt5, setMt5] = useState('');
-  const [parts, setParts] = useState<WithdrawalPart[]>([]);
-  const [on, setOn] = useState(today());
-  const [paid, setPaid] = useState(false);
-  const [ref, setRef] = useState('');
+  const [rows, setRows] = useState<WdRow[]>([newRow()]);
+  const [tried, setTried] = useState(false);
   const hasIb = !!people.find(p => p.id === who)?.introduced_by;
-  const amt = Number(amount);
-  const look = async (id: string, a: number, d = on) => { setParts(id && a > 0 ? await rpc<WithdrawalPart[]>('withdrawal_preview', { p_investor: id, p_amount: a, p_date: d }).catch(() => []) : []); };
-  const badDate = !on || on > today();
+  const t = today();
+  const set = (k: number, patch: Partial<WdRow>) => setRows(rs => rs.map((r, j) => (j === k ? { ...r, ...patch } : r)));
+  const look = async (k: number, id: string, r: WdRow) => {
+    const a = Number(r.amount);
+    const parts = id && a > 0 && r.on ? await rpc<WithdrawalPart[]>('withdrawal_preview', { p_investor: id, p_amount: a, p_date: r.on }).catch(() => []) : [];
+    set(k, { parts });
+  };
+  const upd = (k: number, patch: Partial<WdRow>) => { const r = { ...rows[k], ...patch }; set(k, patch); look(k, who, r); };
+  const errsOf = (r: WdRow) => ({
+    amount: !(Number(r.amount) > 0) || !/^\d+(\.\d{1,2})?$/.test(r.amount.trim()) ? 'Enter the amount.' : null,
+    on: r.on && r.on > t ? 'Today or an earlier date.' : null,
+    mt5: null as string | null,
+    paidOn: r.paid && r.paidOn && (r.paidOn < r.on || r.paidOn > t) ? 'On or after the withdrawal date, and not after today.' : null
+  });
+  const errs = rows.map(errsOf);
+  const bad = !who || errs.some(x => Object.values(x).some(Boolean));
+  const total = rows.reduce((x, r) => x + (Number(r.amount) || 0), 0);
   const go = async () => {
-    const r = await act.run(() => rpc('request_withdrawal', { p_investor: who, p_amount: amt, p_method: method, p_mt5: mt5.trim(), p_note: 'Recorded by Super Admin', p_date: on, p_paid: paid, p_ref: ref.trim() }),
-      ['Withdrawal recorded', (on < today() ? 'Dated ' + date(on) + '. Returns recalculated from that date. ' : '') + (paid ? 'Shown as Payment fulfilled.' : 'Shown as Payment processed until you mark it fulfilled.')]);
+    setTried(true); if (bad) return;
+    const r = await act.run(() => rpc('admin_record_withdrawals', {
+      p_investor: who,
+      p_items: rows.map(x => ({ p_amount: Number(x.amount), p_date: x.on || t, p_method: x.method, p_mt5: x.mt5.trim(), p_paid: x.paid, p_paid_on: x.paid ? (x.paidOn || x.on) : '', p_ref: x.ref.trim(), p_note: 'Recorded by Super Admin' }))
+    }), [rows.length === 1 ? 'Withdrawal recorded' : `${rows.length} withdrawals recorded`, `${money(total)} in total · applied in date order; returns recalculated from the earliest date.`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title="Record a withdrawal" sub="Taken from the investor’s highest monthly ROI first. Withdrawals are applied in date order (first in, first out); returns use the lower amount from the withdrawal date." onClose={onClose}
-      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !who || !(amt > 0) || badDate || (method === 'mt5' && !mt5.trim())}>Record withdrawal</button></>}>
+    <Drawer title="Record withdrawals" sub="For withdrawals already made (any past date) or made offline. Each is taken from the highest monthly ROI available on its date, oldest withdrawal first." onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{act.busy ? 'Saving…' : rows.length === 1 ? 'Record withdrawal' : `Record ${rows.length} withdrawals`}</button></>}>
       <div className="form">
-        <Field label="Investor *"><SearchSelect value={who} onChange={v => { setWho(v); look(v, amt); }}
+        <Field label="Investor *" err={tried && !who ? 'Choose the investor.' : null}><SearchSelect value={who} onChange={v => { setWho(v); rows.forEach((r, k) => look(k, v, r)); }} bad={tried && !who}
           options={people.map(p => ({ value: p.id, label: p.full_name + ' · ' + p.code, sub: p.phone || undefined }))} /></Field>
-        <div className="f-row">
-          <Field label="Amount (INR) *"><input className="input num" inputMode="decimal" value={amount} onChange={e => { setAmount(e.target.value); look(who, Number(e.target.value)); }} /><AmountWords v={amount} /></Field>
-          <Field label="How"><div className="chips">
-            {([['bank', 'Bank transfer'], ['mt5', 'MT5 account'], ['cash', 'Cash'], ...(hasIb ? [['ib', 'Transfer to IB']] : [])] as [WithdrawalMethod, string][]).map(([k, l]) =>
-              <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k)}>{l}</button>)}
-          </div></Field>
-        </div>
-        <div className="f-row">
-          <Field label="Withdrawal date *" err={badDate ? 'Today or an earlier date.' : null} hint={on < today() ? 'An earlier date: later withdrawals of this investor are re-applied after it, and returns are recalculated from this date.' : 'Today, or pick the date the withdrawal actually happened.'}>
-            <DateInput className="input" max={today()} value={on} onChange={e => { setOn(e.target.value); look(who, amt, e.target.value); }} />
-          </Field>
-          <Field label="Status">
-            <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={paid} onChange={e => setPaid(e.target.checked)} /> Already paid (Payment fulfilled)</label>
-            {paid && <input className="input mono" style={{ marginTop: 8 }} value={ref} onChange={e => setRef(e.target.value)} placeholder="Payment reference (optional)" />}
-          </Field>
-        </div>
-        {method === 'mt5' && <Field label="MT5 account *"><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
-        {parts.length > 0 && <p className="hint">Taken from {parts.map(p => `${p.code} (${rateShort(p.plan_rate ?? p.rate)}): ${money(p.amount)}`).join(', ')}.</p>}
+        {rows.map((r, k) => {
+          const e = (f: keyof ReturnType<typeof errsOf>) => (tried ? errs[k][f] : null);
+          return (
+            <div className="sec" key={k}>
+              <h4 style={{ display: 'flex', alignItems: 'center' }}>Withdrawal {k + 1}
+                {rows.length > 1 && <button type="button" className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => setRows(rows.filter((_, j) => j !== k))}>✕ Remove</button>}</h4>
+              <div className="f-row">
+                <Field label="Withdrawal date" err={e('on')} hint="Empty = today."><DateInput className="input" max={t} value={r.on} onChange={ev => upd(k, { on: ev.target.value })} /></Field>
+                <Field label="Amount (INR) *" err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={r.amount} onChange={ev => upd(k, { amount: ev.target.value })} placeholder="e.g. 50000" /><AmountWords v={r.amount} /></Field>
+              </div>
+              <Field label="How it was paid">
+                <div className="chips">
+                  {([['bank', 'Bank transfer'], ['mt5', 'MT5 account'], ['cash', 'Cash'], ...(hasIb ? [['ib', 'Transfer to IB']] : [])] as [WithdrawalMethod, string][]).map(([m, l]) =>
+                    <button key={m} type="button" className={'chip ' + (r.method === m ? 'on' : '')} onClick={() => set(k, { method: m })}>{l}</button>)}
+                </div>
+                {r.method === 'mt5' && <input className={'input mono ' + (e('mt5') ? 'bad' : '')} style={{ marginTop: 8 }} value={r.mt5} onChange={ev => set(k, { mt5: ev.target.value })} placeholder="MT5 account number (optional)" />}
+                {e('mt5') && <p className="hint" style={{ color: 'var(--red)' }}>{e('mt5')}</p>}
+              </Field>
+              <Field label="Status">
+                <div className="chips">
+                  <button type="button" className={'chip ' + (r.paid ? 'on' : '')} onClick={() => set(k, { paid: true })}>Payment fulfilled (already paid)</button>
+                  <button type="button" className={'chip ' + (!r.paid ? 'on' : '')} onClick={() => set(k, { paid: false })}>Payment processed (not paid yet)</button>
+                </div>
+              </Field>
+              {r.paid && (
+                <div className="f-row">
+                  <Field label="Paid on" err={e('paidOn')} hint="Leave empty if paid on the withdrawal date."><DateInput className="input" min={r.on || undefined} max={t} value={r.paidOn} onChange={ev => set(k, { paidOn: ev.target.value })} /></Field>
+                  <Field label="Payment reference" hint="UTR, receipt no. (optional)."><input className="input mono" value={r.ref} onChange={ev => set(k, { ref: ev.target.value })} /></Field>
+                </div>
+              )}
+              {r.parts.length > 0 && <p className="hint">Taken from {r.parts.map(p => `${p.code} (${rateShort(p.plan_rate ?? p.rate)}): ${money(p.amount)}`).join(', ')}{rows.length > 1 ? ' (before the other withdrawals here are applied)' : ''}.</p>}
+            </div>
+          );
+        })}
+        <button type="button" className="btn" style={{ alignSelf: 'flex-start' }} onClick={() => setRows([...rows, newRow(rows[rows.length - 1])])}><Icon name="plus" />Add another withdrawal</button>
+        {rows.length > 1 && <p className="hint">Total: <b>{money(total)}</b> in {rows.length} withdrawals. They are applied oldest date first, whatever order you enter them in.</p>}
       </div>
-    </Modal>
+    </Drawer>
   );
 }
