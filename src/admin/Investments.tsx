@@ -307,6 +307,9 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const itemMonthly = (it: Item) => { const a = Number(it.amount), x = Number(it.roi); return a > 0 && x > 0 ? Math.round(a * x) / 100 : 0; };
   const totalAmt = amt + more.reduce((s2, x) => s2 + (Number(x.amount) || 0), 0);
   const totalMonthly = (amt > 0 && r > 0 ? Math.round(amt * r) / 100 : 0) + more.reduce((s2, x) => s2 + itemMonthly(x), 0);
+  // the IB bonus of each investment (paid to the IB on top of the investor's ROI)
+  const itemBonus = (it: Item) => { const a = Number(it.amount), x = withSub ? Number(it.bonus || 0) : 0; return a > 0 && x > 0 ? Math.round(a * x) / 100 : 0; };
+  const totalBonus = upMonthly + more.reduce((s2, x) => s2 + itemBonus(x), 0);
   // with a sub-investor only the name is mandatory: the investment fields are needed only when a principal is entered
   const star = regOnly ? '' : ' *';
   const e = (k: string) => (tried ? errs[k] : null);
@@ -575,9 +578,10 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                 <dt>Lock-in ends</dt><dd>{start && months > 0 ? date(addMonths(start, months)) : months === 0 ? 'No lock-in' : '—'}</dd>
                 <dt>Monthly ROI taken by</dt><dd>{roiWay ? roiWayText(roiWay, roiUpi.trim()) : '—'}</dd>
                 {more.length > 0 && <>
-                  {more.map((x, k) => <Fragment key={k}><dt>Investment {k + 2}</dt><dd>{Number(x.amount) > 0 ? money(Number(x.amount)) : '—'} at {Number(x.roi) > 0 ? rate(Number(x.roi)) : '—'}{x.start ? ' · from ' + date(x.start) : ''}{x.roiWay ? ' · ' + roiWayText(x.roiWay, x.roiUpi.trim()) : ''}</dd></Fragment>)}
+                  {more.map((x, k) => <Fragment key={k}><dt>Investment {k + 2}</dt><dd>{Number(x.amount) > 0 ? money(Number(x.amount)) : '—'} at {Number(x.roi) > 0 ? rate(Number(x.roi)) : '—'}{itemMonthly(x) > 0 ? ' · ' + money(itemMonthly(x)) + ' / month' : ''}{withSub && Number(x.bonus || 0) > 0 ? ' · IB bonus ' + rate(Number(x.bonus)) + (itemBonus(x) > 0 ? ' · ' + money(itemBonus(x)) + ' / month' : '') : ''}{x.start ? ' · from ' + date(x.start) : ''}{x.roiWay ? ' · ' + roiWayText(x.roiWay, x.roiUpi.trim()) : ''}</dd></Fragment>)}
                   <dt>Total principal</dt><dd><b>{money(totalAmt)}</b> in {more.length + 1} investments</dd>
-                  <dt>Total monthly ROI</dt><dd><b>{money(totalMonthly)}</b> / month</dd>
+                  <dt>Total monthly ROI</dt><dd><b>{money(totalMonthly)}</b> / month <span className="muted">to {investorName || 'the investor'}</span></dd>
+                  {withSub && <><dt>Total IB bonus</dt><dd><b>{money(totalBonus)}</b> / month <span className="muted">to {ibName || 'the IB'}, on top of the ROI</span></dd></>}
                 </>}
               </dl>
             </div>
