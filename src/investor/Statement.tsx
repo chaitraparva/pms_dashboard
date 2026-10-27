@@ -7,6 +7,7 @@ import { Logo } from '../shell/Shell';
 import { Icon } from '../ui/Icon';
 import { BackLink } from './parts';
 import { codeMap, financialYearStart, loadLedger, loadPortfolio } from './data';
+import { DateInput } from '../ui/DateInput';
 
 /** Printable account statement for a chosen period, built from the investor's own rows. */
 export function Statement() {
@@ -149,8 +150,8 @@ export function Statement() {
         <PageHead crumbs={['Statements & Documents', 'Account statement']} title="Account statement" sub="Choose a period, then print or save as PDF from your browser's print dialog."
           actions={<button className="btn primary" disabled={bad || !q.data} onClick={() => window.print()}><Icon name="print" />Print</button>} />
         <div className="card"><div className="card-b" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div style={{ width: 180 }}><Field label="From"><input className="input" type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} /></Field></div>
-          <div style={{ width: 180 }}><Field label="To"><input className="input" type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} /></Field></div>
+          <div style={{ width: 180 }}><Field label="From"><DateInput className="input" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} /></Field></div>
+          <div style={{ width: 180 }}><Field label="To"><DateInput className="input" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} /></Field></div>
           <div className="chips" style={{ marginBottom: 4 }}>
             <button className="chip" onClick={() => { setFrom(financialYearStart(settings?.currency || 'INR', t)); setTo(t); }}>Financial year to date</button>
             <button className="chip" onClick={() => { setFrom(t.slice(0, 4) + '-01-01'); setTo(t); }}>Calendar year to date</button>

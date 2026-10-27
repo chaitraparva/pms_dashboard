@@ -13,6 +13,7 @@ import { AttachmentLinks } from '../ui/Attach';
 import type { WithdrawalMethod } from '../lib/types';
 import { SearchSelect } from '../ui/SearchSelect';
 import { AmountWords } from '../ui/AmountWords';
+import { DateInput } from '../ui/DateInput';
 
 /* Withdrawals: requested by investors (or recorded here for them), taken from the highest monthly ROI first.
    Returns already use the lower amount from the request date. The Super Admin pays and marks them completed. */
@@ -116,7 +117,7 @@ function CompleteDialog({ w, onClose }: { w: Row; onClose: () => void }) {
         </div></Field>
         {method === 'mt5' && <Field label="MT5 account *"><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
         <div className="f-row">
-          <Field label={method === 'ib' ? 'Approved on' : 'Paid on'}><input className="input" type="date" value={on} onChange={e => setOn(e.target.value)} /></Field>
+          <Field label={method === 'ib' ? 'Approved on' : 'Paid on'}><DateInput className="input" value={on} onChange={e => setOn(e.target.value)} /></Field>
           <Field label={method === 'cash' ? 'Receipt number' : method === 'ib' ? 'Reference (optional)' : method === 'mt5' ? 'MT5 deposit / ticket reference' : 'Bank / UTR reference'}><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>
         </div>
       </div>
@@ -174,7 +175,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
         </div>
         <div className="f-row">
           <Field label="Withdrawal date *" err={badDate ? 'Today or an earlier date.' : null} hint={on < today() ? 'An earlier date: later withdrawals of this investor are re-applied after it, and returns are recalculated from this date.' : 'Today, or pick the date the withdrawal actually happened.'}>
-            <input className="input" type="date" max={today()} value={on} onChange={e => { setOn(e.target.value); look(who, amt, e.target.value); }} />
+            <DateInput className="input" max={today()} value={on} onChange={e => { setOn(e.target.value); look(who, amt, e.target.value); }} />
           </Field>
           <Field label="Status">
             <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={paid} onChange={e => setPaid(e.target.checked)} /> Already paid (Payment fulfilled)</label>

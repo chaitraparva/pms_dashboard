@@ -14,6 +14,7 @@ import { Icon } from '../ui/Icon';
 import { FilePicker } from '../ui/Attach';
 import { SearchSelect } from '../ui/SearchSelect';
 import { AmountWords } from '../ui/AmountWords';
+import { DateInput } from '../ui/DateInput';
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 type Lite = Pick<Profile, 'id' | 'full_name' | 'code' | 'email'> & { branch_id?: string | null; introduced_by?: string | null; role?: string };
@@ -309,7 +310,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const totalMonthly = (amt > 0 && r > 0 ? Math.round(amt * r) / 100 : 0) + more.reduce((s2, x) => s2 + itemMonthly(x), 0);
   // the IB bonus of each investment (paid to the IB on top of the investor's ROI)
   const itemBonus = (it: Item) => { const a = Number(it.amount), x = withSub ? Number(it.bonus || 0) : 0; return a > 0 && x > 0 ? Math.round(a * x) / 100 : 0; };
-  const totalBonus = upMonthly + more.reduce((s2, x) => s2 + itemBonus(x), 0);
+  const totalBonus = (amt > 0 && b > 0 ? Math.round(amt * b) / 100 : 0) + more.reduce((s2, x) => s2 + itemBonus(x), 0);
   // with a sub-investor only the name is mandatory: the investment fields are needed only when a principal is entered
   const star = regOnly ? '' : ' *';
   const e = (k: string) => (tried ? errs[k] : null);
@@ -531,7 +532,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             {lock === 'custom' && <input className="input num" style={{ marginTop: 8 }} inputMode="numeric" value={customLock} onChange={ev => setCustomLock(ev.target.value)} placeholder="Months, e.g. 3" />}
           </Field>
           <div className="f-row">
-            <Field label={'Start date' + star} err={e('start')} hint="Returns accrue monthly from this date."><input className="input" type="date" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
+            <Field label={'Start date' + star} err={e('start')} hint="Returns accrue monthly from this date."><DateInput className="input" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
             <Field label="Reference" hint="Bank / UTR or agreement number (optional)."><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
           </div>
           <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
@@ -554,7 +555,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                   {it.lock === 'custom' && <input className="input num" style={{ marginTop: 8 }} inputMode="numeric" value={it.customLock} onChange={ev => setItem(k, { customLock: ev.target.value })} placeholder="Months, e.g. 3" />}
                 </Field>
                 <div className="f-row">
-                  <Field label="Start date *" err={er('start')}><input className="input" type="date" value={it.start} onChange={ev => setItem(k, { start: ev.target.value })} /></Field>
+                  <Field label="Start date *" err={er('start')}><DateInput className="input" value={it.start} onChange={ev => setItem(k, { start: ev.target.value })} /></Field>
                   <Field label="Reference" hint="Optional."><input className="input mono" value={it.ref} onChange={ev => setItem(k, { ref: ev.target.value })} /></Field>
                 </div>
                 <Field label="Notes (internal)"><input className="input" value={it.notes} onChange={ev => setItem(k, { notes: ev.target.value })} /></Field>
@@ -852,7 +853,7 @@ function FundDialog({ i, meId, onClose }: { i: Investment; meId?: string; onClos
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>Confirm & activate</button></>}>
       <dl className="kv"><dt>Principal</dt><dd>{money(i.principal)}</dd><dt>Maturity</dt><dd>{start && !errs.start ? date(addMonths(start, i.lockin_months)) : '—'}</dd></dl>
       <Field label="Start date (funds received) *" err={tried ? errs.start : null} hint="Today or earlier.">
-        <input className={'input ' + (tried && errs.start ? 'bad' : '')} type="date" max={t} value={start} onChange={e => setStart(e.target.value)} />
+        <DateInput className={'input ' + (tried && errs.start ? 'bad' : '')} max={t} value={start} onChange={e => setStart(e.target.value)} />
       </Field>
       <Field label="Bank reference (UTR) *" err={tried ? errs.ref : null}>
         <input className={'input mono ' + (tried && errs.ref ? 'bad' : '')} value={ref} onChange={e => setRef(e.target.value)} />
@@ -930,7 +931,7 @@ function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underI
           <Field label="Lock-in (months) *" err={e('lock')} hint="0 = no lock-in."><input className={'input num ' + (e('lock') ? 'bad' : '')} inputMode="numeric" value={lock} onChange={ev => setLock(ev.target.value)} /></Field>
         </div>
         <div className="f-row">
-          <Field label="Start date *" err={e('start')} hint={hasWd ? 'Cannot be changed while there are withdrawals.' : 'Returns count from the next day.'}><input className="input" type="date" value={start} onChange={ev => setStart(ev.target.value)} disabled={hasWd} /></Field>
+          <Field label="Start date *" err={e('start')} hint={hasWd ? 'Cannot be changed while there are withdrawals.' : 'Returns count from the next day.'}><DateInput className="input" value={start} onChange={ev => setStart(ev.target.value)} disabled={hasWd} /></Field>
           <Field label="Reference"><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
         </div>
         <Field label="Notes (internal)"><input className="input" value={notes} onChange={ev => setNotes(ev.target.value)} /></Field>
@@ -986,7 +987,7 @@ function AmendDialog({ i, onClose }: { i: Investment; onClose: () => void }) {
       <Field label="What changes *" err={tried ? errs.desc : null}>
         <textarea className={'input ' + (tried && errs.desc ? 'bad' : '')} rows={3} value={desc} onChange={e => setDesc(e.target.value)} placeholder="e.g. Lock-in end date extended to 30 Jun 2027 by signed addendum" />
       </Field>
-      <Field label="Effective date *" err={tried ? errs.eff : null}><input className="input" type="date" value={eff} onChange={e => setEff(e.target.value)} /></Field>
+      <Field label="Effective date *" err={tried ? errs.eff : null}><DateInput className="input" value={eff} onChange={e => setEff(e.target.value)} /></Field>
       <Field label="Signed amendment (optional)" hint="Stored privately and shown to the investor in their documents."><input className="input" type="file" onChange={e => setFile(e.target.files?.[0] || null)} /></Field>
       <div className="note">The investment’s recorded terms stay unchanged in the system; the amendment is the legal record of the change.{s.four_eyes ? ' A second Super Admin must approve it.' : ''}</div>
     </Modal>

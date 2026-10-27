@@ -8,6 +8,7 @@ import type { Accrual, AuditLog, Balance, Dashboard, Investment, LedgerEntry, Pa
 import { ErrorNote, Loading, PageHead, Empty, useAction } from '../ui/kit';
 import { Icon } from '../ui/Icon';
 import { monthLabel } from '../ui/Charts';
+import { DateInput } from '../ui/DateInput';
 
 type Cell = string | number | null | undefined;
 type Person = Pick<Profile, 'id' | 'code' | 'full_name' | 'email' | 'phone' | 'city' | 'kyc_status' | 'account_status' | 'created_at' | 'role' | 'bank_name' | 'bank_account_masked' | 'bank_ifsc' | 'branch_id'>;
@@ -31,8 +32,8 @@ const outstanding = (b?: Balance) => (b ? Number(b.unapproved) + Number(b.approv
 function RangeInputs({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
   return (
     <div className="f-row">
-      <div className="field"><label>From</label><input className="input" type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} /></div>
-      <div className="field"><label>To</label><input className="input" type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} /></div>
+      <div className="field"><label>From</label><DateInput className="input" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} /></div>
+      <div className="field"><label>To</label><DateInput className="input" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} /></div>
     </div>
   );
 }

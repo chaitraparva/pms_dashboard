@@ -11,6 +11,7 @@ import { DataTable, Col } from '../ui/DataTable';
 import { AttachmentLinks } from '../ui/Attach';
 import { Icon } from '../ui/Icon';
 import { AmountWords } from '../ui/AmountWords';
+import { DateInput } from '../ui/DateInput';
 
 /* Investment requests from the portal: an investor for themselves, or an IB for a sub-investor.
    The Super Admin sets the ROI (and the IB bonus) and approves; the investment then shows in the portal. */
@@ -169,7 +170,7 @@ function ApproveDrawer({ r, onClose }: { r: Row; onClose: () => void }) {
           <Field label="Lock-in (months) *" err={e('lock')} hint="0 = no lock-in."><input className={'input num ' + (e('lock') ? 'bad' : '')} inputMode="numeric" value={lock} onChange={ev => setLock(ev.target.value)} /></Field>
         </div>
         <div className="f-row">
-          <Field label="Start date *" err={e('start')}><input className="input" type="date" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
+          <Field label="Start date *" err={e('start')}><DateInput className="input" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
           <Field label="Reference"><input className="input mono" value={ref} onChange={ev => setRef(ev.target.value)} /></Field>
         </div>
         {needPw && (
@@ -231,7 +232,7 @@ function EditRequest({ r, onClose }: { r: Row; onClose: () => void }) {
           <Field label="Lock-in (months)" hint="0 = no lock-in."><input className="input num" inputMode="numeric" value={lock} onChange={e => setLock(e.target.value)} /></Field>
         </div>
         <div className="f-row">
-          <Field label="Start date"><input className="input" type="date" value={start} onChange={e => setStart(e.target.value)} /></Field>
+          <Field label="Start date"><DateInput className="input" value={start} onChange={e => setStart(e.target.value)} /></Field>
           <Field label="Reference"><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>
         </div>
         <Field label="Note"><input className="input" value={note} onChange={e => setNote(e.target.value)} /></Field>

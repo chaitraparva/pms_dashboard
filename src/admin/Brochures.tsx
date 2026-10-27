@@ -7,6 +7,7 @@ import type { Branch, Brochure } from '../lib/types';
 import { Badge, ErrorNote, Loading, PageHead, Drawer, Modal, Field, IconBtn, useAction } from '../ui/kit';
 import { DataTable, Col } from '../ui/DataTable';
 import { BrochureFile } from '../investor/Brochures';
+import { DateInput } from '../ui/DateInput';
 
 type PlanLite = { id: string; code: string; name: string; status: string };
 
@@ -136,8 +137,8 @@ function BrochureForm({ b, plans, branches, onClose }: { b: Brochure | null; pla
           </select>
         </Field>
         <div className="grid g-1-1" style={{ gap: 12 }}>
-          <Field label="Show from" hint="Leave empty to show as soon as it is published."><input className="input" type="date" value={f.starts_on} onChange={e => set({ starts_on: e.target.value })} /></Field>
-          <Field label="Show until" hint="Optional."><input className="input" type="date" value={f.ends_on} onChange={e => set({ ends_on: e.target.value })} /></Field>
+          <Field label="Show from" hint="Leave empty to show as soon as it is published."><DateInput className="input" value={f.starts_on} onChange={e => set({ starts_on: e.target.value })} /></Field>
+          <Field label="Show until" hint="Optional."><DateInput className="input" value={f.ends_on} onChange={e => set({ ends_on: e.target.value })} /></Field>
         </div>
       </div>
     </Drawer>

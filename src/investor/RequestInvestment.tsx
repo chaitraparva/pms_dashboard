@@ -11,6 +11,7 @@ import { AttachmentLinks, FilePicker } from '../ui/Attach';
 import { loadAccount } from './data';
 import { SearchSelect } from '../ui/SearchSelect';
 import { AmountWords } from '../ui/AmountWords';
+import { DateInput } from '../ui/DateInput';
 
 /* Request an investment. An investor requests for themselves; an IB also for a sub-investor (existing or new).
    Every request goes to the Super Admin, who sets the ROI and approves it. Approved investments then show in the portal. */
@@ -126,7 +127,7 @@ export function RequestInvestment() {
               )}
               <div className="f-row">
                 <Field label="Amount (INR) *" err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder="e.g. 500000" /><AmountWords v={amount} /></Field>
-                <Field label="Preferred start date *" err={e('start')}><input className="input" type="date" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
+                <Field label="Preferred start date *" err={e('start')}><DateInput className="input" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
               </div>
               <Field label="Preferred lock-in *" err={e('lock')}>
                 <div className="chips">{LOCKS.map(([v, l]) => <button key={v} type="button" className={'chip ' + (lock === v ? 'on' : '')} onClick={() => setLock(v)}>{l}</button>)}</div>

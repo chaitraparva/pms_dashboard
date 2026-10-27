@@ -6,6 +6,7 @@ import { downloadXlsx } from '../lib/xlsx';
 import { MONTHS } from '../lib/format';
 import { Field, Modal } from './kit';
 import { Icon } from './Icon';
+import { DateInput } from '../ui/DateInput';
 
 /* "Export to Excel" on every list opens this dialog: choose a month (or all) and a branch (or all), then download an .xlsx file.
    The month is taken from a date column of the list; the branch from its Branch column, or (for the Super Admin) looked up
@@ -91,8 +92,8 @@ function ExportDialog({ req, onClose }: { req: ExportRequest; onClose: () => voi
           )}
           {mode === 'range' && (
             <div className="f-row" style={{ marginTop: 8 }}>
-              <input className="input" type="date" value={from} onChange={e => setFrom(e.target.value)} aria-label="From date" />
-              <input className="input" type="date" value={to} onChange={e => setTo(e.target.value)} aria-label="To date" />
+              <DateInput className="input" value={from} onChange={e => setFrom(e.target.value)} aria-label="From date" />
+              <DateInput className="input" value={to} onChange={e => setTo(e.target.value)} aria-label="To date" />
             </div>
           )}
         </Field>

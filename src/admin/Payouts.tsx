@@ -8,6 +8,7 @@ import { downloadCsv } from '../lib/csv';
 import type { Dashboard, Payout, PayoutStatus } from '../lib/types';
 import { PayBadge, Kpi, ErrorNote, Loading, PageHead, Modal, Field, IconBtn, useAction } from '../ui/kit';
 import { DataTable, Col } from '../ui/DataTable';
+import { DateInput } from '../ui/DateInput';
 
 type Person = { id: string; code: string | null; full_name: string; email: string; bank_name: string; bank_account_masked: string; bank_ifsc: string };
 type Inv = { id: string; code: string; plan_name: string; roi_method?: string | null; roi_upi?: string | null };
@@ -218,7 +219,7 @@ function EditPayout({ p, onClose }: { p: Row; onClose: () => void }) {
       <div className="form">
         <Field label="Status"><div className="chips">{STATUSES.map(([k, l]) => <button key={k} type="button" className={'chip ' + (status === k ? 'on' : '')} onClick={() => setStatus(k)}>{l}</button>)}</div></Field>
         {(status === 'processing' || status === 'paid') && <Field label={status === 'paid' ? 'Bank reference (UTR) *' : 'Batch reference'}><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>}
-        {status === 'paid' && <Field label="Paid on"><input className="input" type="date" value={paidOn} onChange={e => setPaidOn(e.target.value)} /></Field>}
+        {status === 'paid' && <Field label="Paid on"><DateInput className="input" value={paidOn} onChange={e => setPaidOn(e.target.value)} /></Field>}
         {status === 'failed' && <Field label="Why it failed *"><input className="input" value={reason} onChange={e => setReason(e.target.value)} /></Field>}
       </div>
     </Modal>

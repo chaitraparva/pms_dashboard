@@ -7,6 +7,7 @@ import { downloadCsv } from '../lib/csv';
 import type { LedgerEntry } from '../lib/types';
 import { LedgerBadge, ErrorNote, Loading, PageHead, IconBtn } from '../ui/kit';
 import { DataTable, Col } from '../ui/DataTable';
+import { DateInput } from '../ui/DateInput';
 
 type Person = { id: string; code: string | null; full_name: string; email: string };
 type Inv = { id: string; code: string };
@@ -73,8 +74,8 @@ export function Transactions() {
           filterFn={(r, f) => f === 'all' || (GROUPS[f] || []).includes(r.type)}
           sort={1} dir={-1} per={20}
           tools={<>
-            <label className="check" style={{ cursor: 'default' }}>From <input className="input" type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} aria-label="From date" style={{ width: 'auto' }} /></label>
-            <label className="check" style={{ cursor: 'default' }}>To <input className="input" type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} aria-label="To date" style={{ width: 'auto' }} /></label>
+            <label className="check" style={{ cursor: 'default' }}>From <DateInput className="input" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} aria-label="From date" width="150px" /></label>
+            <label className="check" style={{ cursor: 'default' }}>To <DateInput className="input" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} aria-label="To date" width="150px" /></label>
             {(from || to) && <button className="btn ghost sm" onClick={() => { setFrom(''); setTo(''); }}>Clear dates</button>}
           </>}
           emptyTitle={all.length ? 'No matching entries' : 'The ledger is empty'}

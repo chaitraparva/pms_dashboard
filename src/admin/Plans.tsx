@@ -8,6 +8,7 @@ import type { Plan, PlanVersion, PlanStatus, Investment, Profile, EarlyRedemptio
 import { DataTable } from '../ui/DataTable';
 import { Empty, ErrorNote, Loading, PageHead, InvBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
 import { Icon } from '../ui/Icon';
+import { DateInput } from '../ui/DateInput';
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 const PLAN_BADGE: Record<PlanStatus, [string, string]> = { active: ['Active', 'b-green'], inactive: ['Inactive', 'b-amber'], archived: ['Archived', 'b-grey'], draft: ['Draft', 'b-grey'] };
@@ -226,7 +227,7 @@ function PlanForm({ plan, cur, onClose, onSaved }: { plan?: Plan; cur?: PlanVers
           <Field label="Monthly ROI (% per month) *" err={e('rate')} hint={cur ? `Currently ${Number(cur.monthly_rate).toFixed(2)}%. Up to 4 decimals.` : 'Up to 4 decimals.'}>
             <input className={'input ' + (e('rate') ? 'bad' : '')} inputMode="decimal" value={f.monthly_rate} onChange={inp('monthly_rate')} placeholder="e.g. 2.50" />
           </Field>
-          <Field label="Effective from *" err={e('eff')} hint="New investments use this version from this date."><input className="input" type="date" value={f.effective_from} onChange={inp('effective_from')} /></Field>
+          <Field label="Effective from *" err={e('eff')} hint="New investments use this version from this date."><DateInput className="input" value={f.effective_from} onChange={inp('effective_from')} /></Field>
         </div>
         <div className="f-row">
           <Field label="Introducer bonus (% per month) *" err={e('bonus')} hint={`Taken out of the monthly ROI and paid to whoever introduced the investor. 0 = no bonus.${cur ? ` Currently ${Number(cur.bonus_rate || 0)}%.` : ''}`}>
@@ -262,8 +263,8 @@ function PlanForm({ plan, cur, onClose, onSaved }: { plan?: Plan; cur?: PlanVers
           </>
         )}
         <div className="f-row">
-          <Field label="Eligible from"><input className="input" type="date" value={f.eligible_from} onChange={inp('eligible_from')} /></Field>
-          <Field label="Eligible to" err={e('elig')} hint="Leave blank for open-ended."><input className="input" type="date" value={f.eligible_to} onChange={inp('eligible_to')} /></Field>
+          <Field label="Eligible from"><DateInput className="input" value={f.eligible_from} onChange={inp('eligible_from')} /></Field>
+          <Field label="Eligible to" err={e('elig')} hint="Leave blank for open-ended."><DateInput className="input" value={f.eligible_to} onChange={inp('eligible_to')} /></Field>
         </div>
         <div className="f-row">
           <Field label="Payout within (days of accrual)" err={e('lag')}><input className="input" inputMode="numeric" value={f.payout_lag_days} onChange={inp('payout_lag_days')} /></Field>
