@@ -128,9 +128,11 @@ function schedule(i: Investment, accruals: Accrual[], payouts: Payout[]): Row[] 
   // calendar months: the first and the last (maturity) month are pro-rata by days
   for (const p of periodsFor(i)) {
     const k = p.k;
-    const acc = mine.find(a => a.period_no === k && a.kind !== 'reversal') || null;
-    rows.push({ k, from: acc ? acc.period_start : p.start, to: acc ? acc.period_end : p.end, on: acc ? acc.accrual_date : p.end, amount: acc ? Number(acc.amount) : periodReturn(Number(i.monthly_return), p),
-      days: acc ? acc.days : p.days, dim: acc ? acc.days_in_period : p.daysInMonth, acc, pay: acc ? payBy[acc.id] || null : null, reversed: acc ? reversedIds.has(acc.id) : false });
+    // a month accrued in two parts (a top-up after the lock-in) shows as one month
+    const parts = mine.filter(a => a.period_no === k && a.kind !== 'reversal');
+    const acc = parts[0] || null, amt = parts.reduce((x, a) => x + Number(a.amount), 0), last = parts.map(a => a.period_end).sort().pop();
+    rows.push({ k, from: acc ? acc.period_start : p.start, to: acc ? last! : p.end, on: acc ? last! : p.end, amount: acc ? Math.round(amt * 100) / 100 : periodReturn(Number(i.monthly_return), p),
+      days: acc ? parts.reduce((x, a) => x + Number(a.days), 0) : p.days, dim: acc ? acc.days_in_period : p.daysInMonth, acc, pay: acc ? payBy[acc.id] || null : null, reversed: acc ? reversedIds.has(acc.id) : false });
   }
   // periods accrued beyond the schedule shown (e.g. no lock-in) still appear
   mine.filter(a => a.kind !== 'reversal' && !rows.some(r => r.k === a.period_no)).forEach(acc => rows.push({ k: acc.period_no, from: acc.period_start, to: acc.period_end, on: acc.accrual_date, amount: Number(acc.amount),

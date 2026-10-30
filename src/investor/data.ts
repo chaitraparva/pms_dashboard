@@ -55,10 +55,11 @@ export function addDays(iso: string, n: number): string {
 }
 
 /** Return periods follow calendar months: started 10 Oct → 11–31 Oct (pro-rata), then 1–30 Nov, 1–31 Dec …
- *  With a lock-in they run to the maturity date; without one, up to next month. */
+ *  They continue after the lock-in, up to next month. */
 export function periodsFor(i: Pick<Investment, 'start_date' | 'lockin_months' | 'maturity_date'>, t = today()): CalPeriod[] {
   if (!i.start_date) return [];
-  return calendarPeriods(i.start_date, i.lockin_months > 0 ? i.maturity_date || addMonths(i.start_date, i.lockin_months) : null, addMonths(t.slice(0, 7) + '-01', 1));
+  // returns continue after the lock-in ends (the lock-in only says when the money may be taken out): up to next month
+  return calendarPeriods(i.start_date, null, addMonths(t.slice(0, 7) + '-01', 1));
 }
 /** The monthly return for a period: whole for a full month, by days for a part month. */
 export const periodReturn = (monthly: number, p: Pick<CalPeriod, 'days' | 'daysInMonth'>) => Math.round(monthly * p.days / p.daysInMonth * 100) / 100;

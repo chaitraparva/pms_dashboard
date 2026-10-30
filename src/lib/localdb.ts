@@ -70,7 +70,19 @@ function periodReturn(i: Row, p: CalPeriod, rate: number): number {
   return round2(amt);
 }
 /** The calendar-month periods of an investment (to maturity, or with no lock-in up to `upTo`). */
-const periodsOf = (i: Row, upTo: string) => calendarPeriods(i.start_date, i.lockin_months > 0 ? i.maturity_date : null, upTo);
+// returns continue every month after the lock-in ends, for as long as the money stays invested (the lock-in only says when it may be taken out)
+const periodsOf = (i: Row, upTo: string) => calendarPeriods(i.start_date, null, upTo);
+/** The running (not yet ended) month of an investment: its return and IB bonus so far, day by day up to `asOf`.
+ *  Nothing is stored; once the month ends the regular monthly accrual takes over, so it is never counted twice. */
+export function runningMonth(i: Row, asOf = today()): { from: string; to: string; days: number; days_in_month: number; roi: number; bonus: number } | null {
+  if (!i.start_date || !LIVE.includes(i.status) || i.accrual_mode === 'anniversary_review') return null;
+  const p = periodsOf(i, asOf).find(x => x.start <= asOf && x.end >= asOf);
+  if (!p) return null;
+  const sub: CalPeriod = { ...p, end: asOf, days: diffDays(p.start, asOf) + 1, full: false };
+  const roi = periodReturn(i, sub, investorRate(i));
+  const bonus = i.bonus_on_top ? periodReturn(i, sub, Number(i.admin_bonus_rate || 0)) : round2(periodReturn(i, sub, Number(i.monthly_rate)) - roi);
+  return { from: p.start, to: asOf, days: sub.days, days_in_month: p.daysInMonth, roi, bonus: Math.max(0, bonus) };
+}
 const nextSeq = (k: string, start: number) => { S.seq[k] = (S.seq[k] ?? start - 1) + 1; return S.seq[k]; };
 const blank = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
 const str = (v: unknown, d = '') => (blank(v) ? d : String(v));
@@ -222,25 +234,34 @@ function runAccrualsFor(i: Row, asOf: string): number {
   if (i.accrual_mode === 'anniversary_review') return 0; // recorded before calendar months with returns already paid: flagged for the Super Admin
   let n = 0;
   // calendar months: started 10 Oct → 11–31 Oct (pro-rata), then 1–30 Nov, 1–31 Dec …; a month is accrued once it has ended
-  for (const p of periodsOf(i, asOf)) {
-    if (p.end >= asOf) break;
-    const k = p.k, end = p.end;
-    if (T('accruals').some(a => a.investment_id === i.id && a.period_no === k && (a.kind === 'regular' || a.kind === 'stub'))) continue;
+  for (const full of periodsOf(i, asOf)) {
+    if (full.end >= asOf) break;
+    const k = full.k, end = full.end;
+    // a month already accrued only in part (it used to stop at the lock-in end) gets the rest of the month as a top-up
+    const have = T('accruals').filter(a => a.investment_id === i.id && a.period_no === k && (a.kind === 'regular' || a.kind === 'stub'));
+    const covered = have.map(a => String(a.period_end)).sort().pop();
+    if (covered && covered >= end) continue;
+    const p: CalPeriod = covered ? { ...full, start: addDays(covered, 1), days: diffDays(addDays(covered, 1), end) + 1, full: false } : full;
+    const kind = covered ? 'stub' : 'regular';
     // the investor's share and the bonus for this period, on the principal of each day (withdrawals lower it from their date)
     const mineAmt = periodReturn(i, p, investorRate(i));
     const bonusAmt = i.bonus_on_top ? periodReturn(i, p, Number(i.admin_bonus_rate || 0)) : round2(periodReturn(i, p, Number(i.monthly_rate)) - mineAmt);
     if (mineAmt <= 0 && principalOn(i, p.start) <= 0) { closeIfEmpty(i); break; }
-    const acc = { id: uuid(), investment_id: i.id, period_no: k, kind: 'regular', period_start: p.start, period_end: end, accrual_date: end, days: p.days, days_in_period: p.daysInMonth, amount: mineAmt, reverses_id: null, reason: null, created_by: null, created_at: nowIso() };
+    const acc = { id: uuid(), investment_id: i.id, period_no: k, kind, period_start: p.start, period_end: end, accrual_date: end, days: p.days, days_in_period: p.daysInMonth, amount: mineAmt, reverses_id: null, reason: null, created_by: null, created_at: nowIso() };
     T('accruals').push(acc); n++;
-    T('payouts').push({ id: uuid(), code: 'PAY-' + pad(nextSeq('payout', 1), 6), accrual_id: acc.id, investment_id: i.id, investor_id: i.investor_id, amount: mineAmt, due_date: addDays(end, i.payout_lag_days), status: 'accrued',
-      batch_ref: null, payment_ref: null, failure_reason: null, approved_by: null, approved_at: null, sent_by: null, sent_at: null, confirmed_by: null, confirmed_at: null, paid_on: null, updated_at: nowIso() });
+    // months up to the closing date (everything already given) are recorded as paid straight away
+    const cl = settings().paid_until as Row | undefined, closed = !!cl && end <= String(cl.end);
+    const pay = { id: uuid(), code: 'PAY-' + pad(nextSeq('payout', 1), 6), accrual_id: acc.id, investment_id: i.id, investor_id: i.investor_id, amount: mineAmt, due_date: addDays(end, i.payout_lag_days), status: closed ? 'paid' : 'accrued',
+      batch_ref: null, payment_ref: closed ? cl!.ref : null, failure_reason: null, approved_by: null, approved_at: null, sent_by: null, sent_at: null, confirmed_by: null, confirmed_at: null, paid_on: closed ? cl!.on : null, closed, updated_at: nowIso() };
+    T('payouts').push(pay);
+    if (closed) ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_payout', amount: mineAmt, status: 'confirmed', occurred_on: cl!.on, reference: cl!.ref, note: pay.code, source_table: 'payouts', source_id: pay.id });
     const span = fmtDate(p.start) + ' – ' + fmtDate(end) + (p.full ? '' : ' (' + p.days + ' of ' + p.daysInMonth + ' days)');
     ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_accrual', amount: mineAmt, status: 'posted', occurred_on: end, reference: i.code + ' · ' + MONTH_NAMES[+end.slice(5, 7) - 1] + ' ' + end.slice(0, 4),
       note: 'Monthly return ' + investorRate(i).toFixed(2) + '% on ' + fmtMoney(principalOn(i, p.start)) + ' · ' + span, source_table: 'accruals', source_id: acc.id, created_by: null });
-    notify(i.investor_id, 'accrual', 'Return accrued on ' + i.code + ': ' + fmtMoney(mineAmt), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
+    if (!closed) notify(i.investor_id, 'accrual', 'Return accrued on ' + i.code + ': ' + fmtMoney(mineAmt), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
     if (bonusAmt > 0) T('admin_bonuses').push({ id: uuid(), code: 'BON-' + pad(nextSeq('bonus', 1), 6), investment_id: i.id, investor_id: i.investor_id,
       admin_id: T('profiles').find(p2 => p2.id === i.investor_id)?.introduced_by ?? null, accrual_id: acc.id, period_no: k, accrual_date: end, rate: Number(i.admin_bonus_rate),
-      amount: bonusAmt, status: 'accrued', payment_ref: null, paid_on: null, paid_by: null, created_at: nowIso(), updated_at: nowIso() });
+      amount: bonusAmt, status: closed ? 'paid' : 'accrued', payment_ref: closed ? cl!.ref : null, paid_on: closed ? cl!.on : null, paid_by: null, closed, created_at: nowIso(), updated_at: nowIso() });
   }
   closeIfEmpty(i);
   if (!i.maturity_date || !LIVE.includes(i.status)) { /* no lock-in (nothing to unlock) or closed */ }
@@ -453,16 +474,101 @@ function dashboard(branch: string | null, pFrom: string | null, pTo: string | nu
 }
 
 
+/* ---------- monthly bills: closed months (accrued and billed) and the running month (day by day) ---------- */
+/** Running-month figures for the investments the signed-in user may see (Super Admin: all, or one investor). */
+function runningList(investorId: string | null) {
+  const u = me() || fail('Not signed in.');
+  const admin = isAdmin();
+  const mine = (i: Row) => admin ? (!investorId || i.investor_id === investorId) : (i.investor_id === u.id || isMySub(i.investor_id)) && (!investorId || i.investor_id === investorId);
+  return T('investments').filter(mine).map(i => {
+    const r = runningMonth(i); if (!r) return null;
+    const ib = T('profiles').find(p => p.id === i.investor_id)?.introduced_by || null;
+    // an IB sees the bonus of their sub-investors; the investor sees their own return
+    return { investment_id: i.id, code: i.code, investor_id: i.investor_id, ib_id: ib, ...r, roi: admin || i.investor_id === u.id ? r.roi : 0, bonus: admin || ib === u.id ? r.bonus : 0 };
+  }).filter(Boolean);
+}
+const monthEnd = (m: string) => { const y = +m.slice(0, 4), mo = +m.slice(5, 7); return `${m}-${String(new Date(Date.UTC(y, mo, 0)).getUTCDate()).padStart(2, '0')}`; };
+/** The bill of one month: per investor, the returns of the month and their IB's bonus, with what is paid.
+ *  An ended month uses its accrued (stored) figures; the running month is calculated day by day up to today. */
+function monthlyBill(m: string) {
+  if (!/^\d{4}-\d{2}$/.test(m)) fail('Choose a month.');
+  const cur = today().slice(0, 7);
+  const running = m >= cur;
+  const people = new Map(T('profiles').map(p => [p.id, p]));
+  const branches = new Map(T('branches').map(b => [b.id, b.name]));
+  const rows = new Map<string, Row>();
+  const row = (investorId: string) => {
+    let r = rows.get(investorId);
+    if (!r) {
+      const p = people.get(investorId) || {} as Row, ib = p.introduced_by ? people.get(p.introduced_by) : null;
+      r = { investor_id: investorId, code: p.code, name: p.full_name, phone: p.phone || '', branch: branches.get(p.branch_id) || '', ib_id: ib?.id || null, ib_code: ib?.code || '', ib_name: ib?.full_name || '',
+        investments: new Set<string>(), roi: 0, roi_paid: 0, bonus: 0, bonus_paid: 0 };
+      rows.set(investorId, r);
+    }
+    return r;
+  };
+  // months that can be billed: from the first investment's start to the running month, newest first
+  const first = T('investments').map(i => String(i.start_date || '')).filter(Boolean).sort()[0]?.slice(0, 7) || cur;
+  const months: string[] = [];
+  for (let y = +cur.slice(0, 4), mo = +cur.slice(5, 7); `${y}-${String(mo).padStart(2, '0')}` >= first && months.length < 600; mo === 1 ? (mo = 12, y--) : mo--) months.push(`${y}-${String(mo).padStart(2, '0')}`);
+  if (m > cur) return { month: m, months, running: true, from: null, to: null, rows: [], totals: { roi: 0, roi_paid: 0, bonus: 0, bonus_paid: 0 } };
+  if (running) {
+    T('investments').forEach(i => {
+      const x = runningMonth(i); if (!x || (x.roi <= 0 && x.bonus <= 0)) return;
+      const r = row(i.investor_id); r.investments.add(i.id); r.roi += x.roi; r.bonus += x.bonus;
+    });
+  } else {
+    const accById = new Map(T('accruals').map(a => [a.id, a]));
+    T('payouts').forEach(p => {
+      const a = accById.get(p.accrual_id); if (!a || String(a.period_end).slice(0, 7) !== m) return;
+      const r = row(p.investor_id); r.investments.add(p.investment_id); r.roi += Number(p.amount); if (p.status === 'paid') r.roi_paid += Number(p.amount);
+    });
+    T('admin_bonuses').forEach(b => {
+      if (b.status === 'cancelled' || String(b.accrual_date).slice(0, 7) !== m) return;
+      const r = row(b.investor_id); r.investments.add(b.investment_id); r.bonus += Number(b.amount); if (b.status === 'paid') r.bonus_paid += Number(b.amount);
+    });
+  }
+  const list = [...rows.values()].map(r => ({ ...r, investments: r.investments.size, roi: round2(r.roi), roi_paid: round2(r.roi_paid), bonus: round2(r.bonus), bonus_paid: round2(r.bonus_paid) }))
+    .sort((a, b) => String((a as Row).name).localeCompare(String((b as Row).name)));
+  const tot = (k: string) => round2(list.reduce((x, r) => x + Number((r as Row)[k]), 0));
+  return { month: m, months, running, from: m + '-01', to: running ? today() : monthEnd(m), rows: list, totals: { roi: tot('roi'), roi_paid: tot('roi_paid'), bonus: tot('bonus'), bonus_paid: tot('bonus_paid') } };
+}
+/** Marks every return and IB bonus of the months up to and including `p_month` as paid (only ended months; already paid
+ *  ones are left as they are). Used once the money for those months has been given. */
+function closeMonth(a: Row) {
+  const m = String(a.p_month || '');
+  if (!/^\d{4}-\d{2}$/.test(m)) fail('Choose a month.');
+  if (m >= today().slice(0, 7)) fail('Only a month that has ended can be marked paid. The running month is still being calculated.');
+  const end = monthEnd(m);
+  const on = blank(a.p_paid_on) ? end : String(a.p_paid_on);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(on) || on > today()) fail('Enter the paid-on date (today or earlier).');
+  const ref = str(a.p_ref, 'Paid up to ' + fmtDate(end)).trim();
+  const accById = new Map(T('accruals').map(x => [x.id, x]));
+  const pays = T('payouts').filter(p => p.status !== 'paid' && String(accById.get(p.accrual_id)?.period_end || '9999') <= end);
+  pays.forEach(p => {
+    Object.assign(p, { status: 'paid', closed: true, approved_by: p.approved_by || currentUid, approved_at: p.approved_at || nowIso(), sent_by: p.sent_by || currentUid, sent_at: p.sent_at || nowIso(),
+      payment_ref: ref, paid_on: on, confirmed_by: currentUid, confirmed_at: nowIso(), failure_reason: null, updated_at: nowIso() });
+    const led = T('ledger_entries').filter(l => l.source_table === 'payouts' && l.source_id === p.id);
+    if (led.length) led.forEach(l => Object.assign(l, { status: 'confirmed', reference: ref, occurred_on: on, updated_at: nowIso() }));
+    else ledger({ investment_id: p.investment_id, investor_id: p.investor_id, type: 'return_payout', amount: p.amount, status: 'confirmed', occurred_on: on, reference: ref, note: p.code, source_table: 'payouts', source_id: p.id });
+  });
+  const bons = T('admin_bonuses').filter(b => b.status === 'accrued' && String(b.accrual_date) <= end);
+  bons.forEach(b => Object.assign(b, { status: 'paid', closed: true, payment_ref: ref, paid_on: on, paid_by: currentUid, updated_at: nowIso() }));
+  // returns of months up to this date that are recorded later (older investments, recalculations) are paid as well
+  settings().paid_until = { end, ref, on }; persist('settings');
+  const r = { payouts: pays.length, payouts_total: round2(pays.reduce((x, p) => x + Number(p.amount), 0)), bonuses: bons.length, bonuses_total: round2(bons.reduce((x, b) => x + Number(b.amount), 0)) };
+  audit('month.close', 'payouts', null, 'Paid up to ' + m, ref, null, { up_to: end, paid_on: on, ...r });
+  return r;
+}
+
 /* ---------- investor ranking: ROI released compared with principal ---------- */
 /** ROI still to be released to an investor: returns earned but not yet paid, plus (with a lock-in) the months still to come
  *  until the lock-in ends, at today's principal. */
 function toBeReleased(investorId: string): { pending: number; upcoming: number } {
   const pending = round2(T('payouts').filter(x => x.investor_id === investorId && ['accrued', 'approved', 'processing', 'failed'].includes(x.status)).reduce((s, x) => s + Number(x.amount), 0));
   let upcoming = 0;
-  T('investments').filter(i => i.investor_id === investorId && LIVE.includes(i.status) && i.start_date && Number(i.lockin_months) > 0).forEach(i => {
-    const done = new Set(T('accruals').filter(a => a.investment_id === i.id && a.kind !== 'reversal').map(a => a.period_no));
-    periodsOf(i, today()).filter(p => !done.has(p.k)).forEach(p => { upcoming += Number(i.principal) * investorRate(i) / 100 * p.days / p.daysInMonth; });
-  });
+  // the running month so far (returns are calculated day by day; the month is billed when it ends)
+  T('investments').filter(i => i.investor_id === investorId).forEach(i => { upcoming += runningMonth(i)?.roi || 0; });
   return { pending, upcoming: round2(upcoming) };
 }
 /** Investor ranking: whoever put money in most recently is rank 1; the earliest investors are last.
@@ -523,6 +629,8 @@ export function rpcCall(fn: string, a: Row): unknown {
       return planWithdrawal(u, Number(a.p_amount) || 0, isAdmin() && !blank(a.p_date) ? String(a.p_date) : undefined).map(p => (isAdmin() ? p : { ...p, plan_rate: undefined }));
     }
     case 'my_account': return myAccount();
+    case 'running_month': return runningList(a.p_investor ? String(a.p_investor) : null);
+    case 'monthly_bill': requireAdmin(); return monthlyBill(String(a.p_month || today().slice(0, 7)));
     case 'my_sub_investor': return mySubInvestor(String(a.p_id || ''));
     case 'request_investment': { const id = requestInvestment(a); touched('investment_requests', 'notifications'); return id; }
     case 'cancel_investment_request': {
@@ -1484,12 +1592,14 @@ function resetReturnsFrom(i: Row, from: string) {
   const accs = T('accruals').filter(a => a.investment_id === i.id && String(a.period_end) >= from);
   const ids = new Set(accs.map(a => a.id));
   T('accruals').forEach(a => { if (a.reverses_id && ids.has(a.reverses_id)) ids.add(a.id); });
-  if (T('payouts').some(p => ids.has(p.accrual_id) && ['approved', 'processing', 'paid'].includes(p.status)) || T('admin_bonuses').some(b => ids.has(b.accrual_id) && b.status === 'paid'))
+  // months closed as paid (the closing date) are recalculated and recorded as paid again; other approved or paid returns are kept
+  if (T('payouts').some(p => ids.has(p.accrual_id) && !p.closed && ['approved', 'processing', 'paid'].includes(p.status)) || T('admin_bonuses').some(b => ids.has(b.accrual_id) && !b.closed && b.status === 'paid'))
     fail(`Returns of ${i.code} from ${fmtDate(from === '0000-01-01' ? i.start_date || today() : from)} are already approved or paid, so they cannot be recalculated. Only the reference and notes can be changed now.`);
+  const payIds = new Set(T('payouts').filter(p => ids.has(p.accrual_id)).map(p => p.id));
   S.tables.accruals = T('accruals').filter(a => !ids.has(a.id));
   S.tables.payouts = T('payouts').filter(p => !ids.has(p.accrual_id));
   S.tables.admin_bonuses = T('admin_bonuses').filter(b => !ids.has(b.accrual_id));
-  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'accruals' && ids.has(l.source_id)));
+  S.tables.ledger_entries = T('ledger_entries').filter(l => !(l.source_table === 'accruals' && ids.has(l.source_id)) && !(l.source_table === 'payouts' && payIds.has(l.source_id)));
   S.tables.notifications = T('notifications').filter(n => !(n.source_table === 'accruals' && ids.has(n.source_id)));
 }
 const RET_TABLES = ['investments', 'accruals', 'payouts', 'admin_bonuses', 'ledger_entries', 'notifications'];
@@ -1850,7 +1960,18 @@ function parvaProperties(by: string | null): Row[] {
 export function attach(store: Store) { S = store; TABLES.forEach(t => { S.tables[t] ||= []; }); }
 export const current = () => S;
 /** Monthly returns that have fallen due since the last request. */
-export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); runAllAccruals(); } finally { currentUid = prev; } }
+export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); runAllAccruals(); paidPast(); } finally { currentUid = prev; } }
+/** One-time: when returns stopped being limited to the lock-in, every month up to the last ended month (at the time this
+ *  ran) was already given to the investors and IBs, so all returns and IB bonuses up to that month's end are marked paid
+ *  on that date. Later months follow the normal flow (Pending until paid). Runs only once. */
+function paidPast() {
+  if (S.seq.paid_past) return;
+  const t = today(), y = +t.slice(0, 4), mo = +t.slice(5, 7);
+  const last = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`;
+  closeMonth({ p_month: last });
+  S.seq.paid_past = 1;
+  persist('payouts', 'admin_bonuses', 'ledger_entries');
+}
 
 /** Removes an investment's calculated returns (accruals, their payouts, bonuses, ledger lines and notifications) so the
  *  next accrual run recreates them. Only used while none of them has been approved or paid. */

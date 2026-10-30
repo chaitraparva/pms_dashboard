@@ -26,7 +26,10 @@ export function Overview() {
       loadProperties(),
       rpc<MyRank | null>('my_rank').catch(() => null)
     ]);
-    return { p, myRank, anns: must(ann) as Pick<Announcement, 'id' | 'code' | 'title' | 'category' | 'published_at'>[], bros, props };
+    // the running month so far: own returns, and (for an IB) the bonus on the people under them
+    const run = await rpc<{ investor_id: string; roi: number; bonus: number; from: string; to: string }[]>('running_month').catch(() => []);
+    const running = { roi: run.reduce((x, r) => x + Number(r.roi), 0), bonus: run.reduce((x, r) => x + Number(r.bonus), 0), from: run[0]?.from || null, to: run[0]?.to || null };
+    return { p, myRank, running, anns: must(ann) as Pick<Announcement, 'id' | 'code' | 'title' | 'category' | 'published_at'>[], bros, props };
   }, [id]);
 
   const first = (profile!.full_name || '').trim().split(/\s+/)[0] || 'there';
@@ -35,7 +38,7 @@ export function Overview() {
   if (q.loading && !q.data) return <><PageHead crumbs={['Overview']} title={`Welcome back, ${first}`} /><Loading /></>;
   if (q.error || !q.data) return <><PageHead crumbs={['Overview']} title={`Welcome back, ${first}`} /><ErrorNote msg={q.error || 'Could not load your portfolio.'} retry={q.reload} /></>;
 
-  const { p, myRank, anns, bros, props } = q.data;
+  const { p, myRank, anns, bros, props, running } = q.data;
   const inv = p.investments;
   const live = inv.filter(isLive);
   const principal = live.reduce((s, i) => s + Number(i.principal), 0);
@@ -94,6 +97,9 @@ export function Overview() {
               tip="Principal of investments still inside their 6-month or 1-year lock-in." />
             <Kpi label="Total returns" value={moneyShort(totalReturns)} sub={`${moneyShort(paid)} received`} onClick={() => nav('/portal/returns')}
               tip="All monthly returns earned so far (accrued), whether paid or not. Open to see every month." />
+            <Kpi label="This month so far" value={money(running.roi)} sub={`Pending${running.from ? ' · ' + dateShort(running.from) + ' – ' + dateShort(running.to!) : ''} · grows every day`} subCls="warn"
+              tip="This month's return, calculated day by day up to today. It is added to your returns when the month ends and paid after that." />
+            {running.bonus > 0 && <Kpi label="IB bonus this month so far" value={money(running.bonus)} sub="Pending · on the people under you" subCls="warn" />}
           </div>
 
           {myRank && <YourRank r={myRank} />}

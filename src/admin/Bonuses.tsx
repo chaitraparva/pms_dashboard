@@ -26,7 +26,9 @@ async function load() {
   const invBy = new Map(invs.map(i => [i.id, i])), pplBy = new Map(people.map(p => [p.id, p]));
   const all_ids = new Set(bon.map(b => b.admin_id).filter(Boolean) as string[]);
   const rows: Row[] = bon.map(b => ({ ...b, admin: b.admin_id ? pplBy.get(b.admin_id) : undefined, investor: pplBy.get(b.investor_id), inv: invBy.get(b.investment_id) }));
-  return { rows, admins: people.filter(p => p.role === 'super_admin' || (p.role === 'investor' && (p.can_introduce || all_ids.has(p.id)))) };
+  const run = await rpc<{ bonus: number }[]>('running_month').catch(() => []);
+  const running = Math.round(run.reduce((x, r) => x + Number(r.bonus), 0) * 100) / 100;
+  return { rows, running, admins: people.filter(p => p.role === 'super_admin' || (p.role === 'investor' && (p.can_introduce || all_ids.has(p.id)))) };
 }
 
 /** Bonus: part of the monthly rate goes to the investor this person is under. Super Admins only. */
@@ -96,6 +98,7 @@ export function Bonuses() {
           <div className="kpis k4">
             <Kpi label="Unpaid bonus" value={money(sum(mine.filter(r => r.status === 'accrued')))} sub={`${count('accrued')} month${count('accrued') === 1 ? '' : 's'}`} />
             <Kpi label="Paid bonus" cls="pos" value={money(sum(mine.filter(r => r.status === 'paid')))} sub={`${count('paid')} month${count('paid') === 1 ? '' : 's'}`} />
+            <Kpi label="This month so far" value={money(q.data?.running || 0)} sub="Pending · all IBs · grows every day" subCls="warn" />
             <Kpi label="People earning" value={perAdmin.filter(a => a.id !== 'none').length} sub="with at least one bonus" />
             <Kpi label="Nobody set" value={money(perAdmin.find(a => a.id === 'none')?.unpaid || 0)} sub='Choose “Under” on the person’s page' subCls={perAdmin.some(a => a.id === 'none' && a.unpaid) ? 'warn' : ''} />
           </div>

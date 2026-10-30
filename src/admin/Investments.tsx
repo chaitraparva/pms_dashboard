@@ -651,11 +651,13 @@ export function InvestmentDetail() {
   /* accrual schedule: every period 1..lock-in */
   const base = i.start_date || i.expected_start;
   // calendar months: from the day after the start date to month end, then whole months; the maturity month runs to the maturity date
-  const cal = base ? calendarPeriods(base, i.lockin_months > 0 ? i.maturity_date || addMonths(base, i.lockin_months) : null, addMonths(t.slice(0, 7) + '-01', 1)) : [];
+  const cal = base ? calendarPeriods(base, null, addMonths(t.slice(0, 7) + '-01', 1)) : [];
   const ks = [...new Set([...cal.map(p => p.k), ...accruals.filter(a => a.kind !== 'reversal').map(a => a.period_no)])].sort((x, y) => x - y);
   const schedule = ks.map(k => {
     const p = cal.find(x => x.k === k);
-    const acc = accruals.find(a => a.period_no === k && a.kind !== 'reversal');
+    // a month accrued in two parts (a top-up after the lock-in limit was lifted) shows as one
+    const parts = accruals.filter(a => a.period_no === k && a.kind !== 'reversal');
+    const acc = parts.length > 1 ? { ...parts[0], amount: Math.round(parts.reduce((x, a) => x + Number(a.amount), 0) * 100) / 100, period_end: parts.map(a => a.period_end).sort().pop()! } : parts[0];
     const rev = acc ? accruals.find(a => a.reverses_id === acc.id) : undefined;
     const pay = acc ? payouts.find(x => x.accrual_id === acc.id) : undefined;
     const days = acc ? acc.days : p!.days, dim = acc ? acc.days_in_period : p!.daysInMonth;
@@ -841,7 +843,7 @@ function FundDialog({ i, meId, onClose }: { i: Investment; meId?: string; onClos
   const [note, setNote] = useState('');
   const [tried, setTried] = useState(false);
   const errs = { start: !start ? 'Choose the date funds were received.' : start > t ? 'Start date must be today or earlier.' : null, ref: !ref.trim() ? 'Enter the bank reference for the deposit.' : null };
-  const back = start && start < t ? calendarPeriods(start, addMonths(start, i.lockin_months), t).filter(p => p.end < t).length : 0;
+  const back = start && start < t ? calendarPeriods(start, null, t).filter(p => p.end < t).length : 0;
   const go = async () => {
     setTried(true); if (errs.start || errs.ref) return;
     const r = await act.run(() => rpc('admin_activate_investment', { p_id: i.id, p_start_date: start, p_deposit_ref: ref.trim(), p_reason: note.trim() }),

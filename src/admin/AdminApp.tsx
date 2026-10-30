@@ -21,6 +21,7 @@ import { Settings } from './Settings';
 import { Search } from './Search';
 import { Ranking } from './Ranking';
 import { Bonuses } from './Bonuses';
+import { Bills } from './Bills';
 import { IBs } from './IBs';
 import { Withdrawals } from './Withdrawals';
 import { Queries } from './Queries';
@@ -44,6 +45,7 @@ export default function AdminApp() {
     { to: '/admin/requests', label: 'Investment requests', icon: 'invest', count: counts.data?.requests },
     { to: '/admin/ibs', label: 'IBs & Network', icon: 'users' },
     { to: '/admin/bonuses', label: 'Bonus', icon: 'roi' },
+    { to: '/admin/bills', label: 'Monthly bills', icon: 'report' },
     { to: '/admin/withdrawals', label: 'Withdrawals', icon: 'payout', count: counts.data?.withdrawals },
     { to: '/admin/queries', label: 'Queries', icon: 'announce', count: counts.data?.queries },
     { to: '/admin/announcements', label: 'Updates', icon: 'announce', also: ['/admin/brochures'] },
@@ -64,6 +66,7 @@ export default function AdminApp() {
         <Route path="investments/:code" element={<InvestmentDetail />} />
         <Route path="accruals" element={<Accruals />} />
         <Route path="bonuses" element={<Bonuses />} />
+        <Route path="bills" element={<Bills />} />
         <Route path="ibs" element={<IBs />} />
         <Route path="withdrawals" element={<Withdrawals />} />
         <Route path="queries" element={<Queries />} />
