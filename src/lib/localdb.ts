@@ -1795,7 +1795,14 @@ export async function createAccount(u: Row): Promise<{ id: string; code: string 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) fail('Enter a valid email address.');
   if (blank(u.full_name)) fail('Enter the full name.');
   if (String(u.password || '').length < 10) fail('Temporary password must be at least 10 characters.');
-  if (S.users.some(x => x.email === email)) fail('A user with this email already exists.');
+  // a leftover login whose person no longer exists does not block the email
+  S.users = S.users.filter(x => !(x.email === email && !T('profiles').some(p => p.id === x.id)));
+  const taken = S.users.find(x => x.email === email);
+  if (taken) {
+    const o = T('profiles').find(p => p.id === taken.id);
+    fail(o ? `This email is already the login of ${o.full_name || 'someone'} (${o.code || '—'} · ${o.role === 'super_admin' ? (o.read_only ? 'CRM' : 'Super Admin') : 'Investor'}${o.account_status !== 'active' ? ', ' + o.account_status : ''}). Use another email, or change that login first.`
+      : 'This email belongs to an old login that has no profile any more. Use another email.');
+  }
   const id = uuid(); const admin = u.role === 'super_admin';
   S.users.push({ id, email, pw: await hash(u.password) });
   const by = admin ? null : blank(u.introduced_by) ? currentUid : String(u.introduced_by);
