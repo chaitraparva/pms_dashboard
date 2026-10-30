@@ -66,7 +66,7 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
     <CrumbCtx.Provider value={setCrumbs}>
       <div className={'shell ' + (collapsed ? 'collapsed ' : '') + (mob ? 'mob-open' : '')}>
         <aside className="sidebar">
-          <div className="brand"><Logo name={company} url={settings?.logo_url} /><div className="brand-txt"><b>{company}</b><small>{roleLabel}</small></div></div>
+          <div className="brand"><Logo name={company} url={settings?.logo_url} /><div className="brand-txt"><b>{company}</b><small>{profile?.read_only ? 'CRM · read only' : roleLabel}</small></div></div>
           <nav>
             {nav.map((n, i) => n.group ? <div key={i} className="nav-grp">{n.group}</div> : (
               <NavLink key={n.to} to={n.to!} end={n.to === base} className={({ isActive }) => 'nav-a' + (isActive || n.also?.some(x => loc.pathname.startsWith(x)) ? ' on' : '')} title={n.label}>
@@ -74,7 +74,7 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
               </NavLink>
             ))}
           </nav>
-          <div className="side-foot"><div className="avatar">{initials(profile?.full_name || profile?.email || '')}</div><div className="who"><b>{profile?.full_name || profile?.email}</b><small>{profile?.code} · {roleLabel}</small></div></div>
+          <div className="side-foot"><div className="avatar">{initials(profile?.full_name || profile?.email || '')}</div><div className="who"><b>{profile?.full_name || profile?.email}</b><small>{profile?.code} · {profile?.read_only ? 'CRM' : roleLabel}</small></div></div>
         </aside>
         <div className="scrim mob-scrim" onClick={() => setMob(false)} />
         <div className="main">
@@ -117,7 +117,7 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
             </div>
           </header>
           <main className={'content' + (profile?.read_only ? ' ro' : '')}>
-            {profile?.read_only && <div className="note info" style={{ marginBottom: 14 }}><b>View-only login.</b> You can see everything, but you cannot add, edit or delete anything.</div>}
+            {profile?.read_only && <div className="note info" style={{ marginBottom: 14 }}><b>CRM login · read only.</b> You can see every page and option, but nothing can be added, accepted, edited or deleted.</div>}
             <Outlet />
           </main>
         </div>

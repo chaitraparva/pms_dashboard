@@ -1842,6 +1842,25 @@ export async function adminSetLogin(userId: string, pw: string) {
   p.has_login = true; p.updated_at = nowIso();
   audit('user.password_reset', 'profile', userId, p.code || '', 'Password set by administrator', null, null); persist('profiles', 'audit_logs');
 }
+/** The CRM login (read only), set in Vercel with PMS_CRM_EMAIL and PMS_CRM_PASSWORD: created if missing, and its password
+ *  follows the setting. A full Super Admin with the same email is never turned into a CRM. Returns true when it changed. */
+export async function ensureCrmLogin(email: string, pw: string, name: string): Promise<boolean> {
+  const e = email.trim().toLowerCase();
+  if (!e || !pw) return false;
+  const u = S.users.find(x => x.email === e);
+  if (!u) {
+    const id = uuid(), code = 'CRM-' + nextSeq('crm', 1);
+    S.users.push({ id, email: e, pw: await hash(pw) });
+    const pr = profileRow(id, e, name || 'CRM', code, 'super_admin', 'verified'); pr.read_only = true;
+    T('profiles').push(pr); persist('profiles');
+    return true;
+  }
+  const p = T('profiles').find(x => x.id === u.id);
+  if (!p || !p.read_only) return false;
+  if (await verify(pw, u.pw)) return false;
+  u.pw = await hash(pw);
+  return true;
+}
 export async function checkLogin(email: string, pw: string): Promise<string | null> {
   // an IB signs in with the phone number the Super Admin registered
   const key = email.includes('@') ? '' : phoneKey(email);

@@ -14,7 +14,7 @@ export function Login() {
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [code, setCode] = useState('');
-  const [as, setAs] = useState<'super_admin' | 'investor'>('super_admin');
+  const [as, setAs] = useState<'super_admin' | 'crm' | 'investor'>('super_admin');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ t: string; ok?: boolean } | null>(null);
 
@@ -28,10 +28,12 @@ export function Login() {
     if (!error && data.session) {
       try { sessionStorage.removeItem('pms-parva-seen'); } catch { /* ignore */ }
       // the chosen role must match the account, so an investor cannot land on the admin sign-in by mistake
-      const { data: p } = await api.from('profiles').select('role').eq('id', data.session.user.id).maybeSingle();
-      if (p && p.role !== as) {
+      const { data: p } = await api.from('profiles').select('role,read_only').eq('id', data.session.user.id).maybeSingle();
+      const kind = p ? (p.role === 'super_admin' ? (p.read_only ? 'crm' : 'super_admin') : 'investor') : as;
+      if (p && kind !== as) {
         await api.auth.signOut(); setBusy(false);
-        setMsg({ t: `This is ${p.role === 'super_admin' ? 'a Super Admin' : 'an Investor'} account. Choose “${p.role === 'super_admin' ? 'Super Admin' : 'Investor'}” above and sign in again.` });
+        const label = kind === 'crm' ? 'CRM' : kind === 'super_admin' ? 'Super Admin' : 'Investor';
+        setMsg({ t: `This is ${kind === 'investor' ? 'an' : 'a'} ${label} account. Choose “${label}” above and sign in again.` });
         return;
       }
     }
@@ -82,11 +84,11 @@ export function Login() {
       <section className="login-r">
         {mode === 'signin' && (
           <form className="login-box" onSubmit={signIn}>
-            <div><h2>Sign in</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>Super Admin signs in with email. Investors sign in with their phone number.</p></div>
+            <div><h2>Sign in</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>Super Admin and CRM sign in with email. Investors sign in with their phone number.</p></div>
             <div className="role-pick" role="radiogroup" aria-label="I am a">
-              {(['super_admin', 'investor'] as const).map(r => (
+              {(['super_admin', 'crm', 'investor'] as const).map(r => (
                 <button key={r} type="button" role="radio" aria-checked={as === r} className={'role ' + (as === r ? 'on' : '')} onClick={() => { setAs(r); setEmail(''); setPw(''); setMsg(null); }}>
-                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor'}</b><span>{r === 'super_admin' ? 'Records investors, investments, withdrawals and payouts' : 'Your investments, returns, requests and withdrawals'}</span>
+                  <b>{r === 'super_admin' ? 'Super Admin' : r === 'crm' ? 'CRM' : 'Investor'}</b><span>{r === 'super_admin' ? 'Records investors, investments, withdrawals and payouts' : r === 'crm' ? 'Sees everything, read only' : 'Your investments, returns, requests and withdrawals'}</span>
                 </button>
               ))}
             </div>
@@ -103,9 +105,9 @@ export function Login() {
           <form className="login-box" onSubmit={sendReset}>
             <div><h2>Forgot password</h2><p className="hint" style={{ fontSize: 13.5, marginTop: 4 }}>The Super Admin gets an email, sets a new temporary password for you and shares it with you.</p></div>
             <div className="role-pick" role="radiogroup" aria-label="I am a">
-              {(['super_admin', 'investor'] as const).map(r => (
+              {(['super_admin', 'crm', 'investor'] as const).map(r => (
                 <button key={r} type="button" role="radio" aria-checked={as === r} className={'role ' + (as === r ? 'on' : '')} onClick={() => { setAs(r); setEmail(''); setMsg(null); }}>
-                  <b>{r === 'super_admin' ? 'Super Admin' : 'Investor'}</b><span>{r === 'super_admin' ? 'Signs in with email' : 'Signs in with phone number'}</span>
+                  <b>{r === 'super_admin' ? 'Super Admin' : r === 'crm' ? 'CRM' : 'Investor'}</b><span>{r === 'investor' ? 'Signs in with phone number' : 'Signs in with email'}</span>
                 </button>
               ))}
             </div>

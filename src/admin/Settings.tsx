@@ -249,7 +249,7 @@ function Admins() {
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <p className="hint" style={{ flex: 1, minWidth: 220 }}>Super Admins can see every investor and approve money movements. You cannot change your own role.</p>
         <button className="btn" onClick={() => setDlg('promote')}>Promote an investor</button>
-        <button className="btn accent" onClick={() => setDlg('add')}><Icon name="plus" />Add administrator</button>
+        <button className="btn accent" onClick={() => setDlg('add')}><Icon name="plus" />Add administrator or CRM</button>
       </div>
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading rows={2} /> : (
         <div className="list">
@@ -258,7 +258,7 @@ function Admins() {
               <div className="avatar" style={{ width: 30, height: 30, fontSize: 11 }}>{initials(a.full_name || a.email)}</div>
               <div className="grow"><b>{a.full_name || a.email}{a.id === me?.id ? ' (you)' : ''}</b><span>{a.code} · {a.email} · since {date(a.created_at)}</span></div>
               <AcctBadge s={a.account_status} />
-              {a.read_only ? <Badge cls="b-grey">View only</Badge> : <Badge cls="b-navy">Super Admin</Badge>}
+              {a.read_only ? <Badge cls="b-grey">CRM · read only</Badge> : <Badge cls="b-navy">Super Admin</Badge>}
               {a.id !== me?.id && <button className="btn sm danger" onClick={() => setDlg({ demote: a })}>Remove admin role</button>}
             </div>
           ))}
@@ -284,11 +284,11 @@ function AddAdmin({ onClose }: { onClose: () => void }) {
   const go = async () => {
     setTried(true); if (errs.name || errs.email || errs.pw) return;
     const r = await act.run(() => createUser({ mode, role: 'super_admin', read_only: viewOnly, email: email.trim().toLowerCase(), full_name: name.trim(), password: mode === 'password' ? pw : undefined }),
-      [viewOnly ? 'View-only login added' : 'Administrator added', mode === 'invite' ? `${email.trim()} will receive an invitation.` : 'Share the temporary password securely.']);
+      [viewOnly ? 'CRM login added' : 'Administrator added', mode === 'invite' ? `${email.trim()} will receive an invitation.` : 'Share the temporary password securely.']);
     if (r) { refreshAll(); onClose(); }
   };
   return (
-    <Drawer title="Add administrator" sub="Creates a new Super Admin login: full access, or view only." onClose={onClose}
+    <Drawer title="Add administrator or CRM" sub="Creates a new login: Super Admin (full access) or CRM (read only)." onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{mode === 'invite' ? 'Create and send invite' : 'Create administrator'}</button></>}>
       <div className="form">
         <div className="field">
@@ -300,10 +300,10 @@ function AddAdmin({ onClose }: { onClose: () => void }) {
         </div>
         <Field label="Access">
           <div className="chips">
-            <button type="button" className={'chip ' + (!viewOnly ? 'on' : '')} onClick={() => setViewOnly(false)}>Full access</button>
-            <button type="button" className={'chip ' + (viewOnly ? 'on' : '')} onClick={() => setViewOnly(true)}>View only</button>
+            <button type="button" className={'chip ' + (!viewOnly ? 'on' : '')} onClick={() => setViewOnly(false)}>Super Admin (full access)</button>
+            <button type="button" className={'chip ' + (viewOnly ? 'on' : '')} onClick={() => setViewOnly(true)}>CRM (read only)</button>
           </div>
-          <p className="hint">{viewOnly ? 'Sees every Super Admin page and can export to Excel, but cannot add, edit or delete anything.' : 'Can record investments, withdrawals and payouts, and change everything.'}</p>
+          <p className="hint">{viewOnly ? 'CRM: sees every Super Admin page and option, but everything is read only. They cannot add, accept, edit or delete anything.' : 'Can record investments, withdrawals and payouts, and change everything.'}</p>
         </Field>
         <Field label="Full name *" err={tried ? errs.name : null}><input className="input" value={name} onChange={e => setName(e.target.value)} /></Field>
         <Field label="Email *" err={tried ? errs.email : null}><input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field>
