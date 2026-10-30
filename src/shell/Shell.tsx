@@ -17,6 +17,14 @@ export function Logo({ name, url, size }: { name: string; url: string | null | u
 }
 
 export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel: string; nav: NavItem[]; searchPh: string; onSearch: (q: string) => void; base: string }) {
+  // CRM (read only): only buttons that look at data stay visible (export, print, statements, paging, close); every button
+  // that adds, accepts, edits or deletes is hidden. The server refuses any change from this login anyway.
+  const roMark = useCallback((el: HTMLElement | null) => {
+    if (!el || !el.classList.contains('ro')) return;
+    const OK = /export|excel|print|download|statement|refresh|retry|try again|load more|show more|next|previous|back|close|view|details|clear/i;
+    const mark = () => el.querySelectorAll<HTMLElement>('.btn:not(.ro-ok)').forEach(b => { if (OK.test(b.textContent || '') || b.getAttribute('aria-label') === 'Close') b.classList.add('ro-ok'); });
+    mark(); new MutationObserver(mark).observe(el, { childList: true, subtree: true });
+  }, []);
   const { profile, settings, signOut } = useAuth();
   const navTo = useNavigate();
   const loc = useLocation();
@@ -116,7 +124,7 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
               )}
             </div>
           </header>
-          <main className={'content' + (profile?.read_only ? ' ro' : '')}>
+          <main className={'content' + (profile?.read_only ? ' ro' : '')} ref={roMark}>
             {profile?.read_only && <div className="note info" style={{ marginBottom: 14 }}><b>CRM login · read only.</b> You can see every page and option, but nothing can be added, accepted, edited or deleted.</div>}
             <Outlet />
           </main>
