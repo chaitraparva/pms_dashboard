@@ -212,6 +212,9 @@ export async function handle(body: Row, auth: string | undefined): Promise<unkno
   const done = await turn();
   try { return await handleOne(body, auth); } finally { done(); }
 }
+const READ_ONLY = 'This is a view-only login. It can see everything but cannot add, edit or delete anything.';
+/** Everything that counts as a change for a view-only login (reading notifications and viewing brochures do not). */
+const fingerprint = (S: db.Store) => JSON.stringify({ users: S.users, seq: S.seq, tables: Object.fromEntries(Object.entries(S.tables).filter(([k]) => k !== 'notifications' && k !== 'brochure_views')) });
 async function handleOne(body: Row, auth: string | undefined): Promise<unknown> {
   const pool = await getPool();
   try { await ensureSchema(pool); }
@@ -229,8 +232,16 @@ async function handleOne(body: Row, auth: string | undefined): Promise<unknown> 
     if (uid && !S.users.some(u => u.id === uid)) uid = null;
     db.setCurrentUser(uid);
     db.catchUp();
+    // a view-only login sees everything a Super Admin sees but cannot change anything: its request is run, and if it
+    // would change any data (other than its own notifications being read) it is refused and nothing is saved
+    const viewOnly = !!uid && db.isReadOnly(uid);
+    if (viewOnly && ['fn', 'file_put', 'file_del', 'password'].includes(String(body.op))) return { error: { message: READ_ONLY } };
+    const before = viewOnly ? fingerprint(db.current()) : '';
     let res: { out: unknown; uid: string | null; after?: () => Promise<unknown> };
-    try { res = await act(pool, body, uid); }
+    try {
+      res = await act(pool, body, uid);
+      if (viewOnly && body.op !== 'session' && body.op !== 'login' && fingerprint(db.current()) !== before) return { error: { message: READ_ONLY } };
+    }
     catch (e) {
       if (e instanceof HttpError) throw e;
       // a rule said no (e.g. "Enter the amount"): nothing is saved, the message goes back to the screen

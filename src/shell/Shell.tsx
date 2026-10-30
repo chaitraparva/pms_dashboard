@@ -116,7 +116,10 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
               )}
             </div>
           </header>
-          <main className="content"><Outlet /></main>
+          <main className={'content' + (profile?.read_only ? ' ro' : '')}>
+            {profile?.read_only && <div className="note info" style={{ marginBottom: 14 }}><b>View-only login.</b> You can see everything, but you cannot add, edit or delete anything.</div>}
+            <Outlet />
+          </main>
         </div>
       </div>
     </CrumbCtx.Provider>

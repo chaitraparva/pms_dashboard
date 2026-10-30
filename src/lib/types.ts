@@ -28,6 +28,8 @@ export interface Profile {
   /** Investors: registered as an IB (introducing broker) who can have sub-investors. */
   is_ib?: boolean;
   password_changed_at?: string;
+  /** Super Admin view-only login: sees everything, cannot change anything. */
+  read_only?: boolean;
 }
 
 export interface Branch { id: string; code: string; name: string; city: string; status: 'active' | 'inactive'; created_at: string; updated_at: string }

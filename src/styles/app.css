@@ -474,3 +474,6 @@ pre.json{background:var(--surface-2);border:1px solid var(--line);border-radius:
 .rank-line small{font-size:11px}
 .rank-rail{position:relative;height:8px;border-radius:999px;background:linear-gradient(90deg,var(--surface-2),var(--green))}
 .rank-rail i{position:absolute;top:50%;width:16px;height:16px;border-radius:50%;background:var(--navy);border:3px solid var(--surface);box-shadow:0 0 0 1px var(--line-strong);transform:translate(-50%,-50%)}
+
+/* view-only login: the buttons that add, save or delete are hidden (the server refuses changes anyway) */
+.content.ro .btn.primary, .content.ro .btn.accent, .content.ro .btn.danger { display: none !important; }

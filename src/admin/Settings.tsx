@@ -235,13 +235,13 @@ function LogoRow() {
 }
 
 /* =============================== ADMINISTRATORS =============================== */
-type Lite = Pick<Profile, 'id' | 'full_name' | 'email' | 'code' | 'account_status' | 'created_at' | 'role' | 'kyc_status'>;
+type Lite = Pick<Profile, 'id' | 'full_name' | 'email' | 'code' | 'account_status' | 'created_at' | 'role' | 'kyc_status' | 'read_only'>;
 
 function Admins() {
   const { profile: me } = useAuth();
   const [dlg, setDlg] = useState<null | 'add' | 'promote' | { demote: Lite }>(null);
   const q = useQuery(async () => {
-    const admins = must(await api.from('profiles').select('id,full_name,email,code,account_status,created_at,role,kyc_status').eq('role', 'super_admin').order('created_at')) as Lite[];
+    const admins = must(await api.from('profiles').select('id,full_name,email,code,account_status,created_at,role,kyc_status,read_only').eq('role', 'super_admin').order('created_at')) as Lite[];
     return admins;
   }, []);
   return (
@@ -258,7 +258,7 @@ function Admins() {
               <div className="avatar" style={{ width: 30, height: 30, fontSize: 11 }}>{initials(a.full_name || a.email)}</div>
               <div className="grow"><b>{a.full_name || a.email}{a.id === me?.id ? ' (you)' : ''}</b><span>{a.code} · {a.email} · since {date(a.created_at)}</span></div>
               <AcctBadge s={a.account_status} />
-              <Badge cls="b-navy">Super Admin</Badge>
+              {a.read_only ? <Badge cls="b-grey">View only</Badge> : <Badge cls="b-navy">Super Admin</Badge>}
               {a.id !== me?.id && <button className="btn sm danger" onClick={() => setDlg({ demote: a })}>Remove admin role</button>}
             </div>
           ))}
@@ -278,16 +278,17 @@ function AddAdmin({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
+  const [viewOnly, setViewOnly] = useState(false);
   const [tried, setTried] = useState(false);
   const errs = { name: !name.trim() ? 'Enter a name.' : null, email: !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ? 'Enter a valid email address.' : null, pw: mode === 'password' && pw.length < 10 ? 'Use at least 10 characters.' : null };
   const go = async () => {
     setTried(true); if (errs.name || errs.email || errs.pw) return;
-    const r = await act.run(() => createUser({ mode, role: 'super_admin', email: email.trim().toLowerCase(), full_name: name.trim(), password: mode === 'password' ? pw : undefined }),
-      ['Administrator added', mode === 'invite' ? `${email.trim()} will receive an invitation.` : 'Share the temporary password securely.']);
+    const r = await act.run(() => createUser({ mode, role: 'super_admin', read_only: viewOnly, email: email.trim().toLowerCase(), full_name: name.trim(), password: mode === 'password' ? pw : undefined }),
+      [viewOnly ? 'View-only login added' : 'Administrator added', mode === 'invite' ? `${email.trim()} will receive an invitation.` : 'Share the temporary password securely.']);
     if (r) { refreshAll(); onClose(); }
   };
   return (
-    <Drawer title="Add administrator" sub="Creates a new Super Admin login with full access." onClose={onClose}
+    <Drawer title="Add administrator" sub="Creates a new Super Admin login: full access, or view only." onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{mode === 'invite' ? 'Create and send invite' : 'Create administrator'}</button></>}>
       <div className="form">
         <div className="field">
@@ -297,6 +298,13 @@ function AddAdmin({ onClose }: { onClose: () => void }) {
           </div>
           <p className="hint">{mode === 'invite' ? 'We email a secure link to choose a password.' : 'You set a password now and share it securely. They should change it from Profile & Security after signing in.'}</p>
         </div>
+        <Field label="Access">
+          <div className="chips">
+            <button type="button" className={'chip ' + (!viewOnly ? 'on' : '')} onClick={() => setViewOnly(false)}>Full access</button>
+            <button type="button" className={'chip ' + (viewOnly ? 'on' : '')} onClick={() => setViewOnly(true)}>View only</button>
+          </div>
+          <p className="hint">{viewOnly ? 'Sees every Super Admin page and can export to Excel, but cannot add, edit or delete anything.' : 'Can record investments, withdrawals and payouts, and change everything.'}</p>
+        </Field>
         <Field label="Full name *" err={tried ? errs.name : null}><input className="input" value={name} onChange={e => setName(e.target.value)} /></Field>
         <Field label="Email *" err={tried ? errs.email : null}><input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field>
         {mode === 'password' && <Field label="Temporary password *" err={tried ? errs.pw : null} hint="At least 10 characters."><input className="input mono" value={pw} onChange={e => setPw(e.target.value)} autoComplete="new-password" /></Field>}

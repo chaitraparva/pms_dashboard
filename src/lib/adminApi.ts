@@ -5,6 +5,8 @@ export interface NewUser {
   email: string;
   full_name: string;
   role: 'investor' | 'super_admin';
+  /** Super Admin only: a view-only login (sees everything, changes nothing). */
+  read_only?: boolean;
   /** password: the administrator sets a temporary password now and shares it with the person. */
   mode: 'invite' | 'password';
   password?: string;

@@ -113,6 +113,8 @@ export const setCurrentUser = (id: string | null) => { currentUid = id; };
 export const uid = () => currentUid;
 export const me = () => T('profiles').find(p => p.id === currentUid) || null;
 export const isAdmin = () => { const p = me(); return !!p && p.role === 'super_admin' && p.account_status === 'active'; };
+/** A view-only Super Admin login: sees everything, changes nothing (the server refuses any change it would make). */
+export const isReadOnly = (id: string) => !!T('profiles').find(p => p.id === id)?.read_only;
 /** Who can be "Introduced by" and receive the bonus: a Super Admin, or an investor the Super Admin allowed to add investors. */
 const canBeIntroducer = (id: string) => T('profiles').some(x => x.id === id && (x.role === 'super_admin' || x.role === 'investor'));
 const requireAdmin = () => { if (!isAdmin()) fail('Only an active Super Admin can do this.'); return currentUid!; };
@@ -170,7 +172,7 @@ const ledgerFor = (table: string, id: string, type?: string) => T('ledger_entrie
 let seeding = false;
 const fourEyes = (prev: string | null, what: string) => {
   if (seeding) return;
-  const admins = T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').length;
+  const admins = T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active' && !p.read_only).length;
   if (settings().four_eyes && admins > 1 && prev && prev === currentUid) fail(`A different Super Admin must ${what}. You performed the previous step.`);
 };
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
@@ -1799,7 +1801,9 @@ export async function createAccount(u: Row): Promise<{ id: string; code: string 
   const by = admin ? null : blank(u.introduced_by) ? currentUid : String(u.introduced_by);
   if (by && !canBeIntroducer(by)) fail('Choose a valid person for "Introduced by".');
   const code = admin ? 'ADM-' + nextSeq('admin', 1) : 'INVR-' + nextSeq('investor', 1001);
-  T('profiles').push(profileRow(id, email, String(u.full_name).trim(), code, admin ? 'super_admin' : 'investor', admin ? 'verified' : 'pending', { ...u, introduced_by: by }));
+  const pr = profileRow(id, email, String(u.full_name).trim(), code, admin ? 'super_admin' : 'investor', admin ? 'verified' : 'pending', { ...u, introduced_by: by });
+  if (admin && u.read_only) pr.read_only = true;
+  T('profiles').push(pr);
   audit(admin ? 'admin.create' : 'investor.create', 'profile', id, code, 'Created with temporary password', null, { email, full_name: u.full_name, role: admin ? 'super_admin' : 'investor' });
   persist('profiles', 'audit_logs');
   return { id, code };
