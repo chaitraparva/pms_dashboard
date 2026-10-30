@@ -1798,6 +1798,17 @@ export async function createAccount(u: Row): Promise<{ id: string; code: string 
   // a leftover login whose person no longer exists does not block the email
   S.users = S.users.filter(x => !(x.email === email && !T('profiles').some(p => p.id === x.id)));
   const taken = S.users.find(x => x.email === email);
+  // an admin or CRM login that was turned into an investor by mistake (no investments, nobody under them) is made a login again
+  const old = taken && u.role === 'super_admin' ? T('profiles').find(p => p.id === taken.id && p.role === 'investor') : null;
+  if (old && !T('investments').some(i => i.investor_id === old.id) && !T('profiles').some(p => p.introduced_by === old.id)) {
+    const before = { role: old.role, read_only: !!old.read_only };
+    Object.assign(old, { role: 'super_admin', read_only: !!u.read_only, full_name: String(u.full_name).trim(), code: String(old.code || '').startsWith('ADM-') ? old.code : 'ADM-' + nextSeq('admin', 1),
+      kyc_status: 'verified', account_status: 'active', introduced_by: null, can_introduce: false, updated_at: nowIso() });
+    taken!.pw = await hash(u.password);
+    audit('admin.create', 'profile', old.id, old.code, 'Login set up again', before, { email, role: 'super_admin', read_only: !!u.read_only });
+    persist('profiles', 'audit_logs');
+    return { id: old.id, code: old.code };
+  }
   if (taken) {
     const o = T('profiles').find(p => p.id === taken.id);
     fail(o ? `This email is already the login of ${o.full_name || 'someone'} (${o.code || '—'} · ${o.role === 'super_admin' ? (o.read_only ? 'CRM' : 'Super Admin') : 'Investor'}${o.account_status !== 'active' ? ', ' + o.account_status : ''}). Use another email, or change that login first.`
