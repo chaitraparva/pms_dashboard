@@ -36,6 +36,11 @@ export async function setInvestorLogin(userId: string, password: string): Promis
   try { await call('fn', { name: 'adminSetLogin', args: { userId, password } }); return true; } catch (e) { throw new Error(friendly((e as Error).message)); }
 }
 
+/** Super Admin: change a CRM login (email, name, password) or remove it. */
+export async function crmLogin(a: { userId: string; email?: string; full_name?: string; password?: string; remove?: boolean }): Promise<boolean> {
+  try { await call('fn', { name: 'adminCrmLogin', args: { ...a } }); return true; } catch (e) { throw new Error(friendly((e as Error).message)); }
+}
+
 export interface NewIB { full_name?: string; phone: string; password: string; email?: string; city?: string; branch_id?: string | null; person_id?: string }
 /** Creates an IB login (phone number + password), or gives an existing person an IB login. */
 export async function createIbLogin(u: NewIB): Promise<{ id: string; code: string }> {

@@ -1842,24 +1842,33 @@ export async function adminSetLogin(userId: string, pw: string) {
   p.has_login = true; p.updated_at = nowIso();
   audit('user.password_reset', 'profile', userId, p.code || '', 'Password set by administrator', null, null); persist('profiles', 'audit_logs');
 }
-/** The CRM login (read only), set in Vercel with PMS_CRM_EMAIL and PMS_CRM_PASSWORD: created if missing, and its password
- *  follows the setting. A full Super Admin with the same email is never turned into a CRM. Returns true when it changed. */
-export async function ensureCrmLogin(email: string, pw: string, name: string): Promise<boolean> {
-  const e = email.trim().toLowerCase();
-  if (!e || !pw) return false;
-  const u = S.users.find(x => x.email === e);
-  if (!u) {
-    const id = uuid(), code = 'CRM-' + nextSeq('crm', 1);
-    S.users.push({ id, email: e, pw: await hash(pw) });
-    const pr = profileRow(id, e, name || 'CRM', code, 'super_admin', 'verified'); pr.read_only = true;
-    T('profiles').push(pr); persist('profiles');
-    return true;
+/** Super Admin: change a CRM login's email and/or password, or remove the CRM login. */
+export async function adminCrmLogin(a: Row): Promise<null> {
+  requireAdmin();
+  const p = T('profiles').find(x => x.id === String(a.userId) && x.role === 'super_admin' && x.read_only) || fail('CRM login not found.');
+  const u = S.users.find(x => x.id === p.id) || fail('CRM login not found.');
+  if (a.remove) {
+    S.users = S.users.filter(x => x.id !== p.id);
+    S.tables.profiles = T('profiles').filter(x => x.id !== p.id);
+    S.tables.notifications = T('notifications').filter(n => n.user_id !== p.id);
+    audit('crm.delete', 'profile', p.id, p.code, 'CRM login removed', { email: u.email }, null); persist('profiles', 'audit_logs');
+    return null;
   }
-  const p = T('profiles').find(x => x.id === u.id);
-  if (!p || !p.read_only) return false;
-  if (await verify(pw, u.pw)) return false;
-  u.pw = await hash(pw);
-  return true;
+  const before = { email: u.email, full_name: p.full_name };
+  if (!blank(a.email)) {
+    const e = String(a.email).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) fail('Enter a valid email address.');
+    if (S.users.some(x => x.email === e && x.id !== p.id)) fail('Another login already uses this email.');
+    u.email = e; p.email = e;
+  }
+  if (!blank(a.full_name)) p.full_name = String(a.full_name).trim();
+  if (!blank(a.password)) {
+    if (String(a.password).length < 10) fail('The password must be at least 10 characters.');
+    u.pw = await hash(String(a.password));
+  }
+  p.updated_at = nowIso();
+  audit('crm.update', 'profile', p.id, p.code, blank(a.password) ? 'CRM login changed' : 'CRM login changed (new password)', before, { email: u.email, full_name: p.full_name }); persist('profiles', 'audit_logs');
+  return null;
 }
 export async function checkLogin(email: string, pw: string): Promise<string | null> {
   // an IB signs in with the phone number the Super Admin registered

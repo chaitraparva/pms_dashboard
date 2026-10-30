@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useAuth, useSettings } from '../lib/auth';
-import { createUser } from '../lib/adminApi';
+import { createUser, crmLogin } from '../lib/adminApi';
 import { uploadLogo } from '../lib/docs';
 import { date, dateTime, initials, money, monthlyReturn } from '../lib/format';
 import type { Profile, Settings as SettingsRow, AuditLog } from '../lib/types';
@@ -239,7 +239,7 @@ type Lite = Pick<Profile, 'id' | 'full_name' | 'email' | 'code' | 'account_statu
 
 function Admins() {
   const { profile: me } = useAuth();
-  const [dlg, setDlg] = useState<null | 'add' | 'promote' | { demote: Lite }>(null);
+  const [dlg, setDlg] = useState<null | 'add' | 'crm' | 'promote' | { demote: Lite } | { crm: Lite }>(null);
   const q = useQuery(async () => {
     const admins = must(await api.from('profiles').select('id,full_name,email,code,account_status,created_at,role,kyc_status,read_only').eq('role', 'super_admin').order('created_at')) as Lite[];
     return admins;
@@ -249,7 +249,8 @@ function Admins() {
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <p className="hint" style={{ flex: 1, minWidth: 220 }}>Super Admins can see every investor and approve money movements. You cannot change your own role.</p>
         <button className="btn" onClick={() => setDlg('promote')}>Promote an investor</button>
-        <button className="btn accent" onClick={() => setDlg('add')}><Icon name="plus" />Add administrator or CRM</button>
+        <button className="btn" onClick={() => setDlg('add')}><Icon name="plus" />Add Super Admin</button>
+        <button className="btn accent" onClick={() => setDlg('crm')}><Icon name="plus" />Add CRM login</button>
       </div>
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading rows={2} /> : (
         <div className="list">
@@ -259,26 +260,60 @@ function Admins() {
               <div className="grow"><b>{a.full_name || a.email}{a.id === me?.id ? ' (you)' : ''}</b><span>{a.code} · {a.email} · since {date(a.created_at)}</span></div>
               <AcctBadge s={a.account_status} />
               {a.read_only ? <Badge cls="b-grey">CRM · read only</Badge> : <Badge cls="b-navy">Super Admin</Badge>}
-              {a.id !== me?.id && <button className="btn sm danger" onClick={() => setDlg({ demote: a })}>Remove admin role</button>}
+              {a.read_only ? <button className="btn sm" onClick={() => setDlg({ crm: a })}>Change email / password</button>
+                : a.id !== me?.id && <button className="btn sm danger" onClick={() => setDlg({ demote: a })}>Remove admin role</button>}
             </div>
           ))}
           {q.data.length === 1 && <div><div className="grow"><span>You are the only administrator. Four-eyes approvals take effect once a second Super Admin is added.</span></div></div>}
         </div>
       )}
       {dlg === 'add' && <AddAdmin onClose={() => setDlg(null)} />}
+      {dlg === 'crm' && <AddAdmin crm onClose={() => setDlg(null)} />}
+      {dlg && typeof dlg === 'object' && 'crm' in dlg && <CrmDialog who={dlg.crm} onClose={() => setDlg(null)} />}
       {dlg === 'promote' && <Promote onClose={() => setDlg(null)} />}
-      {dlg && typeof dlg === 'object' && <RoleDialog who={dlg.demote} to="investor" onClose={() => setDlg(null)} />}
+      {dlg && typeof dlg === 'object' && 'demote' in dlg && <RoleDialog who={dlg.demote} to="investor" onClose={() => setDlg(null)} />}
     </div>
   );
 }
 
-function AddAdmin({ onClose }: { onClose: () => void }) {
+/** Super Admin: change a CRM login's email, name or password, or remove it. */
+function CrmDialog({ who, onClose }: { who: Lite; onClose: () => void }) {
+  const act = useAction();
+  const [email, setEmail] = useState(who.email || '');
+  const [name, setName] = useState(who.full_name || '');
+  const [pw, setPw] = useState('');
+  const [sure, setSure] = useState(false);
+  const err = !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ? 'Enter a valid email address.' : pw && pw.length < 10 ? 'The password must be at least 10 characters.' : null;
+  const save = async () => {
+    if (err) return;
+    const r = await act.run(() => crmLogin({ userId: who.id, email: email.trim(), full_name: name.trim(), password: pw || undefined }), ['CRM login updated', pw ? 'Share the new password with them.' : email.trim()]);
+    if (r) { refreshAll(); onClose(); }
+  };
+  const remove = async () => {
+    const r = await act.run(() => crmLogin({ userId: who.id, remove: true }), ['CRM login removed', who.email]);
+    if (r) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`CRM login · ${who.full_name || who.email}`} sub="The CRM signs in with this email and password (CRM button on the sign-in page). Read only for all data." onClose={onClose}
+      foot={<>{sure ? <button className="btn danger" onClick={remove} disabled={act.busy}>Yes, remove this CRM login</button> : <button className="btn ghost" onClick={() => setSure(true)}>Remove CRM login…</button>}
+        <button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={save} disabled={act.busy || !!err}>Save</button></>}>
+      <div className="form">
+        <Field label="Name"><input className="input" value={name} onChange={e => setName(e.target.value)} /></Field>
+        <Field label="Email (Gmail) *"><input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field>
+        <Field label="New password" hint="Leave empty to keep the current password. At least 10 characters."><input className="input mono" value={pw} onChange={e => setPw(e.target.value)} autoComplete="new-password" /></Field>
+        {err && <p className="hint" style={{ color: 'var(--red)' }}>{err}</p>}
+      </div>
+    </Modal>
+  );
+}
+
+function AddAdmin({ onClose, crm = false }: { onClose: () => void; crm?: boolean }) {
   const act = useAction();
   const [mode, setMode] = useState<'invite' | 'password'>('password');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
-  const [viewOnly, setViewOnly] = useState(false);
+  const [viewOnly, setViewOnly] = useState(crm);
   const [tried, setTried] = useState(false);
   const errs = { name: !name.trim() ? 'Enter a name.' : null, email: !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ? 'Enter a valid email address.' : null, pw: mode === 'password' && pw.length < 10 ? 'Use at least 10 characters.' : null };
   const go = async () => {
@@ -288,7 +323,7 @@ function AddAdmin({ onClose }: { onClose: () => void }) {
     if (r) { refreshAll(); onClose(); }
   };
   return (
-    <Drawer title="Add administrator or CRM" sub="Creates a new login: Super Admin (full access) or CRM (read only)." onClose={onClose}
+    <Drawer title={crm ? 'Add CRM login' : 'Add administrator or CRM'} sub={crm ? 'Set the CRM’s email (Gmail) and password. They sign in with the CRM button and can only view: everything is read only.' : 'Creates a new login: Super Admin (full access) or CRM (read only).'} onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{mode === 'invite' ? 'Create and send invite' : 'Create administrator'}</button></>}>
       <div className="form">
         <div className="field">
