@@ -22,7 +22,7 @@ const PersonStatus = ({ p }: { p: NetInvestor }) => p.account_status !== 'active
   : p.kyc_status === 'verified' ? <Badge cls="b-green">Verified</Badge> : p.kyc_status === 'rejected' ? <Badge cls="b-red">Not verified</Badge> : <Badge cls="b-amber">Awaiting verification</Badge>;
 
 const livePrincipal = (p: NetInvestor) => p.investments.filter(i => LIVE.includes(i.status)).reduce((s, i) => s + i.principal, 0);
-const monthlyBonus = (invs: NetInvestment[]) => r2(invs.filter(i => i.status === 'active').reduce((s, i) => s + i.bonus_monthly, 0));
+const monthlyBonus = (invs: NetInvestment[]) => r2(invs.filter(i => ['active', 'matured', 'redemption_requested', 'redemption_processing'].includes(i.status)).reduce((s, i) => s + i.bonus_monthly, 0));
 const earned = (invs: NetInvestment[]) => r2(invs.reduce((s, i) => s + i.bonus_earned, 0));
 const earnedPaid = (invs: NetInvestment[]) => r2(invs.reduce((s, i) => s + i.bonus_paid, 0));
 
@@ -58,7 +58,7 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
       <div className="kpis k4">
         <Kpi label="My sub-investors" value={d.investors.length} sub={`${d.investors.filter(p => p.investments.some(i => LIVE.includes(i.status))).length} with live investments`} />
         <Kpi label="Their total investment" value={money(d.investors.reduce((s, p) => s + livePrincipal(p), 0))} sub={`${allInv.filter(i => LIVE.includes(i.status)).length} live investments`} />
-        <Kpi label="My bonus per month" value={money(monthlyBonus(allInv))} sub="from active investments" />
+        <Kpi label="My bonus per month" value={money(monthlyBonus(allInv))} sub="from live investments" />
         <Kpi label="Bonus received" cls="pos" value={money(paid)} sub={unpaid ? `${money(unpaid)} still to be paid` : 'nothing pending'} />
       </div>
 

@@ -158,6 +158,8 @@ interface DetailData {
   introducer: AdminLite | null; brought: Profile[]; bonus: { earned: number; paid: number };
   /** the running month so far (day by day, Pending until the month ends) */
   running: { roi: number; bonus: number; from: string | null; to: string | null };
+  /** as an IB: the bonus this person earns every month from the people under them, and this month so far */
+  ib: { monthly: number; running: number; subs: number };
 }
 
 async function loadDetail(code: string): Promise<DetailData | null> {
@@ -183,9 +185,15 @@ async function loadDetail(code: string): Promise<DetailData | null> {
   ]);
   const run = await rpc<{ roi: number; bonus: number; from: string; to: string }[]>('running_month', { p_investor: p.id }).catch(() => []);
   const running = { roi: Math.round(run.reduce((x, r) => x + Number(r.roi), 0) * 100) / 100, bonus: Math.round(run.reduce((x, r) => x + Number(r.bonus), 0) * 100) / 100, from: run[0]?.from || null, to: run[0]?.to || null };
+  // as an IB: monthly bonus now from the live investments of the people under them, and the running month so far
+  const subIds = brought.map(b => b.id);
+  const subInvs = subIds.length ? await fetchAll<Investment>((a, b) => api.from('investments').select('*').in('investor_id', subIds).range(a, b)) : [];
+  const ibRun = subIds.length ? await rpc<{ bonus: number }[]>('running_month', { p_ib: p.id }).catch(() => []) : [];
+  const ib = { monthly: Math.round(subInvs.filter(i => LIVE.includes(i.status)).reduce((x, i) => x + Number(i.admin_bonus || 0), 0) * 100) / 100,
+    running: Math.round(ibRun.reduce((x, r) => x + Number(r.bonus), 0) * 100) / 100, subs: subIds.length };
   const tot = (f: (x: { status: string }) => boolean) => Math.round(bon.filter(f).reduce((x, y) => x + Number(y.amount), 0) * 100) / 100;
   return { p, invs, bal: new Map(bal.map(b => [b.investment_id, b])), history: must(history) as AuditLog[], ledger: must(ledger) as LedgerEntry[], payouts: must(pays) as Payout[], docs: must(docs) as DocumentRow[], invCode, branches, admins,
-    introducer: (must(intro) as AdminLite | null) || null, brought, running, bonus: { earned: tot(x => x.status !== 'cancelled'), paid: tot(x => x.status === 'paid') } };
+    introducer: (must(intro) as AdminLite | null) || null, brought, running, ib, bonus: { earned: tot(x => x.status !== 'cancelled'), paid: tot(x => x.status === 'paid') } };
 }
 
 type Dialog = null | 'introduce' | 'kyc-verified' | 'kyc-rejected' | 'status' | 'edit' | 'upload' | 'branch' | 'password' | 'delete' | { del: DocumentRow };
@@ -205,7 +213,7 @@ export function InvestorDetail() {
     <><PageHead crumbs={['Investors', 'Not found']} title="Investor not found" />
       <Empty title="Investor not found">No investor has the code {code}. <Link to="/admin/investors">Back to investors</Link></Empty></>
   );
-  const { p, invs, bal, history, ledger, payouts, docs, invCode, branches, introducer, brought, bonus, running } = q.data;
+  const { p, invs, bal, history, ledger, payouts, docs, invCode, branches, introducer, brought, bonus, running, ib } = q.data;
   const live = invs.filter(i => LIVE.includes(i.status));
   const principal = live.reduce((x, i) => x + Number(i.principal), 0);
   // every month across the live investments: the investor's ROI, and the IB bonus paid on top to the IB
@@ -257,7 +265,12 @@ export function InvestorDetail() {
       <div className="kpis">
         <Kpi label="Principal" value={money(principal)} sub={`${live.length} investment${live.length === 1 ? '' : 's'}`} />
         <Kpi label="Total monthly ROI" value={money(monthlyRoi)} sub={`/ month to ${p.full_name || 'the investor'}`} />
-        <Kpi label="Total IB bonus" value={monthlyBonus > 0 ? money(monthlyBonus) : 'None'} sub={monthlyBonus > 0 ? `/ month to ${introducer?.full_name || 'the IB'}, on top of the ROI` : introducer ? `Under ${introducer.full_name || 'an IB'} · no bonus set` : 'Not under an IB'} />
+        {(ib.subs > 0 || bonus.earned > 0) && <>
+          {/* this person is an IB: the bonus they earn from the people under them */}
+          <Kpi label="IB bonus per month" value={money(ib.monthly)} cls="pos" sub={`from ${ib.subs} ${ib.subs === 1 ? 'person' : 'people'} under ${p.full_name || 'them'}${ib.running > 0 ? ` · this month so far ${money(ib.running)} (pending)` : ''}`} />
+          <Kpi label="IB bonus earned" value={money(bonus.earned)} sub={`${money(bonus.paid)} paid${bonus.earned - bonus.paid > 0.005 ? ` · ${money(bonus.earned - bonus.paid)} pending` : ''}`} subCls={bonus.earned - bonus.paid > 0.005 ? 'warn' : ''} />
+        </>}
+        {(introducer || !(ib.subs > 0 || bonus.earned > 0)) && <Kpi label={introducer ? 'Bonus to their IB' : 'Total IB bonus'} value={monthlyBonus > 0 ? money(monthlyBonus) : 'None'} sub={monthlyBonus > 0 ? `/ month to ${introducer?.full_name || 'the IB'}, on top of the ROI` : introducer ? `Under ${introducer.full_name || 'an IB'} · no bonus set` : 'Not under an IB'} />}
         <Kpi label="Returns paid" value={money(paid)} cls="pos" sub="Confirmed with bank reference" />
         <Kpi label="This month so far" value={money(running.roi)} sub={running.from ? `Pending · ${date(running.from)} – ${date(running.to)}${running.bonus > 0 ? ` · IB bonus ${money(running.bonus)}` : ''}` : 'Pending'} subCls="warn" />
       </div>

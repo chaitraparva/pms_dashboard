@@ -29,7 +29,15 @@ export function Overview() {
     // the running month so far: own returns, and (for an IB) the bonus on the people under them
     const run = await rpc<{ investor_id: string; roi: number; bonus: number; from: string; to: string }[]>('running_month').catch(() => []);
     const running = { roi: run.reduce((x, r) => x + Number(r.roi), 0), bonus: run.reduce((x, r) => x + Number(r.bonus), 0), from: run[0]?.from || null, to: run[0]?.to || null };
-    return { p, myRank, running, anns: must(ann) as Pick<Announcement, 'id' | 'code' | 'title' | 'category' | 'published_at'>[], bros, props };
+    // an IB: the bonus they get every month from the people under them, and what has been paid to them so far
+    const net = await rpc<{ investors: { investments: { status: string; bonus_monthly: number }[] }[]; bonuses: { amount: number; status: string }[] } | null>('my_network').catch(() => null);
+    const LIVE_ST = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
+    const ibBonus = net && net.investors.length ? {
+      monthly: net.investors.reduce((x, p) => x + p.investments.filter(i => LIVE_ST.includes(i.status)).reduce((y, i) => y + Number(i.bonus_monthly), 0), 0),
+      paid: net.bonuses.filter(b => b.status === 'paid').reduce((x, b) => x + Number(b.amount), 0),
+      pending: net.bonuses.filter(b => b.status === 'accrued').reduce((x, b) => x + Number(b.amount), 0),
+      people: net.investors.length } : null;
+    return { p, myRank, running, ibBonus, anns: must(ann) as Pick<Announcement, 'id' | 'code' | 'title' | 'category' | 'published_at'>[], bros, props };
   }, [id]);
 
   const first = (profile!.full_name || '').trim().split(/\s+/)[0] || 'there';
@@ -38,7 +46,7 @@ export function Overview() {
   if (q.loading && !q.data) return <><PageHead crumbs={['Overview']} title={`Welcome back, ${first}`} /><Loading /></>;
   if (q.error || !q.data) return <><PageHead crumbs={['Overview']} title={`Welcome back, ${first}`} /><ErrorNote msg={q.error || 'Could not load your portfolio.'} retry={q.reload} /></>;
 
-  const { p, myRank, anns, bros, props, running } = q.data;
+  const { p, myRank, anns, bros, props, running, ibBonus } = q.data;
   const inv = p.investments;
   const live = inv.filter(isLive);
   const principal = live.reduce((s, i) => s + Number(i.principal), 0);
@@ -47,6 +55,7 @@ export function Overview() {
   const locked = principal - unlocked;
   const totalReturns = inv.reduce((s, i) => s + Number(bal(p, i.id).accrued), 0);
   const paid = inv.reduce((s, i) => s + Number(bal(p, i.id).paid), 0);
+  const monthlyRoi = live.reduce((s, i) => s + Number(i.monthly_return || 0), 0);
   const siteUrl = settings?.property_site_url || 'https://parvarealty.ae/';
   const showProps = unlocked > 0 || settings?.show_properties_to !== 'unlocked';
   // published brochures and announcements together, newest first
@@ -89,17 +98,18 @@ export function Overview() {
           </div>
 
           <div className="kpis k4">
-            <Kpi label="Total principal invested" value={moneyShort(principal)} sub={`${live.length} live investment${live.length === 1 ? '' : 's'} · view details`} onClick={() => nav('/portal/investments')}
-              tip="The amount you invested in investments that are live today. It does not include returns." />
-            <Kpi label="Unlocked principal" value={moneyShort(unlocked)} cls={unlocked ? 'pos' : ''} sub={`${unlockedInv.length} investment${unlockedInv.length === 1 ? '' : 's'} past lock-in`} onClick={() => nav('/portal/investments?view=unlocked')}
-              tip="Principal of investments whose lock-in period has ended. It is a status only: it is not a return and is not paid out or reinvested automatically." />
-            <Kpi label="Locked principal" value={moneyShort(locked)} sub={nextMat ? `Next unlocks ${date(nextMat.lockin_end_date)}` : 'Nothing in lock-in'} onClick={() => nav('/portal/investments?view=locked')}
-              tip="Principal of investments still inside their 6-month or 1-year lock-in." />
-            <Kpi label="Total returns" value={moneyShort(totalReturns)} sub={`${moneyShort(paid)} received`} onClick={() => nav('/portal/returns')}
-              tip="All monthly returns earned so far (accrued), whether paid or not. Open to see every month." />
+            <Kpi label="Total invested" value={money(principal)} sub={`${live.length} investment${live.length === 1 ? '' : 's'} · view details`} onClick={() => nav('/portal/investments')}
+              tip="The money you have invested in your live investments." />
+            <Kpi label="Monthly ROI" value={money(monthlyRoi)} sub="you get every month" onClick={() => nav('/portal/investments')}
+              tip="Your return every month from all your live investments." />
+            <Kpi label="Total ROI paid" cls="pos" value={money(paid)} sub={totalReturns - paid > 0.005 ? `${money(totalReturns - paid)} earned, not yet paid` : 'All earned ROI is paid'} onClick={() => nav('/portal/returns')}
+              tip="All monthly returns paid to you so far. Open to see every month." />
             <Kpi label="This month so far" value={money(running.roi)} sub={`Pending${running.from ? ' · ' + dateShort(running.from) + ' – ' + dateShort(running.to!) : ''} · grows every day`} subCls="warn"
               tip="This month's return, calculated day by day up to today. It is added to your returns when the month ends and paid after that." />
-            {running.bonus > 0 && <Kpi label="IB bonus this month so far" value={money(running.bonus)} sub="Pending · on the people under you" subCls="warn" />}
+            {ibBonus && <>
+              <Kpi label="IB bonus per month" cls="pos" value={money(ibBonus.monthly)} sub={`from ${ibBonus.people} ${ibBonus.people === 1 ? 'person' : 'people'} under you${running.bonus > 0 ? ` · this month so far ${money(running.bonus)}` : ''}`} onClick={() => nav('/portal/network')} />
+              <Kpi label="IB bonus received" value={money(ibBonus.paid)} sub={ibBonus.pending > 0.005 ? `${money(ibBonus.pending)} earned, not yet paid` : 'All earned bonus is paid'} onClick={() => nav('/portal/network')} />
+            </>}
           </div>
 
           {myRank && <YourRank r={myRank} />}

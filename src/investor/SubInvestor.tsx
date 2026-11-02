@@ -45,7 +45,7 @@ export function SubInvestor() {
   const principal = r2(live.reduce((s, i) => s + i.principal, 0));
   const accrued = r2(d.investments.reduce((s, i) => s + i.accrued, 0));
   const paid = r2(d.investments.reduce((s, i) => s + i.paid, 0));
-  const bonusMonthly = r2(live.filter(i => i.status === 'active').reduce((s, i) => s + i.bonus_monthly, 0));
+  const bonusMonthly = r2(live.filter(i => ['active', 'matured', 'redemption_requested', 'redemption_processing'].includes(i.status)).reduce((s, i) => s + i.bonus_monthly, 0));
   const bonusEarned = r2(d.bonuses.reduce((s, b) => s + b.amount, 0));
   const bonusPaid = r2(d.bonuses.filter(b => b.status === 'paid').reduce((s, b) => s + b.amount, 0));
 

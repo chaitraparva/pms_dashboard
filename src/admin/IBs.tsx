@@ -33,7 +33,7 @@ async function load() {
       ...p, branch: p.branch_id ? bn.get(p.branch_id) || '' : '', people: under.length,
       peoplePrincipal: theirs.reduce((s, i) => s + Number(i.principal), 0),
       own: live.filter(i => i.investor_id === p.id).reduce((s, i) => s + Number(i.principal), 0),
-      monthly: r2(theirs.filter(i => i.status === 'active').reduce((s, i) => s + Number(i.admin_bonus || 0), 0)),
+      monthly: r2(theirs.filter(i => ['active', 'matured', 'redemption_requested', 'redemption_processing'].includes(i.status)).reduce((s, i) => s + Number(i.admin_bonus || 0), 0)),
       earned: r2(mine.reduce((s, b) => s + Number(b.amount), 0)), paid: r2(mine.filter(b => b.status === 'paid').reduce((s, b) => s + Number(b.amount), 0))
     };
   }).sort((a, b) => a.full_name.localeCompare(b.full_name));

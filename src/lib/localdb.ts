@@ -478,11 +478,12 @@ function dashboard(branch: string | null, pFrom: string | null, pTo: string | nu
 
 /* ---------- monthly bills: closed months (accrued and billed) and the running month (day by day) ---------- */
 /** Running-month figures for the investments the signed-in user may see (Super Admin: all, or one investor). */
-function runningList(investorId: string | null) {
+function runningList(investorId: string | null, ibId: string | null = null) {
   const u = me() || fail('Not signed in.');
   const admin = isAdmin();
   const mine = (i: Row) => admin ? (!investorId || i.investor_id === investorId) : (i.investor_id === u.id || isMySub(i.investor_id)) && (!investorId || i.investor_id === investorId);
-  return T('investments').filter(mine).map(i => {
+  const underIb = (i: Row) => !ibId || T('profiles').find(p => p.id === i.investor_id)?.introduced_by === ibId;
+  return T('investments').filter(i => mine(i) && underIb(i)).map(i => {
     const r = runningMonth(i); if (!r) return null;
     const ib = T('profiles').find(p => p.id === i.investor_id)?.introduced_by || null;
     // an IB sees the bonus of their sub-investors; the investor sees their own return
@@ -631,7 +632,7 @@ export function rpcCall(fn: string, a: Row): unknown {
       return planWithdrawal(u, Number(a.p_amount) || 0, isAdmin() && !blank(a.p_date) ? String(a.p_date) : undefined).map(p => (isAdmin() ? p : { ...p, plan_rate: undefined }));
     }
     case 'my_account': return myAccount();
-    case 'running_month': return runningList(a.p_investor ? String(a.p_investor) : null);
+    case 'running_month': return runningList(a.p_investor ? String(a.p_investor) : null, a.p_ib ? String(a.p_ib) : null);
     case 'monthly_bill': requireAdmin(); return monthlyBill(String(a.p_month || today().slice(0, 7)));
     case 'my_sub_investor': return mySubInvestor(String(a.p_id || ''));
     case 'request_investment': { const id = requestInvestment(a); touched('investment_requests', 'notifications'); return id; }
@@ -2010,7 +2011,19 @@ function parvaProperties(by: string | null): Row[] {
 export function attach(store: Store) { S = store; TABLES.forEach(t => { S.tables[t] ||= []; }); }
 export const current = () => S;
 /** Monthly returns that have fallen due since the last request. */
-export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); runAllAccruals(); paidPast(); } finally { currentUid = prev; } }
+export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); runAllAccruals(); paidPast(); bonusOwners(); } finally { currentUid = prev; } }
+/** IB bonuses recorded while the person was not yet placed under their IB (or before the IB was known) belong to the IB the
+ *  person is under now: they are given to that IB, so every IB sees all the bonus on the people under them. */
+function bonusOwners() {
+  const by = new Map(T('profiles').map(p => [p.id, p]));
+  let n = 0;
+  T('admin_bonuses').forEach(b => {
+    if (b.admin_id || b.status === 'cancelled') return;
+    const ib = by.get(b.investor_id)?.introduced_by; if (!ib || !by.has(ib)) return;
+    b.admin_id = ib; b.updated_at = nowIso(); n++;
+  });
+  if (n) persist('admin_bonuses');
+}
 /** One-time: when returns stopped being limited to the lock-in, every month up to the last ended month (at the time this
  *  ran) was already given to the investors and IBs, so all returns and IB bonuses up to that month's end are marked paid
  *  on that date. Later months follow the normal flow (Pending until paid). Runs only once. */
