@@ -86,7 +86,7 @@ export function Accruals() {
     { h: 'Investment', v: r => r.inv?.code, r: r => r.inv ? <Link className="mono" to={`/admin/investments/${r.inv.code}`}>{r.inv.code}</Link> : '—' },
     { h: 'Investor', v: r => nameOf(r.investor), r: r => r.investor?.code ? <><Link to={`/admin/investors/${r.investor.code}`}>{nameOf(r.investor)}</Link><span className="sub">{r.investor.code}</span></> : nameOf(r.investor) },
     { h: 'Period', v: r => r.period_no, r: r => <>#{r.period_no}<span className="sub">{dateShort(r.period_start)} – {dateShort(r.period_end)}{r.kind === 'stub' ? ` · ${r.days} of ${r.days_in_period} days` : ''}</span></> },
-    { h: 'Accrued on', v: r => r.accrual_date, r: r => date(r.accrual_date) },
+    { h: 'Earned on', v: r => r.accrual_date, r: r => date(r.accrual_date) },
     { h: 'Amount', n: true, v: r => Number(r.amount), r: r => <span className={Number(r.amount) < 0 ? 'neg' : ''}>{money(r.amount)}</span> },
     { h: 'Kind', v: r => r.kind, r: r => <Badge cls={KIND[r.kind][1]}>{KIND[r.kind][0]}</Badge> },
     {
@@ -111,8 +111,8 @@ export function Accruals() {
       {!q.data && !q.error ? <Loading /> : q.data && (
         <>
           <div className="kpis k4">
-            <Kpi label="Accrued this month" value={money(thisMonth.reduce((s, r) => s + Number(r.amount), 0))} sub={`${thisMonth.length} accrual entr${thisMonth.length === 1 ? 'y' : 'ies'}`} />
-            <Kpi label="Accrued to date" value={moneyShort(d?.accrued_total)} sub="Net of reversals" tip="Sum of every accrual entry, including reversing entries. Accrued is not the same as paid." />
+            <Kpi label="Earned this month" value={money(thisMonth.reduce((s, r) => s + Number(r.amount), 0))} sub={`${thisMonth.length} accrual entr${thisMonth.length === 1 ? 'y' : 'ies'}`} />
+            <Kpi label="Earned to date" value={moneyShort(d?.accrued_total)} sub="Net of reversals" tip="Sum of every accrual entry, including reversing entries. Earned is not the same as paid." />
             <Kpi label="Reversed" value={money(d?.reversed_total)} cls={Number(d?.reversed_total) < 0 ? 'neg' : ''} sub={`${reversals.length} reversing entr${reversals.length === 1 ? 'y' : 'ies'}`} />
             <Kpi label="Investments accruing" value={accruing.length} sub={`${money(accruing.reduce((s, i) => s + Number(i.monthly_return), 0))} per month`} tip="Investments inside their lock-in that still earn monthly returns." />
           </div>
@@ -140,13 +140,13 @@ export function Accruals() {
             <dl className="kv">
               <dt>Investor</dt><dd>{nameOf(rev.investor)}</dd>
               <dt>Period</dt><dd>{date(rev.period_start)} – {date(rev.period_end)}</dd>
-              <dt>Accrued on</dt><dd>{date(rev.accrual_date)}</dd>
+              <dt>Earned on</dt><dd>{date(rev.accrual_date)}</dd>
               <dt>Amount</dt><dd>{money(rev.amount)}</dd>
               <dt>Reversing entry</dt><dd className="neg">{money(-rev.amount)}</dd>
               <dt>Payout</dt><dd>{rev.payout ? <PayBadge s={rev.payout.status} /> : '—'}</dd>
             </dl>
             <Field label="Reason (required, saved to audit log)" err={err}>
-              <input className={'input' + (err ? ' bad' : '')} value={reason} onChange={e => { setReason(e.target.value); setErr(null); }} placeholder="e.g. Accrued on wrong start date; corrected per IC-2026-14" />
+              <input className={'input' + (err ? ' bad' : '')} value={reason} onChange={e => { setReason(e.target.value); setErr(null); }} placeholder="e.g. Earned on wrong start date; corrected per IC-2026-14" />
             </Field>
           </div>
         </Modal>
