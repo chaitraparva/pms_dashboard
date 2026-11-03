@@ -260,7 +260,7 @@ function runAccrualsFor(i: Row, asOf: string): number {
     const span = fmtDate(p.start) + ' – ' + fmtDate(end) + (p.full ? '' : ' (' + p.days + ' of ' + p.daysInMonth + ' days)');
     ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_accrual', amount: mineAmt, status: 'posted', occurred_on: end, reference: i.code + ' · ' + MONTH_NAMES[+end.slice(5, 7) - 1] + ' ' + end.slice(0, 4),
       note: 'Monthly return ' + investorRate(i).toFixed(2) + '% on ' + fmtMoney(principalOn(i, p.start)) + ' · ' + span, source_table: 'accruals', source_id: acc.id, created_by: null });
-    if (!closed) notify(i.investor_id, 'accrual', 'Return accrued on ' + i.code + ': ' + fmtMoney(mineAmt), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
+    if (!closed) notify(i.investor_id, 'accrual', 'Return earned on ' + i.code + ': ' + fmtMoney(mineAmt), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
     if (bonusAmt > 0) T('admin_bonuses').push({ id: uuid(), code: 'BON-' + pad(nextSeq('bonus', 1), 6), investment_id: i.id, investor_id: i.investor_id,
       admin_id: T('profiles').find(p2 => p2.id === i.investor_id)?.introduced_by ?? null, accrual_id: acc.id, period_no: k, accrual_date: end, rate: Number(i.admin_bonus_rate),
       amount: bonusAmt, status: closed ? 'paid' : 'accrued', payment_ref: closed ? cl!.ref : null, paid_on: closed ? cl!.on : null, paid_by: null, closed, created_at: nowIso(), updated_at: nowIso() });
@@ -370,7 +370,7 @@ function activateInvestment(id: string, start: string, ref: string, reason: stri
   Object.assign(v, { status: 'active', start_date: start, lockin_end_date: maturity, maturity_date: maturity, request_from_date: addDays(maturity, -settings().request_window_days), deposit_ref: ref, activated_by: currentUid, activated_at: nowIso(), updated_at: nowIso() });
   ledgerFor('investments', id, 'deposit').forEach(l => Object.assign(l, { status: 'confirmed', reference: ref, occurred_on: start, note: 'Deposit confirmed', updated_at: nowIso() }));
   ledger({ investment_id: id, investor_id: v.investor_id, type: 'allocation', amount: v.principal, status: 'posted', occurred_on: start, reference: v.agreement_ref, note: v.plan_name + ' v' + v.plan_version, source_table: 'investments', source_id: id });
-  notify(v.investor_id, 'investment_active', 'Investment ' + v.code + ' is active', fmtMoney(v.principal) + ' at ' + investorRate(v).toFixed(2) + '% per month · matures ' + fmtDate(maturity), '/portal/investments/' + v.code, 'investments', id);
+  notify(v.investor_id, 'investment_active', 'Investment ' + v.code + ' is active', fmtMoney(v.principal) + ' at ' + investorRate(v).toFixed(2) + '% per month · lock-in ends ' + fmtDate(maturity), '/portal/investments/' + v.code, 'investments', id);
   audit('investment.activate', 'investment', id, v.code, reason || 'Deposit confirmed ' + ref, { status: 'pending_funding' }, { status: 'active', start_date: start, maturity_date: maturity });
   runAccrualsFor(v, today());
 }
@@ -1955,7 +1955,7 @@ export async function freshStore(admin: { email: string; name: string; password:
   const email = admin.email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) fail('PMS_ADMIN_EMAIL is not a valid email address.');
   if (String(admin.password || '').length < 10) fail('PMS_ADMIN_PASSWORD must be at least 10 characters.');
-  T('settings').push({ id: 1, company_name: 'Parva Realty', tagline: 'Every investment, return and maturity in one place.', logo_url: null, primary_color: '#0F2147', currency: 'INR', locale: 'en-IN',
+  T('settings').push({ id: 1, company_name: 'Parva Realty', tagline: 'Every investment and return in one place.', logo_url: null, primary_color: '#0F2147', currency: 'INR', locale: 'en-IN',
     timezone: 'Asia/Kolkata', approaching_days: 60, request_window_days: 30, default_payout_lag_days: 3, four_eyes: false, allow_custom_lockin: true, lockin_options: [6, 12],
     default_terms: 'Returns are simple interest on the original principal at the monthly rate in this agreement. Unpaid returns are not added to principal.',
     default_risk_disclosure: 'Investments carry risk, including loss of principal. Contractual rates are not a guarantee of payment.',
@@ -2011,7 +2011,7 @@ function parvaProperties(by: string | null): Row[] {
 export function attach(store: Store) { S = store; TABLES.forEach(t => { S.tables[t] ||= []; }); }
 export const current = () => S;
 /** Monthly returns that have fallen due since the last request. */
-export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); runAllAccruals(); paidPast(); bonusOwners(); } finally { currentUid = prev; } }
+export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); runAllAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
 /** IB bonuses recorded while the person was not yet placed under their IB (or before the IB was known) belong to the IB the
  *  person is under now: they are given to that IB, so every IB sees all the bonus on the people under them. */
 function bonusOwners() {

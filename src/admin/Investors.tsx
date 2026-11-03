@@ -80,13 +80,13 @@ export function Investors() {
     { h: 'Account', v: r => r.account_status, r: r => <AcctBadge s={r.account_status} /> },
     { h: 'Principal', n: true, v: r => r.principal, r: r => money(r.principal) },
     { h: 'Unlocked', n: true, v: r => r.unlocked, r: r => money(r.unlocked) },
-    { h: 'Accrued', n: true, v: r => r.accrued, r: r => money(r.accrued) },
+    { h: 'Earned', n: true, v: r => r.accrued, r: r => money(r.accrued) },
     { h: 'Paid', n: true, v: r => r.paid, r: r => <span className="pos">{money(r.paid)}</span> },
     { h: 'Next unlock', v: r => r.next || '9999', r: r => (r.next ? date(r.next) : <span className="muted">—</span>) }
   ], []);
 
   const exportCsv = () => downloadCsv(`investors-${today()}`,
-    ['Investor ID', 'Name', 'Email', 'Branch', 'Under', 'Phone', 'City', 'Registered', 'KYC', 'Account', 'Principal (live)', 'Unlocked principal', 'Accrued', 'Paid', 'Next unlock'],
+    ['Investor ID', 'Name', 'Email', 'Branch', 'Under', 'Phone', 'City', 'Registered', 'KYC', 'Account', 'Principal (live)', 'Unlocked principal', 'Earned', 'Paid', 'Next unlock'],
     rows.map(r => [r.code, r.full_name, r.email, r.branch, r.introducer, r.phone, r.city, r.created_at.slice(0, 10), r.kyc_status, r.account_status, r.principal, r.unlocked, r.accrued, r.paid, r.next || '']));
 
   return (
@@ -300,7 +300,7 @@ export function InvestorDetail() {
           <div className="tbl">
             {invs.length ? (
               <table>
-                <thead><tr><th>Investment</th><th>Plan</th><th className="n">Principal</th><th>Rate</th><th>Start</th><th>Maturity</th><th className="n">Accrued</th><th className="n">Paid</th><th>Status</th></tr></thead>
+                <thead><tr><th>Investment</th><th>Plan</th><th className="n">Principal</th><th>Rate</th><th>Start</th><th>Lock-in end</th><th className="n">Earned</th><th className="n">Paid</th><th>Status</th></tr></thead>
                 <tbody>{invs.map(i => {
                   const b = bal.get(i.id);
                   return (

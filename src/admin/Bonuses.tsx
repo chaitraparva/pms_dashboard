@@ -70,7 +70,7 @@ export function Bonuses() {
   };
 
   const exportCsv = () => downloadCsv(`ib-bonus-${tab}-${t}`,
-    ['Bonus', 'Paid to', 'Investor ID', 'Investor', 'Investment', 'Plan', 'Principal', 'Period', 'Accrued on', 'Bonus rate', 'Amount', 'Status', 'Reference', 'Paid on'],
+    ['Bonus', 'Paid to', 'Investor ID', 'Investor', 'Investment', 'Plan', 'Principal', 'Period', 'Earned on', 'Bonus rate', 'Amount', 'Status', 'Reference', 'Paid on'],
     rows.map(r => [r.code, r.admin_id ? nameOf(r.admin) : '', r.investor?.code, nameOf(r.investor), r.inv?.code, r.inv?.plan_name, r.inv ? Number(r.inv.principal).toFixed(2) : '', r.period_no, r.accrual_date,
       r.rate, Number(r.amount).toFixed(2), r.status, r.payment_ref, r.paid_on]));
 
@@ -80,7 +80,7 @@ export function Bonuses() {
     { h: 'Investor', v: r => nameOf(r.investor), r: r => r.investor?.code ? <><Link to={`/admin/investors/${r.investor.code}`}>{nameOf(r.investor)}</Link><span className="sub">{r.investor.code}</span></> : nameOf(r.investor) },
     { h: 'Investment', v: r => r.inv?.code, r: r => r.inv ? <><Link className="mono" to={`/admin/investments/${r.inv.code}`}>{r.inv.code}</Link><span className="sub">{money(r.inv.principal)} · {r.inv.plan_name}</span></> : '—' },
     { h: 'Period', v: r => r.period_no, r: r => '#' + r.period_no },
-    { h: 'Accrued', v: r => r.accrual_date, r: r => date(r.accrual_date) },
+    { h: 'Earned', v: r => r.accrual_date, r: r => date(r.accrual_date) },
     { h: 'Rate', v: r => Number(r.rate), r: r => rate(r.rate) },
     { h: 'Amount', n: true, v: r => Number(r.amount), r: r => money(r.amount) },
     { h: 'Reference', v: r => r.payment_ref || '', r: r => r.payment_ref ? <span className="mono">{r.payment_ref}{r.paid_on && <span className="sub">Paid {date(r.paid_on)}</span>}</span> : <span className="muted">—</span> },

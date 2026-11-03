@@ -179,14 +179,14 @@ export function Overview() {
           <div className="grid g-2-1">
             <div className="card">
               <div className="card-h"><h3>Monthly returns</h3>
-                <div className="r legend"><span><i style={{ background: 'var(--green)' }} />Paid</span><span><i style={{ background: 'var(--amber)' }} />Processing / approved</span><span><i style={{ background: 'var(--chart-4)' }} />Accrued</span></div>
+                <div className="r legend"><span><i style={{ background: 'var(--green)' }} />Paid</span><span><i style={{ background: 'var(--amber)' }} />Processing / approved</span><span><i style={{ background: 'var(--chart-4)' }} />Earned</span></div>
               </div>
               <div className="card-b">
                 {p.accruals.length ? (
                   <BarChart labels={months.map(monthLabel)} label="My monthly returns by accrual month" fmt={moneyShort} tipFmt={money} series={[
                     { name: 'Paid', color: 'var(--green)', values: sumBy(['paid']) },
                     { name: 'Processing / approved', color: 'var(--amber)', values: sumBy(['processing', 'approved']) },
-                    { name: 'Accrued', color: 'var(--chart-4)', values: sumBy(['accrued', 'failed']) }
+                    { name: 'Earned', color: 'var(--chart-4)', values: sumBy(['accrued', 'failed']) }
                   ]} />
                 ) : <Empty title="No returns yet">Your first monthly return accrues one month after your start date.</Empty>}
               </div>

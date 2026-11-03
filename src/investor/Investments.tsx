@@ -9,7 +9,7 @@ import { Badge, Empty, ErrorNote, InvBadge, Kpi, LedgerBadge, Loading, PageHead,
 import { DataTable } from '../ui/DataTable';
 import { Icon } from '../ui/Icon';
 import type { Accrual, DocumentRow, Investment, Payout } from '../lib/types';
-import { bal, codeMap, daysLeft, isLive, loadLedger, loadPortfolio, nextAccrual, periodReturn, periodsFor, projectedRemaining, unpaid } from './data';
+import { bal, codeMap, daysLeft, isLive, loadLedger, loadPortfolio, periodReturn, periodsFor, unpaid } from './data';
 import { BackLink, maturityText, Prose, Steps, Tracker, useApproaching } from './parts';
 
 const VIEWS: [string, string][] = [['All', 'all'], ['Unlocked', 'unlocked'], ['Locked', 'locked'], ['Pending funding', 'pending_funding'], ['Closed', 'closed']];
@@ -66,9 +66,9 @@ export function Investments() {
             { h: 'Principal', n: true, v: i => Number(i.principal), r: i => money(i.principal) },
             { h: 'Monthly ROI', v: i => Number(i.monthly_rate), r: i => rateShort(i.monthly_rate) },
             { h: 'Lock-in', v: i => i.lockin_months, r: i => lockinText(i.lockin_months) },
-            { h: 'Maturity date', v: i => i.maturity_date || '', r: i => date(i.maturity_date) },
+            { h: 'Lock-in end date', v: i => i.maturity_date || '', r: i => date(i.maturity_date) },
             { h: 'Days left', n: true, v: i => (i.maturity_date ? daysLeft(i) : null), r: i => (i.maturity_date ? String(daysLeft(i)) : '—') },
-            { h: 'Accrued', n: true, v: i => Number(bal(q.data!, i.id).accrued), r: i => money(bal(q.data!, i.id).accrued) },
+            { h: 'Earned', n: true, v: i => Number(bal(q.data!, i.id).accrued), r: i => money(bal(q.data!, i.id).accrued) },
             { h: 'Paid', n: true, v: i => Number(bal(q.data!, i.id).paid), r: i => <span className="pos">{money(bal(q.data!, i.id).paid)}</span> },
             { h: 'Status', v: i => investmentLabel(i, approaching), r: i => <InvBadge i={i} approachingDays={approaching} /> }
           ]} />
@@ -87,7 +87,7 @@ export function Investments() {
                   <div className="card-b" style={{ display: 'grid', gap: 14 }}>
                     <div><div className="num" style={{ fontSize: 24, fontWeight: 700 }}>{money(i.principal)}</div><div className="hint">{i.plan_name} · {rate(i.monthly_rate)} · {lockinText(i.lockin_months)} lock-in</div></div>
                     <Tracker i={i} compact />
-                    <dl className="kv"><dt>Monthly return</dt><dd>{money(i.monthly_return)}</dd><dt>Accrued</dt><dd>{money(b.accrued)}</dd><dt>Received</dt><dd className="pos">{money(b.paid)}</dd></dl>
+                    <dl className="kv"><dt>Monthly return</dt><dd>{money(i.monthly_return)}</dd><dt>Earned</dt><dd>{money(b.accrued)}</dd><dt>Received</dt><dd className="pos">{money(b.paid)}</dd></dl>
                   </div>
                 </div>
               );
@@ -128,13 +128,13 @@ function schedule(i: Investment, accruals: Accrual[], payouts: Payout[]): Row[] 
   // calendar months: the first and the last (maturity) month are pro-rata by days
   for (const p of periodsFor(i)) {
     const k = p.k;
-    // a month accrued in two parts (a top-up after the lock-in) shows as one month
+    // a month earned in two parts (a top-up after the lock-in) shows as one month
     const parts = mine.filter(a => a.period_no === k && a.kind !== 'reversal');
     const acc = parts[0] || null, amt = parts.reduce((x, a) => x + Number(a.amount), 0), last = parts.map(a => a.period_end).sort().pop();
     rows.push({ k, from: acc ? acc.period_start : p.start, to: acc ? last! : p.end, on: acc ? last! : p.end, amount: acc ? Math.round(amt * 100) / 100 : periodReturn(Number(i.monthly_return), p),
       days: acc ? parts.reduce((x, a) => x + Number(a.days), 0) : p.days, dim: acc ? acc.days_in_period : p.daysInMonth, acc, pay: acc ? payBy[acc.id] || null : null, reversed: acc ? reversedIds.has(acc.id) : false });
   }
-  // periods accrued beyond the schedule shown (e.g. no lock-in) still appear
+  // periods earned beyond the schedule shown (e.g. no lock-in) still appear
   mine.filter(a => a.kind !== 'reversal' && !rows.some(r => r.k === a.period_no)).forEach(acc => rows.push({ k: acc.period_no, from: acc.period_start, to: acc.period_end, on: acc.accrual_date, amount: Number(acc.amount),
     days: acc.days, dim: acc.days_in_period, acc, pay: payBy[acc.id] || null, reversed: reversedIds.has(acc.id) }));
   rows.sort((a, b) => a.k - b.k);
@@ -166,7 +166,6 @@ export function InvestmentDetail() {
   const { p, docs } = q.data;
   const b = bal(p, i.id);
   const rows = schedule(i, p.accruals, p.payouts);
-  const next = nextAccrual(i, b);
   const unlocked = isUnlocked(i);
   const left = daysLeft(i);
   const stub = p.accruals.filter(a => a.investment_id === i.id && a.kind === 'stub');
@@ -180,7 +179,7 @@ export function InvestmentDetail() {
         <p>{money(i.principal)} at {rate(i.monthly_rate)}, simple interest on the original principal</p>
       </PageHead>
 
-      {i.status === 'pending_funding' && <div className="note info"><b>Awaiting funds.</b> This investment becomes active once your deposit is confirmed. Your start date, maturity date and monthly schedule are fixed at that point.</div>}
+      {i.status === 'pending_funding' && <div className="note info"><b>Awaiting funds.</b> This investment becomes active once your deposit is confirmed. Your start date, lock-in end date and monthly schedule are fixed at that point.</div>}
       {i.status === 'cancelled' && <div className="note">This investment was cancelled{i.cancelled_reason ? ': ' + i.cancelled_reason : '.'}</div>}
 
       {i.start_date && (
@@ -201,7 +200,7 @@ export function InvestmentDetail() {
           <div className="grid g-1-1-1" style={{ fontSize: 13 }}>
             <div><div className="hint">Start date</div><b>{date(i.start_date)}</b></div>
             <div><div className="hint">Lock-in period</div><b>{lockinText(i.lockin_months)}</b></div>
-            <div><div className="hint">Maturity date</div><b>{date(i.maturity_date)}</b></div>
+            <div><div className="hint">Lock-in end date</div><b>{date(i.maturity_date)}</b></div>
           </div>
           <Tracker i={i} />
           <Steps i={i} />
@@ -212,8 +211,7 @@ export function InvestmentDetail() {
         <Kpi label="Monthly return" value={money(i.monthly_return)} sub={`${pct(i.monthly_rate)} × ${money(i.principal)}`} />
         <Kpi label="Returns accrued" value={money(b.accrued)} sub={i.lockin_months ? `${b.periods_accrued} of ${rows.length} months` : `${b.periods_accrued} months so far`} />
         <Kpi label="Returns received" value={money(b.paid)} cls="pos" sub="Confirmed payments" />
-        <Kpi label="Accrued, not yet paid" value={money(unpaid(b))} sub={Number(b.processing) ? money(b.processing) + ' processing' : Number(b.approved) ? money(b.approved) + ' approved' : 'Awaiting payout'} subCls="warn" />
-        <Kpi label="Projected remaining" value={money(projectedRemaining(i, b))} sub={next ? `Projected · next accrual ${dateShort(next.date)}` : 'Projected'} subCls="warn" tip="Months not yet accrued at your contract's monthly return. An estimate, not a guarantee." />
+        <Kpi label="Earned, not yet paid" value={money(unpaid(b))} sub={Number(b.processing) ? money(b.processing) + ' processing' : Number(b.approved) ? money(b.approved) + ' approved' : 'Awaiting payout'} subCls="warn" />
       </div>
 
       <div className="grid g-2-1">
@@ -230,7 +228,7 @@ export function InvestmentDetail() {
                       <td>{dateShort(r.from)} – {dateShort(r.to)}{r.days < r.dim && <span className="sub">{r.days} of {r.dim} days (pro-rata)</span>}</td>
                       <td className={'n ' + (r.acc ? '' : 'muted')}>{money(r.amount)}</td>
                       <td>{date(r.on)}</td>
-                      <td>{r.reversed ? <Badge cls="b-grey">Reversed</Badge> : r.pay ? <PayBadge s={r.pay.status} /> : r.acc ? <Badge cls="b-grey">Accrued</Badge>
+                      <td>{r.reversed ? <Badge cls="b-grey">Reversed</Badge> : r.pay ? <PayBadge s={r.pay.status} /> : r.acc ? <Badge cls="b-grey">Earned</Badge>
                         : i.status === 'active' ? <Badge cls="b-violet sq">Scheduled</Badge> : <Badge cls="b-grey">Not accrued</Badge>}{r.acc?.kind === 'stub' && <span className="sub">Pro-rata {r.acc.days}/{r.acc.days_in_period} days</span>}</td>
                       <td className="m">{r.pay?.status === 'paid' ? <>{r.pay.payment_ref}<span className="sub">{date(r.pay.paid_on)}</span></> : r.pay ? <span className="sub">Due {date(r.pay.due_date)}</span> : '—'}</td>
                     </tr>
@@ -257,7 +255,7 @@ export function InvestmentDetail() {
                 <dt>Start date</dt><dd>{date(i.start_date || i.expected_start)}{!i.start_date && i.expected_start ? ' (expected)' : ''}</dd>
                 <dt>Lock-in period</dt><dd>{lockinText(i.lockin_months)}</dd>
                 <dt>Lock-in end</dt><dd>{date(i.lockin_end_date)}</dd>
-                <dt>Maturity date</dt><dd>{date(i.maturity_date)}</dd>
+                <dt>Lock-in end date</dt><dd>{date(i.maturity_date)}</dd>
                 {i.roi_method && <><dt>Monthly ROI paid by</dt><dd>{roiWayText(i.roi_method, i.roi_upi)}</dd></>}
                 <dt>Payout timing</dt><dd>{i.payout_lag_days} day{i.payout_lag_days === 1 ? '' : 's'} after accrual</dd>
                 <dt>Principal status</dt><dd>{i.status === 'redeemed' ? 'Closed' : !i.lockin_end_date ? '—' : unlocked ? 'Unlocked' : 'Locked'}</dd>

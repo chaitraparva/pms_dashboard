@@ -123,7 +123,7 @@ export function Payouts() {
             {tile('accrued', 'Due / accrued')}{tile('approved', 'Approved')}{tile('processing', 'Payment processed')}{tile('paid', 'Payment fulfilled', 'pos')}
           </div>
           <div className="note info">
-            Workflow: <b>Accrued</b> (accrual job) → <b>Approved</b> (admin) → <b>Payment processed</b> (sent to bank) → <b>Payment fulfilled</b> (confirmed with the bank / UTR reference).
+            Workflow: <b>Earned</b> (accrual job) → <b>Approved</b> (admin) → <b>Payment processed</b> (sent to bank) → <b>Payment fulfilled</b> (confirmed with the bank / UTR reference).
             A failed transfer is marked <b>Failed</b> and can be approved again for retry.
             {settings?.four_eyes && <> Four-eyes is on: another Super Admin must confirm payment of a batch you sent to the bank.</>}
           </div>
@@ -208,7 +208,7 @@ function EditPayout({ p, onClose }: { p: Row; onClose: () => void }) {
   const [ref, setRef] = useState(p.payment_ref || p.batch_ref || '');
   const [paidOn, setPaidOn] = useState(p.paid_on || today());
   const [reason, setReason] = useState(p.failure_reason || '');
-  const STATUSES: [PayoutStatus, string][] = [['accrued', 'Accrued'], ['approved', 'Approved'], ['processing', 'Payment processed'], ['paid', 'Payment fulfilled'], ['failed', 'Failed']];
+  const STATUSES: [PayoutStatus, string][] = [['accrued', 'Earned'], ['approved', 'Approved'], ['processing', 'Payment processed'], ['paid', 'Payment fulfilled'], ['failed', 'Failed']];
   const go = async () => {
     const r = await act.run(() => rpc('admin_update_payout', { p_id: p.id, p_status: status, p_ref: ref.trim(), p_paid_on: paidOn, p_reason: reason.trim() }), ['Payout updated', `${p.code} · ${money(p.amount)}`]);
     if (r !== undefined) { refreshAll(); onClose(); }

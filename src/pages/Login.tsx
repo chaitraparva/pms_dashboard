@@ -71,7 +71,7 @@ export function Login() {
       <section className="login-l">
         <div className="brand" style={{ padding: 0 }}><Logo name={company} url={branding?.logo_url} /><div className="brand-txt"><b>{company}</b><small>Portfolio Management System</small></div></div>
         <div style={{ display: 'grid', gap: 14, marginTop: 40, position: 'relative', zIndex: 1 }}>
-          <h1>{branding?.tagline || 'Every investment, return and maturity in one place.'}</h1>
+          <h1>{branding?.tagline || 'Every investment and return in one place.'}</h1>
           <p>Monthly simple-interest plans with contractual lock-ins, transparent accruals and confirmed payouts.</p>
         </div>
         <a className="login-parva" href="https://www.parvarealty.ae/" target="_blank" rel="noopener noreferrer">

@@ -80,7 +80,7 @@ export function Statement() {
             <div className="tbl">
               {rows.length ? (
                 <table>
-                  <thead><tr><th>Investment</th><th>Terms</th><th>Status</th><th className="n">Principal</th><th className="n">Unpaid returns at {date(from)}</th><th className="n">Accrued in period</th><th className="n">Paid in period</th><th className="n">Unpaid returns at {date(to)}</th></tr></thead>
+                  <thead><tr><th>Investment</th><th>Terms</th><th>Status</th><th className="n">Principal</th><th className="n">Unpaid returns at {date(from)}</th><th className="n">Earned in period</th><th className="n">Paid in period</th><th className="n">Unpaid returns at {date(to)}</th></tr></thead>
                   <tbody>
                     {rows.map(r => (
                       <tr key={r.i.id}>
@@ -135,7 +135,7 @@ export function Statement() {
           )}
 
           <div style={{ borderTop: '1px solid var(--line)', paddingTop: 12, display: 'grid', gap: 6 }}>
-            <p className="hint">Returns are simple interest on your original principal at the monthly rate fixed in your agreement. “Unpaid returns” are returns accrued but not yet confirmed as paid; they are not money in your bank account.</p>
+            <p className="hint">Returns are simple interest on your original principal at the monthly rate fixed in your agreement. “Unpaid returns” are returns earned but not yet confirmed as paid; they are not money in your bank account.</p>
             {settings?.legal_footer && <p className="hint" style={{ whiteSpace: 'pre-wrap' }}>{settings.legal_footer}</p>}
           </div>
         </div>

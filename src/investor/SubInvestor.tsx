@@ -26,7 +26,7 @@ interface SubData {
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 const STATUS: Record<string, [string, string]> = {
-  pending_funding: ['Awaiting deposit', 'b-amber'], active: ['Active', 'b-green'], matured: ['Matured', 'b-blue'],
+  pending_funding: ['Awaiting deposit', 'b-amber'], active: ['Active', 'b-green'], matured: ['Unlocked', 'b-blue'],
   redemption_requested: ['Closing', 'b-grey'], redemption_processing: ['Closing', 'b-grey'], redeemed: ['Closed', 'b-grey']
 };
 const InvStatus = ({ s }: { s: string }) => { const [l, c] = STATUS[s] || [s, 'b-grey']; return <Badge cls={c}>{l}</Badge>; };
@@ -43,7 +43,7 @@ export function SubInvestor() {
   const d = q.data, p = d.profile;
   const live = d.investments.filter(i => LIVE.includes(i.status));
   const principal = r2(live.reduce((s, i) => s + i.principal, 0));
-  const accrued = r2(d.investments.reduce((s, i) => s + i.accrued, 0));
+  const earned = r2(d.investments.reduce((s, i) => s + i.accrued, 0));
   const paid = r2(d.investments.reduce((s, i) => s + i.paid, 0));
   const bonusMonthly = r2(live.filter(i => ['active', 'matured', 'redemption_requested', 'redemption_processing'].includes(i.status)).reduce((s, i) => s + i.bonus_monthly, 0));
   const bonusEarned = r2(d.bonuses.reduce((s, b) => s + b.amount, 0));
@@ -72,7 +72,7 @@ export function SubInvestor() {
 
       <div className="kpis">
         <Kpi label="Investment (live)" value={moneyShort(principal)} sub={`${live.length} live investment${live.length === 1 ? '' : 's'}`} />
-        <Kpi label="Their returns" value={moneyShort(accrued)} sub={`${moneyShort(paid)} paid to them`} />
+        <Kpi label="Their returns" value={moneyShort(earned)} sub={`${moneyShort(paid)} paid to them`} />
         <Kpi label="My bonus / month" value={money(bonusMonthly)} sub="from their active investments" />
         <Kpi label="My bonus earned" cls="pos" value={money(bonusEarned)} sub={`${money(bonusPaid)} received`} />
         <Kpi label="Bank account" value={p.bank_account || '—'} sub={p.bank_name || 'not registered'} />

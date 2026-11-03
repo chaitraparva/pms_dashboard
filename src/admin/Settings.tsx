@@ -416,7 +416,7 @@ function AccrualJob() {
         <p style={{ fontSize: 13, color: 'var(--fg-2)' }}>
           Accruals run automatically every hour. On each investment’s monthly anniversary the job posts one accrual of
           principal × rate (for example {money(100000)} at 2% earns {money(monthlyReturn(100000, 2))}), queues its payout and notifies the investor.
-          Each period can be accrued only once, so running it again never creates duplicates. “Today” follows the business time zone ({s.timezone}).
+          Each period can be earned only once, so running it again never creates duplicates. “Today” follows the business time zone ({s.timezone}).
         </p>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn primary" onClick={run} disabled={act.busy}><Icon name="refresh" />{act.busy ? 'Running…' : 'Run accruals now'}</button>

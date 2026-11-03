@@ -352,7 +352,7 @@ export function PlanDetail() {
                 <dt>Minimum investment</dt><dd>{money(cur.min_amount)}</dd>
                 <dt>Maximum investment</dt><dd>{money(cur.max_amount)}</dd>
                 <dt>Lock-in options</dt><dd>{lockins(cur)}</dd>
-                <dt>Maturity convention</dt><dd>Start + lock-in calendar months</dd>
+                <dt>Lock-in end</dt><dd>Start + lock-in calendar months</dd>
                 <dt>Accrual schedule</dt><dd>Monthly on start-date anniversary</dd>
                 <dt>Payout schedule</dt><dd>Within {cur.payout_lag_days} day{cur.payout_lag_days === 1 ? '' : 's'} of accrual</dd>
                 <dt>Eligible to invest</dt><dd>{date(cur.eligible_from)} – {cur.eligible_to ? date(cur.eligible_to) : 'open-ended'}</dd>
@@ -399,7 +399,7 @@ export function PlanDetail() {
         <div className="tbl">
           {invs.length ? (
             <table>
-              <thead><tr><th>Investment</th><th>Investor</th><th>Version</th><th>Contract rate</th><th className="n">Principal</th><th>Start</th><th>Maturity</th><th>Status</th></tr></thead>
+              <thead><tr><th>Investment</th><th>Investor</th><th>Version</th><th>Contract rate</th><th className="n">Principal</th><th>Start</th><th>Lock-in end</th><th>Status</th></tr></thead>
               <tbody>{invs.map(i => (
                 <tr key={i.id} className="click" onClick={() => nav('/admin/investments/' + i.code)}>
                   <td className="m">{i.code}</td><td>{names[i.investor_id] || '—'}</td><td className="m">v{i.plan_version}</td><td>{rate(i.monthly_rate)}</td>

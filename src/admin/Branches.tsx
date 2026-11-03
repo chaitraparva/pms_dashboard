@@ -221,7 +221,7 @@ export function BranchDetail() {
     { h: 'ROI', v: r => r.rates[0] ?? -1, r: r => r.rates.length ? r.rates.map(rateShort).join(', ') : '—' },
     { h: 'Lock-in', v: r => r.lockins[0] ?? -1, r: r => r.lockins.length ? r.lockins.map(m => m === 12 ? '1 year' : m + ' mo').join(', ') : '—' },
     { h: 'Invested on', v: r => r.first || '9999', r: r => date(r.first) },
-    { h: 'Maturity', v: r => r.lastMaturity || '9999', r: r => <>{date(r.lastMaturity)}{r.nextUnlock && r.nextUnlock !== r.lastMaturity && <span className="sub">next unlock {date(r.nextUnlock)}</span>}</> },
+    { h: 'Lock-in end', v: r => r.lastMaturity || '9999', r: r => <>{date(r.lastMaturity)}{r.nextUnlock && r.nextUnlock !== r.lastMaturity && <span className="sub">next unlock {date(r.nextUnlock)}</span>}</> },
     { h: 'Locked', n: true, v: r => r.locked, r: r => money(r.locked) },
     { h: 'Unlocked', n: true, v: r => r.unlocked, r: r => <span className={r.unlocked ? 'pos' : ''}>{money(r.unlocked)}</span> },
     { h: 'Returns accrued', n: true, v: r => r.accrued, r: r => money(r.accrued) },
@@ -235,13 +235,13 @@ export function BranchDetail() {
     { h: 'Principal', n: true, v: r => Number(r.principal), r: r => money(r.principal) },
     { h: 'ROI', v: r => Number(r.monthly_rate), r: r => rateShort(r.monthly_rate) },
     { h: 'Lock-in', v: r => r.lockin_months, r: r => r.lockin_months === 12 ? '1 year' : r.lockin_months + ' months' },
-    { h: 'Maturity', v: r => r.maturity_date || '', r: r => date(r.maturity_date) },
-    { h: 'Accrued', n: true, v: r => Number(r.bal?.accrued || 0), r: r => money(r.bal?.accrued || 0) },
+    { h: 'Lock-in end', v: r => r.maturity_date || '', r: r => date(r.maturity_date) },
+    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => money(r.bal?.accrued || 0) },
     { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{money(r.bal?.paid || 0)}</span> },
     { h: 'Status', v: r => r.status, r: r => <InvBadge i={r} approachingDays={s.approaching_days} /> }
   ];
   const exportCsv = () => downloadCsv(`${branch.code.toLowerCase()}-branch-${t}`,
-    ['Investment', 'Investor', 'Email', 'Investment date', 'Principal', 'Monthly ROI %', 'Lock-in months', 'Maturity', 'Locked / unlocked', 'Accrued', 'Paid', 'Status'],
+    ['Investment', 'Investor', 'Email', 'Investment date', 'Principal', 'Monthly ROI %', 'Lock-in months', 'Lock-in end', 'Locked / unlocked', 'Earned', 'Paid', 'Status'],
     lines.map(l => [l.code, l.who?.full_name, l.who?.email, l.start_date || l.expected_start, Number(l.principal).toFixed(2), l.monthly_rate, l.lockin_months, l.maturity_date,
       LIVE.includes(l.status) ? (isUnlocked(l, t) ? 'Unlocked' : 'Locked') : '', Number(l.bal?.accrued || 0).toFixed(2), Number(l.bal?.paid || 0).toFixed(2), l.status]));
 

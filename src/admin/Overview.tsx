@@ -80,7 +80,7 @@ export function Overview() {
     const bm = new Map(bal.map(x => [x.investment_id, x]));
     const pm = new Map(people.map(x => [x.id, x]));
     downloadCsv(`live-investments-${today()}`,
-      ['Investment', 'Investor ID', 'Investor', 'Plan', 'Version', 'Rate %/month', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Maturity', 'Accrued', 'Paid', 'Outstanding', 'Status', 'Agreement ref'],
+      ['Investment', 'Investor ID', 'Investor', 'Plan', 'Version', 'Rate %/month', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Lock-in end', 'Earned', 'Paid', 'Outstanding', 'Status', 'Agreement ref'],
       rows.map(i => {
         const b = bm.get(i.id); const p = pm.get(i.investor_id);
         return [i.code, p?.code || '', p?.full_name || '', i.plan_name, i.plan_version, i.monthly_rate, i.principal, i.monthly_return, i.lockin_months, i.start_date, i.maturity_date,
@@ -123,7 +123,7 @@ export function Overview() {
   if (cnt('failed')) actions.push({ tag: 'Payouts', cls: 'b-red', text: `${cnt('failed')} failed payout${cnt('failed') === 1 ? '' : 's'} need a retry · ${money(amt('failed'))}`, to: '/admin/payouts' });
   if (cnt('processing')) actions.push({ tag: 'Payouts', text: `${cnt('processing')} payout${cnt('processing') === 1 ? '' : 's'} waiting for payment confirmation · ${money(amt('processing'))}`, to: '/admin/payouts' });
   if (cnt('approved')) actions.push({ tag: 'Payouts', text: `${cnt('approved')} approved payout${cnt('approved') === 1 ? '' : 's'} waiting to be sent · ${money(amt('approved'))}`, to: '/admin/payouts' });
-  if (cnt('accrued')) actions.push({ tag: 'Payouts', cls: 'b-grey', text: `${cnt('accrued')} accrued return${cnt('accrued') === 1 ? '' : 's'} awaiting approval · ${money(amt('accrued'))}`, to: '/admin/payouts' });
+  if (cnt('accrued')) actions.push({ tag: 'Payouts', cls: 'b-grey', text: `${cnt('accrued')} earned return${cnt('accrued') === 1 ? '' : 's'} awaiting approval · ${money(amt('accrued'))}`, to: '/admin/payouts' });
   if (d.unassigned_investors && !branch) actions.push({ tag: 'Branch', text: `${d.unassigned_investors} investor${d.unassigned_investors === 1 ? '' : 's'} without a branch · ${money(d.unassigned_principal)} principal`, to: '/admin/investors?branch=none' });
   pendRows.forEach(i => actions.push({ tag: 'Funding', text: `${i.code} awaiting deposit confirmation · ${names[i.investor_id]?.full_name || ''} · ${money(i.principal)}`, to: '/admin/investments/' + i.code }));
   kycRows.forEach(p => actions.push({ tag: 'KYC', text: `${p.full_name || p.code} awaiting verification`, to: '/admin/investors/' + p.code }));
@@ -181,7 +181,7 @@ export function Overview() {
         <Kpi label="Total principal invested" value={moneyShort(d.principal_invested)} sub={`${d.live_investments} live investments`} onClick={() => nav('/admin/investments' + (branchRow ? '?branch=' + branchRow.code : ''))} tip="Sum of principal on live investments. This is investor money, not company revenue." />
         <Kpi label="Unlocked principal" value={moneyShort(d.unlocked_principal)} cls={Number(d.unlocked_principal) ? 'pos' : ''} sub={`${d.unlocked_count} investment${d.unlocked_count === 1 ? '' : 's'} past lock-in`} onClick={() => nav('/admin/investments?f=unlocked' + branchCode)} tip="Principal of investments whose lock-in end date has passed. A status only: nothing is paid out or reinvested automatically." />
         <Kpi label="Locked principal" value={moneyShort(d.locked_principal)} sub={`${d.locked_count} in lock-in`} onClick={() => nav('/admin/investments?f=locked' + branchCode)} tip="Principal of live investments still inside their 6-month or 1-year lock-in." />
-        <Kpi label="Total returns" value={moneyShort(d.accrued_total)} sub={Number(d.reversed_total) ? `Net of ${money(Math.abs(Number(d.reversed_total)))} reversals` : 'Accrued, net of reversals'} onClick={() => nav('/admin/accruals')} tip="Sum of all accrual entries less reversals. Accrued is not the same as paid." />
+        <Kpi label="Total returns" value={moneyShort(d.accrued_total)} sub={Number(d.reversed_total) ? `Net of ${money(Math.abs(Number(d.reversed_total)))} reversals` : 'Earned, net of reversals'} onClick={() => nav('/admin/accruals')} tip="Sum of all accrual entries less reversals. Earned is not the same as paid." />
       </div>
 
       <div className="branch-cards">
@@ -225,16 +225,16 @@ export function Overview() {
 
       <div className="grid g-2-1">
         <div className="card">
-          <div className="card-h"><h3>Monthly returns: accrued vs paid</h3>
+          <div className="card-h"><h3>Monthly returns: earned vs paid</h3>
             <div className="r" style={{ gap: 6 }}>
               <input className="input" type="month" style={{ width: 'auto', padding: '5px 8px' }} value={from} max={to} onChange={e => e.target.value && setFrom(e.target.value)} aria-label="From month" />
               <span>to</span>
               <input className="input" type="month" style={{ width: 'auto', padding: '5px 8px' }} value={to} min={from} max={today().slice(0, 7)} onChange={e => e.target.value && setTo(e.target.value)} aria-label="To month" />
             </div>
-            <div className="legend" style={{ width: '100%', justifyContent: 'flex-end' }}><span><i style={{ background: 'var(--chart-1)' }} />Accrued</span><span><i style={{ background: 'var(--green)' }} />Paid</span></div></div>
+            <div className="legend" style={{ width: '100%', justifyContent: 'flex-end' }}><span><i style={{ background: 'var(--chart-1)' }} />Earned</span><span><i style={{ background: 'var(--green)' }} />Paid</span></div></div>
           <div className="card-b">
-            <BarChart labels={labels} label="Accrued vs paid returns by month" fmt={fmtAxis} tipFmt={money}
-              series={[{ name: 'Accrued', color: 'var(--chart-1)', values: months.map(m => Number(m.accrued)) }, { name: 'Paid', color: 'var(--green)', values: months.map(m => Number(m.paid)) }]} />
+            <BarChart labels={labels} label="Earned vs paid returns by month" fmt={fmtAxis} tipFmt={money}
+              series={[{ name: 'Earned', color: 'var(--chart-1)', values: months.map(m => Number(m.accrued)) }, { name: 'Paid', color: 'var(--green)', values: months.map(m => Number(m.paid)) }]} />
           </div>
         </div>
         <div className="card">

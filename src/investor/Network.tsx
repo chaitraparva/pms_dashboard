@@ -14,7 +14,7 @@ const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processin
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
 const INV_STATUS: Record<string, [string, string]> = {
-  pending_funding: ['Awaiting deposit', 'b-amber'], active: ['Active', 'b-green'], matured: ['Matured', 'b-blue'],
+  pending_funding: ['Awaiting deposit', 'b-amber'], active: ['Active', 'b-green'], matured: ['Unlocked', 'b-blue'],
   redemption_requested: ['Closing', 'b-grey'], redemption_processing: ['Closing', 'b-grey'], redeemed: ['Closed', 'b-grey']
 };
 const InvStatus = ({ s }: { s: string }) => { const [l, c] = INV_STATUS[s] || [s, 'b-grey']; return <Badge cls={c}>{l}</Badge>; };

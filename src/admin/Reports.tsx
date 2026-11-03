@@ -72,8 +72,8 @@ export function Reports() {
 
   const portfolio = async () => {
     const [invs, bal, ppl, bn] = await Promise.all([investments(), balances(), people(), branchNames()]);
-    return csv('portfolio', ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Plan version', 'Rate % / month', 'Principal', 'Monthly return', 'Lock-in months', 'Status', 'Start', 'Maturity',
-      'Principal locked / unlocked', 'Periods accrued', 'Accrued (net)', 'Paid', 'Processing', 'Approved', 'Accrued not approved', 'Outstanding', 'Agreement ref', 'Deposit ref'],
+    return csv('portfolio', ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Plan version', 'Rate % / month', 'Principal', 'Monthly return', 'Lock-in months', 'Status', 'Start', 'Lock-in end',
+      'Principal locked / unlocked', 'Periods accrued', 'Earned (net)', 'Paid', 'Processing', 'Approved', 'Earned not approved', 'Outstanding', 'Agreement ref', 'Deposit ref'],
       invs.map(i => { const b = bal.get(i.id); const p = ppl.get(i.investor_id); return [i.code, p?.code, nameOf(p), p?.branch_id ? bn.get(p.branch_id) : '', i.plan_name, i.plan_version, i.monthly_rate, n2(i.principal), n2(i.monthly_return), i.lockin_months,
         investmentLabel(i, settings?.approaching_days ?? 60, t), i.start_date, i.maturity_date, LIVE.includes(i.status) ? (isUnlocked(i, t) ? 'Unlocked' : 'Locked') : '', b?.periods_accrued ?? 0, n2(b?.accrued), n2(b?.paid), n2(b?.processing), n2(b?.approved), n2(b?.unapproved),
         n2(outstanding(b)), i.agreement_ref, i.deposit_ref]; }));
@@ -82,7 +82,7 @@ export function Reports() {
   const investorSummary = async () => {
     const [invs, bal, ppl, bn] = await Promise.all([investments(), balances(), people(), branchNames()]);
     const inv = Array.from(ppl.values()).filter(p => p.role === 'investor').sort((a, b) => (a.code || '').localeCompare(b.code || ''));
-    return csv('investor-summary', ['Investor ID', 'Name', 'Email', 'Branch', 'Phone', 'City', 'Registered', 'KYC', 'Account', 'Live investments', 'Live principal', 'Unlocked principal', 'Locked principal', 'Accrued (net)', 'Paid', 'Outstanding', 'Next unlock', 'Bank', 'Account no.', 'IFSC'],
+    return csv('investor-summary', ['Investor ID', 'Name', 'Email', 'Branch', 'Phone', 'City', 'Registered', 'KYC', 'Account', 'Live investments', 'Live principal', 'Unlocked principal', 'Locked principal', 'Earned (net)', 'Paid', 'Outstanding', 'Next unlock', 'Bank', 'Account no.', 'IFSC'],
       inv.map(p => {
         const mine = invs.filter(i => i.investor_id === p.id);
         const live = mine.filter(i => LIVE.includes(i.status));
@@ -172,7 +172,7 @@ export function Reports() {
   };
 
   const monthly = dash.data?.monthly || [];
-  const monthlyCsv = () => csv('monthly-summary', ['Month', 'New principal invested', 'Returns accrued (net)', 'Returns paid'], monthly.map(m => [m.month, n2(m.invested), n2(m.accrued), n2(m.paid)]));
+  const monthlyCsv = () => csv('monthly-summary', ['Month', 'New principal invested', 'Returns earned (net)', 'Returns paid'], monthly.map(m => [m.month, n2(m.invested), n2(m.accrued), n2(m.paid)]));
   const tot = monthly.reduce((s, m) => ({ invested: s.invested + Number(m.invested), accrued: s.accrued + Number(m.accrued), paid: s.paid + Number(m.paid) }), { invested: 0, accrued: 0, paid: 0 });
 
   return (
@@ -182,7 +182,7 @@ export function Reports() {
         <div className="card-h"><h3>Monthly summary</h3><div className="r">Last 8 months{monthly.length > 0 && <button className="btn sm" onClick={monthlyCsv}><Icon name="download" />CSV</button>}</div></div>
         {dash.error ? <div className="card-b"><ErrorNote msg={dash.error} retry={dash.reload} /></div> : !dash.data ? <div className="card-b"><Loading rows={3} /></div> : monthly.length ? (
           <div className="tbl"><table>
-            <thead><tr><th>Month</th><th className="n">New principal invested</th><th className="n">Returns accrued (net)</th><th className="n">Returns paid</th></tr></thead>
+            <thead><tr><th>Month</th><th className="n">New principal invested</th><th className="n">Returns earned (net)</th><th className="n">Returns paid</th></tr></thead>
             <tbody>
               {monthly.slice().reverse().map(m => (
                 <tr key={m.month}><td>{monthLabel(m.month)} {m.month.slice(0, 4)}</td><td className="n">{money(m.invested)}</td><td className={'n' + (Number(m.accrued) < 0 ? ' neg' : '')}>{money(m.accrued)}</td><td className="n">{money(m.paid)}</td></tr>
@@ -193,8 +193,8 @@ export function Reports() {
         ) : <div className="card-b"><Empty title="No activity yet">Monthly totals appear once investments are activated and returns accrue.</Empty></div>}
       </div>
       <div className="grid g-1-1">
-        <ReportCard title="Portfolio" desc="Every investment with its contractual terms and live balances: accrued, paid, processing and outstanding." onCsv={portfolio} />
-        <ReportCard title="Investor summary" desc="One row per investor: branch, KYC, account status, live, unlocked and locked principal, accrued, paid, outstanding and next unlock." onCsv={investorSummary} />
+        <ReportCard title="Portfolio" desc="Every investment with its contractual terms and live balances: earned, paid, processing and outstanding." onCsv={portfolio} />
+        <ReportCard title="Investor summary" desc="One row per investor: branch, KYC, account status, live, unlocked and locked principal, earned, paid, outstanding and next unlock." onCsv={investorSummary} />
         <ReportCard title="Accrual register" desc="Every accrual entry in the period (by accrual date), including stubs and reversals, with its payout status." onCsv={accrualRegister}>
           <RangeInputs from={accFrom} to={accTo} setFrom={setAccFrom} setTo={setAccTo} />
         </ReportCard>
@@ -202,7 +202,7 @@ export function Reports() {
           <RangeInputs from={payFrom} to={payTo} setFrom={setPayFrom} setTo={setPayTo} />
           <div className="field"><label>Status</label>
             <select className="input" value={payStatus} onChange={e => setPayStatus(e.target.value)}>
-              <option value="">All statuses</option><option value="accrued">Accrued</option><option value="approved">Approved</option><option value="processing">Payment processed</option>
+              <option value="">All statuses</option><option value="accrued">Earned</option><option value="approved">Approved</option><option value="processing">Payment processed</option>
               <option value="paid">Payment fulfilled</option><option value="failed">Failed</option><option value="cancelled">Reversed</option>
             </select>
           </div>

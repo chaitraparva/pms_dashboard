@@ -153,13 +153,13 @@ export const rateShort = (r: number | string) => String(Number(Number(r).toFixed
 export const ROI_WAY: Record<string, string> = { cash: 'Cash', upi: 'UPI', bank: 'Bank transfer' };
 export const roiWayText = (m?: string | null, upi?: string | null) => (m ? ROI_WAY[m] + (m === 'upi' && upi ? ' · ' + upi : '') : '');
 export const PAY_BADGE: Record<string, [string, string]> = {
-  accrued: ['Accrued', 'b-grey'], approved: ['Approved', 'b-blue'], processing: ['Payment processed', 'b-amber'], paid: ['Payment fulfilled', 'b-green'], failed: ['Failed', 'b-red'], cancelled: ['Reversed', 'b-grey']
+  accrued: ['Earned', 'b-grey'], approved: ['Approved', 'b-blue'], processing: ['Payment processed', 'b-amber'], paid: ['Payment fulfilled', 'b-green'], failed: ['Failed', 'b-red'], cancelled: ['Reversed', 'b-grey']
 };
 export const LEDGER_BADGE: Record<string, [string, string]> = {
   confirmed: ['Confirmed', 'b-green'], pending: ['Pending', 'b-amber'], posted: ['Posted', 'b-grey'], failed: ['Failed', 'b-red'], reversed: ['Reversed', 'b-grey']
 };
 export const LEDGER_TYPE: Record<string, string> = {
-  deposit: 'Deposit', allocation: 'Investment allocation', return_accrual: 'Return accrued', return_payout: 'Return payout',
+  deposit: 'Deposit', allocation: 'Investment allocation', return_accrual: 'Return earned', return_payout: 'Return payout',
   redemption_request: 'Principal request (closed)', principal_redemption: 'Principal repaid', refund: 'Refund', adjustment: 'Adjustment', fee: 'Fee', reversal: 'Reversal'
 };
 

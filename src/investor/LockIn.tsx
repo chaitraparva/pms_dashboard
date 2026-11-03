@@ -16,7 +16,7 @@ export function LockIn() {
 
   return (
     <>
-      <PageHead crumbs={['Lock-in & Maturity']} title="Lock-in & maturity" sub="Dates are calculated from your start date plus your lock-in (6 months or 1 year) in calendar months. They never change if a plan is edited." />
+      <PageHead crumbs={['Lock-in']} title="Lock-in" sub="Dates are calculated from your start date plus your lock-in (6 months or 1 year) in calendar months. They never change if a plan is edited." />
       {q.error && <ErrorNote msg={q.error} retry={q.reload} />}
       {q.loading && !q.data ? <Loading /> : q.data && !live.length ? (
         <div className="card"><div className="card-b">
@@ -43,7 +43,7 @@ export function LockIn() {
                   <dt>Start date</dt><dd>{date(i.start_date)}</dd>
                   <dt>Lock-in period</dt><dd>{lockinText(i.lockin_months)}</dd>
                   <dt>Lock-in end date</dt><dd>{date(i.lockin_end_date)}</dd>
-                  <dt>Maturity date</dt><dd>{date(i.maturity_date)}</dd>
+                  <dt>Lock-in end date</dt><dd>{date(i.maturity_date)}</dd>
                   <dt>Days remaining</dt><dd>{daysLeft(i)}</dd>
                   <dt>Principal status</dt><dd>{unlocked ? 'Unlocked' : 'Locked'}</dd>
                 </dl>

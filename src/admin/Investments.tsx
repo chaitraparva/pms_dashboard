@@ -83,8 +83,8 @@ export function Investments() {
     { h: 'Principal', n: true, v: r => Number(r.principal), r: r => money(r.principal) },
     { h: 'Lock-in', v: r => r.lockin_months, r: r => lockinText(r.lockin_months) },
     { h: 'Start', v: r => r.start_date || '9999', r: r => (r.start_date ? date(r.start_date) : <span className="muted">Not funded</span>) },
-    { h: 'Maturity', v: r => r.maturity_date || '9999', r: r => (r.maturity_date ? <>{date(r.maturity_date)}{LIVE.includes(r.status) && <span className="sub">{Math.max(0, daysBetween(t, r.maturity_date))} days</span>}</> : '—') },
-    { h: 'Accrued', n: true, v: r => Number(r.bal?.accrued || 0), r: r => money(r.bal?.accrued || 0) },
+    { h: 'Lock-in end', v: r => r.maturity_date || '9999', r: r => (r.maturity_date ? <>{date(r.maturity_date)}{LIVE.includes(r.status) && <span className="sub">{Math.max(0, daysBetween(t, r.maturity_date))} days</span>}</> : '—') },
+    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => money(r.bal?.accrued || 0) },
     { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{money(r.bal?.paid || 0)}</span> },
     { h: 'Outstanding', n: true, v: r => r.outstanding, r: r => money(r.outstanding) },
     { h: 'Status', v: r => r.label, r: r => <InvBadge i={r} approachingDays={s.approaching_days} /> }
@@ -92,7 +92,7 @@ export function Investments() {
 
   const livePrincipal = rows.filter(r => LIVE.includes(r.status)).reduce((x, r) => x + Number(r.principal), 0);
   const exportCsv = () => downloadCsv(`investments-${today()}`,
-    ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Version', 'Rate %/month', 'Investor rate %', 'Bonus %', 'Bonus / month', 'Bonus to', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Maturity', 'Accrued', 'Paid', 'Outstanding', 'Status', 'Agreement ref', 'Deposit ref', 'Monthly ROI taken by'],
+    ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Version', 'Rate %/month', 'Investor rate %', 'Bonus %', 'Bonus / month', 'Bonus to', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Lock-in end', 'Earned', 'Paid', 'Outstanding', 'Status', 'Agreement ref', 'Deposit ref', 'Monthly ROI taken by'],
     rows.map(r => [r.code, r.investor?.code, r.investor?.full_name, r.branch, r.plan_name, r.plan_version, r.monthly_rate, r.investor_rate ?? r.monthly_rate, r.admin_bonus_rate ?? 0, r.admin_bonus ?? 0, r.bonusTo ? r.bonusTo.full_name || r.bonusTo.email : '', r.principal, r.monthly_return, r.lockin_months, r.start_date, r.maturity_date,
       r.bal?.accrued ?? 0, r.bal?.paid ?? 0, r.outstanding, r.label, r.agreement_ref, r.deposit_ref, roiWayText(r.roi_method, r.roi_upi)]));
 
@@ -650,12 +650,12 @@ export function InvestmentDetail() {
 
   /* accrual schedule: every period 1..lock-in */
   const base = i.start_date || i.expected_start;
-  // calendar months: from the day after the start date to month end, then whole months; the maturity month runs to the maturity date
+  // calendar months: from the day after the start date to month end, then whole months; the maturity month runs to the lock-in end date
   const cal = base ? calendarPeriods(base, null, addMonths(t.slice(0, 7) + '-01', 1)) : [];
   const ks = [...new Set([...cal.map(p => p.k), ...accruals.filter(a => a.kind !== 'reversal').map(a => a.period_no)])].sort((x, y) => x - y);
   const schedule = ks.map(k => {
     const p = cal.find(x => x.k === k);
-    // a month accrued in two parts (a top-up after the lock-in limit was lifted) shows as one
+    // a month earned in two parts (a top-up after the lock-in limit was lifted) shows as one
     const parts = accruals.filter(a => a.period_no === k && a.kind !== 'reversal');
     const acc = parts.length > 1 ? { ...parts[0], amount: Math.round(parts.reduce((x, a) => x + Number(a.amount), 0) * 100) / 100, period_end: parts.map(a => a.period_end).sort().pop()! } : parts[0];
     const rev = acc ? accruals.find(a => a.reverses_id === acc.id) : undefined;
@@ -687,7 +687,7 @@ export function InvestmentDetail() {
         </>}>
         <h1>{i.code} · {investor ? <Link to={'/admin/investors/' + investor.code}>{investor.full_name || investor.email}</Link> : '—'} <InvBadge i={i} approachingDays={s.approaching_days} /></h1>
         <p>{i.plan_name}{i.plan_id ? ` v${i.plan_version}` : ''} · {i.lockin_months ? lockinText(i.lockin_months) + ' lock-in' : 'No lock-in'} · {i.start_date
-          ? `started ${date(i.start_date)}${i.maturity_date ? ` · matures ${date(i.maturity_date)}${daysLeft != null && daysLeft > 0 && !closed ? ` (${daysLeft} days)` : ''}` : ''}`
+          ? `started ${date(i.start_date)}${i.maturity_date ? ` · lock-in ends ${date(i.maturity_date)}${daysLeft != null && daysLeft > 0 && !closed ? ` (${daysLeft} days)` : ''}` : ''}`
           : i.status === 'cancelled' ? `cancelled${i.cancelled_reason ? ': ' + i.cancelled_reason : ''}` : 'awaiting deposit confirmation'}</p>
       </PageHead>
 
@@ -702,9 +702,9 @@ export function InvestmentDetail() {
         <Kpi label="Principal" value={money(i.principal)} sub="Original, never changes" />
         <Kpi label="Investor monthly return" value={money(i.monthly_return)}
           sub={Number(i.admin_bonus || 0) > 0 ? `${rate(i.investor_rate ?? i.monthly_rate)} · + ${money(i.admin_bonus)} (${rate(i.admin_bonus_rate || 0)}) to ${introducedBy ? nm(introducedBy) : 'nobody'}` : `${rate(i.monthly_rate)} × principal`} />
-        <Kpi label="Accrued to date" value={money(bal?.accrued || 0)} sub={i.lockin_months ? `${bal?.periods_accrued || 0} of ${cal.length} months` : `${bal?.periods_accrued || 0} months so far`} tip="Sum of accrual entries, net of reversals." />
+        <Kpi label="Earned to date" value={money(bal?.accrued || 0)} sub={i.lockin_months ? `${bal?.periods_accrued || 0} of ${cal.length} months` : `${bal?.periods_accrued || 0} months so far`} tip="Sum of accrual entries, net of reversals." />
         <Kpi label="Paid (confirmed)" value={money(bal?.paid || 0)} cls="pos" sub={`${paidCount} payout${paidCount === 1 ? '' : 's'}`} />
-        <Kpi label="Outstanding" value={money(outstanding)} sub={Number(bal?.processing || 0) ? `${money(bal!.processing)} processing` : 'Accrued, not yet paid'} subCls={outstanding ? 'warn' : ''} />
+        <Kpi label="Outstanding" value={money(outstanding)} sub={Number(bal?.processing || 0) ? `${money(bal!.processing)} processing` : 'Earned, not yet paid'} subCls={outstanding ? 'warn' : ''} />
       </div>
 
       <div className="grid g-2-1">
@@ -715,13 +715,13 @@ export function InvestmentDetail() {
               {i.start_date && i.maturity_date ? (
                 <div className="track">
                   <div className="bar"><div className={'fill ' + (pctDone >= 100 ? 'done' : '')} style={{ width: pctDone + '%' }} /></div>
-                  <div className="lbls"><span>Start {dateShort(i.start_date)}</span><span>{isUnlocked(i) ? 'Principal unlocked' : `${pctDone}% of lock-in`}</span><span>Maturity {date(i.maturity_date)}</span></div>
+                  <div className="lbls"><span>Start {dateShort(i.start_date)}</span><span>{isUnlocked(i) ? 'Principal unlocked' : `${pctDone}% of lock-in`}</span><span>Lock-in end {date(i.maturity_date)}</span></div>
                 </div>
               ) : <p className="hint">{i.status === 'cancelled' ? 'This investment was cancelled before funding.' : 'The lock-in starts on the date the deposit is confirmed.'}</p>}
               <dl className="kv">
                 <dt>Start date</dt><dd>{i.start_date ? date(i.start_date) : <span className="muted">Expected {date(i.expected_start)}</span>}</dd>
                 <dt>Lock-in end</dt><dd>{date(i.lockin_end_date)}</dd>
-                <dt>Maturity</dt><dd>{date(i.maturity_date)}</dd>
+                <dt>Lock-in end</dt><dd>{date(i.maturity_date)}</dd>
                 <dt>Lock-in period</dt><dd>{lockinText(i.lockin_months)}</dd>
                 <dt>Principal</dt><dd>{closed ? (i.status === 'cancelled' ? 'Cancelled' : 'Closed') : !i.lockin_end_date ? 'Not started' : isUnlocked(i) ? 'Unlocked' : 'Locked'}</dd>
                 {daysLeft != null && !closed && <><dt>Days to unlock</dt><dd>{Math.max(0, daysLeft)}</dd></>}
@@ -740,16 +740,16 @@ export function InvestmentDetail() {
                       <td className="m">{r.k}</td>
                       <td>{dateShort(r.from)} – {dateShort(r.to)}{r.days < r.dim && <span className="sub">{r.days} of {r.dim} days (pro-rata)</span>}</td>
                       <td className={'n ' + (r.acc ? '' : 'muted')}>{money(r.amount)}{r.rev && <span className="sub neg">{money(r.rev.amount)} reversed</span>}</td>
-                      <td>{r.rev ? <Badge cls="b-red">Reversed</Badge> : r.acc ? <Badge cls="b-green">Accrued</Badge> : pending ? <Badge cls="b-grey">Projected</Badge> : <Badge cls="b-grey">Scheduled</Badge>}</td>
+                      <td>{r.rev ? <Badge cls="b-red">Reversed</Badge> : r.acc ? <Badge cls="b-green">Earned</Badge> : <Badge cls="b-grey">Scheduled</Badge>}</td>
                       <td>{date(r.on)}</td>
                       <td>{r.pay ? <><PayBadge s={r.pay.status} /><span className="sub">{r.pay.status === 'paid' ? 'paid ' + dateShort(r.pay.paid_on) : 'due ' + dateShort(r.pay.due_date)}</span></> : <span className="muted">—</span>}</td>
                       <td className="m">{r.pay?.payment_ref || r.pay?.batch_ref || '—'}{r.pay?.failure_reason && <span className="sub">{r.pay.failure_reason}</span>}</td>
                     </tr>
                   ))}</tbody>
                 </table>
-              ) : <div className="card-b"><Empty title="No accruals">{closed ? 'No returns were accrued on this investment.' : 'The schedule appears once a start date is known.'}</Empty></div>}
+              ) : <div className="card-b"><Empty title="No accruals">{closed ? 'No returns were earned on this investment.' : 'The schedule appears once a start date is known.'}</Empty></div>}
             </div>
-            {pending && base && <div className="card-b"><p className="hint">Projected from the expected start date. Final dates follow the deposit confirmation date.</p></div>}
+            {pending && base && <div className="card-b"><p className="hint">Dates follow the expected start date until the deposit is confirmed.</p></div>}
           </div>
 
           <div className="card">
@@ -847,13 +847,13 @@ function FundDialog({ i, meId, onClose }: { i: Investment; meId?: string; onClos
   const go = async () => {
     setTried(true); if (errs.start || errs.ref) return;
     const r = await act.run(() => rpc('admin_activate_investment', { p_id: i.id, p_start_date: start, p_deposit_ref: ref.trim(), p_reason: note.trim() }),
-      [`${i.code} is active`, back ? `${back} past month${back === 1 ? '' : 's'} accrued automatically.` : 'The investor can now see it.']);
+      [`${i.code} is active`, back ? `${back} past month${back === 1 ? '' : 's'} earned automatically.` : 'The investor can now see it.']);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title={`Confirm deposit for ${i.code}?`} sub="Only confirm once the funds show in the company bank account. The start date fixes maturity and the accrual schedule." onClose={onClose}
+    <Modal title={`Confirm deposit for ${i.code}?`} sub="Only confirm once the funds show in the company bank account. The start date fixes the lock-in end and the accrual schedule." onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>Confirm & activate</button></>}>
-      <dl className="kv"><dt>Principal</dt><dd>{money(i.principal)}</dd><dt>Maturity</dt><dd>{start && !errs.start ? date(addMonths(start, i.lockin_months)) : '—'}</dd></dl>
+      <dl className="kv"><dt>Principal</dt><dd>{money(i.principal)}</dd><dt>Lock-in end</dt><dd>{start && !errs.start ? date(addMonths(start, i.lockin_months)) : '—'}</dd></dl>
       <Field label="Start date (funds received) *" err={tried ? errs.start : null} hint="Today or earlier.">
         <DateInput className={'input ' + (tried && errs.start ? 'bad' : '')} max={t} value={start} onChange={e => setStart(e.target.value)} />
       </Field>
@@ -861,7 +861,7 @@ function FundDialog({ i, meId, onClose }: { i: Investment; meId?: string; onClos
         <input className={'input mono ' + (tried && errs.ref ? 'bad' : '')} value={ref} onChange={e => setRef(e.target.value)} />
       </Field>
       <Field label="Note (optional)"><input className="input" value={note} onChange={e => setNote(e.target.value)} /></Field>
-      {back > 0 && <div className="note info">This start date is in the past. On confirmation, the {back} month{back === 1 ? '' : 's'} already completed will be accrued automatically, and their payouts queued.</div>}
+      {back > 0 && <div className="note info">This start date is in the past. On confirmation, the {back} month{back === 1 ? '' : 's'} already completed will be earned automatically, and their payouts queued.</div>}
       {s.four_eyes && i.created_by === meId && <div className="note">Four-eyes is on: another Super Admin must confirm the deposit, because you recorded this investment. If you are the only active admin, the system allows it.</div>}
     </Modal>
   );

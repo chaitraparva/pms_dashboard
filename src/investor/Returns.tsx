@@ -9,7 +9,7 @@ import { BarChart, Donut, monthLabel } from '../ui/Charts';
 import { Icon } from '../ui/Icon';
 import { RoiReleased } from './Overview';
 import type { Accrual, Payout } from '../lib/types';
-import { bal, codeMap, isLive, lastMonths, loadPortfolio, periodsFor, projectedRemaining, unpaid } from './data';
+import { bal, codeMap, isLive, lastMonths, loadPortfolio, unpaid } from './data';
 
 interface Row { a: Accrual; code: string; pay: Payout | null }
 
@@ -27,11 +27,10 @@ export function Returns() {
   const payBy = Object.fromEntries(p.payouts.map(x => [x.accrual_id, x]));
   const rows: Row[] = p.accruals.map(a => ({ a, code: codes[a.investment_id] || '—', pay: payBy[a.id] || null }));
   const sumB = (k: 'unapproved' | 'approved' | 'processing' | 'paid' | 'accrued') => inv.reduce((s, i) => s + Number(bal(p, i.id)[k]), 0);
-  const projected = inv.reduce((s, i) => s + projectedRemaining(i, bal(p, i.id)), 0);
   const livePrincipal = inv.filter(isLive).reduce((s, i) => s + Number(i.principal), 0);
 
   const months = lastMonths(12);
-  const accrued = months.map(m => p.accruals.filter(a => a.accrual_date.slice(0, 7) === m).reduce((s, a) => s + Number(a.amount), 0));
+  const earned = months.map(m => p.accruals.filter(a => a.accrual_date.slice(0, 7) === m).reduce((s, a) => s + Number(a.amount), 0));
   const paid = months.map(m => p.payouts.filter(x => x.status === 'paid' && (x.paid_on || '').slice(0, 7) === m).reduce((s, x) => s + Number(x.amount), 0));
   const example = inv.find(i => i.status === 'active') || inv[0];
 
@@ -48,19 +47,18 @@ export function Returns() {
         <>
           <RoiReleased p={q.data} inv={inv} principal={inv.filter(isLive).reduce((s, i) => s + Number(i.principal), 0)} />
           <div className="kpis">
-            <Kpi label="Accrued" value={money(sumB('unapproved'))} sub="Earned, not yet approved" tip="Returns recorded for completed months, waiting for approval." />
+            <Kpi label="Earned" value={money(sumB('unapproved'))} sub="Earned, not yet approved" tip="Returns recorded for completed months, waiting for approval." />
             <Kpi label="Approved" value={money(sumB('approved'))} sub="Scheduled for payment" tip="Approved for payment but not yet sent to the bank." />
             <Kpi label="Processing" value={money(sumB('processing'))} sub="Sent to bank" subCls="warn" tip="Sent for payment. Shown as paid only once confirmed." />
             <Kpi label="Paid" value={money(sumB('paid'))} cls="pos" sub="Confirmed" />
-            <Kpi label="Projected" value={money(projected)} sub="Projected to maturity" subCls="warn" tip="Remaining months at your contract rates if nothing changes. Not guaranteed." />
           </div>
 
           <div className="grid g-2-1">
             <div className="card">
-              <div className="card-h"><h3>Last 12 months</h3><div className="r legend"><span><i style={{ background: 'var(--chart-2)' }} />Accrued (by accrual date)</span><span><i style={{ background: 'var(--green)' }} />Paid (by payment date)</span></div></div>
+              <div className="card-h"><h3>Last 12 months</h3><div className="r legend"><span><i style={{ background: 'var(--chart-2)' }} />Earned (by accrual date)</span><span><i style={{ background: 'var(--green)' }} />Paid (by payment date)</span></div></div>
               <div className="card-b">
-                <BarChart labels={months.map(monthLabel)} fmt={moneyShort} tipFmt={money} label="Returns accrued and paid in each of the last 12 months"
-                  series={[{ name: 'Accrued', color: 'var(--chart-2)', values: accrued }, { name: 'Paid', color: 'var(--green)', values: paid }]} />
+                <BarChart labels={months.map(monthLabel)} fmt={moneyShort} tipFmt={money} label="Returns earned and paid in each of the last 12 months"
+                  series={[{ name: 'Earned', color: 'var(--chart-2)', values: earned }, { name: 'Paid', color: 'var(--green)', values: paid }]} />
               </div>
             </div>
             <div className="card">
@@ -78,15 +76,15 @@ export function Returns() {
           <div className="card">
             <div className="card-h"><h3>Performance by investment</h3></div>
             <div className="tbl"><table>
-              <thead><tr><th>Investment</th><th>Rate</th><th className="n">Principal</th><th className="n">Monthly return</th><th className="n">Months accrued</th><th className="n">Accrued</th><th className="n">Paid</th><th className="n">Not yet paid</th><th className="n">Projected</th><th className="n">Return on principal</th></tr></thead>
+              <thead><tr><th>Investment</th><th>Rate</th><th className="n">Principal</th><th className="n">Monthly return</th><th className="n">Months</th><th className="n">Earned</th><th className="n">Paid</th><th className="n">Not yet paid</th><th className="n">Return on principal</th></tr></thead>
               <tbody>
                 {inv.map(i => {
                   const b = bal(p, i.id);
                   return (
                     <tr key={i.id} className="click" onClick={() => nav('/portal/investments/' + i.code)}>
                       <td className="m">{i.code}</td><td>{rate(i.monthly_rate)}</td><td className="n">{money(i.principal)}</td><td className="n">{money(i.monthly_return)}</td>
-                      <td className="n">{b.periods_accrued}{i.lockin_months ? ' / ' + periodsFor(i).length : ''}</td><td className="n">{money(b.accrued)}</td><td className="n pos">{money(b.paid)}</td>
-                      <td className="n">{money(unpaid(b))}</td><td className="n muted">{money(projectedRemaining(i, b))}</td>
+                      <td className="n">{b.periods_accrued}</td><td className="n">{money(b.accrued)}</td><td className="n pos">{money(b.paid)}</td>
+                      <td className="n">{money(unpaid(b))}</td>
                       <td className="n">{pct((Number(b.accrued) / Number(i.principal)) * 100)}</td>
                     </tr>
                   );
@@ -97,7 +95,7 @@ export function Returns() {
 
           <DataTable rows={rows} rowKey={r => r.a.id} title="All accruals" searchPh="Search by investment or reference" sort={0} per={15}
             emptyTitle="No returns yet" empty="Your first monthly return accrues one month after your start date."
-            filters={[['All', 'all'], ['Accrued', 'accrued'], ['Approved', 'approved'], ['Payment processed', 'processing'], ['Payment fulfilled', 'paid']]}
+            filters={[['All', 'all'], ['Earned', 'accrued'], ['Approved', 'approved'], ['Payment processed', 'processing'], ['Payment fulfilled', 'paid']]}
             filterFn={(r, f) => f === 'all' || r.pay?.status === f}
             text={r => [r.pay?.payment_ref, r.pay?.code].filter(Boolean).join(' ')}
             cols={[
