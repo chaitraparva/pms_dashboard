@@ -709,10 +709,18 @@ export function rpcCall(fn: string, a: Row): unknown {
       requireAdmin(); const rate = Number(a.p_rate);
       if (!(rate > 0 && rate < 1000) || !/^\d+(\.\d{1,4})?$/.test(String(a.p_rate).trim())) fail('Enter how many rupees make 1 AED, e.g. 26.3');
       const s = settings(); const before = { inr_per_aed: s.inr_per_aed ?? null, aed_rate_on: s.aed_rate_on ?? null };
-      s.inr_per_aed = rate; s.aed_rate_on = today();
+      s.inr_per_aed = rate; s.aed_rate_on = today(); s.aed_rate_mode = 'manual'; s.aed_rate_source = 'manual';
       s.aed_rate_history = [{ rate, on: today(), at: nowIso() }, ...(Array.isArray(s.aed_rate_history) ? s.aed_rate_history : [])].slice(0, 60);
       s.updated_at = nowIso(); s.updated_by = currentUid;
       audit('settings.aed_rate', 'settings', null, 'AED rate', '1 AED = ₹' + rate, before, { inr_per_aed: rate, aed_rate_on: s.aed_rate_on }); touched('settings'); return null;
+    }
+    case 'admin_set_aed_mode': {
+      // automatic: the daily market rate (fetched by the server); manual: the Super Admin's own rate
+      requireAdmin(); const s = settings(); const mode = a.p_mode === 'manual' ? 'manual' : 'auto';
+      const before = { aed_rate_mode: s.aed_rate_mode ?? 'auto' }; s.aed_rate_mode = mode;
+      if (mode === 'auto') s.aed_rate_auto_on = null; // fetch the market rate on the next request
+      s.updated_at = nowIso(); s.updated_by = currentUid;
+      audit('settings.aed_rate', 'settings', null, 'AED rate', mode === 'auto' ? 'Automatic market rate' : 'Manual rate', before, { aed_rate_mode: mode }); touched('settings'); return null;
     }
     case 'admin_save_settings': {
       requireAdmin(); const p = a.p || {}; const s = settings(); const before = { ...s };
@@ -1905,6 +1913,16 @@ export async function adminCrmLogin(a: Row): Promise<null> {
   audit('crm.update', 'profile', p.id, p.code, blank(a.password) ? 'CRM login changed' : 'CRM login changed (new password)', before, { email: u.email, full_name: p.full_name }); persist('profiles', 'audit_logs');
   return null;
 }
+/** The daily market rate (INR for 1 AED) fetched by the server: used while the AED rate is on automatic. Once a day. */
+export function applyAutoAedRate(rate: number) {
+  const s = settings(); if (!s || s.aed_rate_mode === 'manual' || !(rate > 0 && rate < 1000)) return;
+  const r = Math.round(rate * 10000) / 10000, d = today();
+  if (s.aed_rate_auto_on === d && s.inr_per_aed === r) return;
+  if (s.aed_rate_on !== d || s.inr_per_aed !== r) s.aed_rate_history = [{ rate: r, on: d, at: nowIso() }, ...(Array.isArray(s.aed_rate_history) ? s.aed_rate_history.filter((h: Row) => h.on !== d) : [])].slice(0, 60);
+  s.inr_per_aed = r; s.aed_rate_on = d; s.aed_rate_auto_on = d; s.aed_rate_source = 'auto';
+  persist('settings');
+}
+export const aedAutoDue = () => { const s = settings(); return !!s && s.aed_rate_mode !== 'manual' && s.aed_rate_auto_on !== today(); };
 export async function checkLogin(email: string, pw: string): Promise<string | null> {
   // an IB signs in with the phone number the Super Admin registered
   const key = email.includes('@') ? '' : phoneKey(email);

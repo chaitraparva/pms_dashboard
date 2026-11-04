@@ -10,7 +10,7 @@ export interface Settings {
   id: 1; company_name: string; tagline: string; logo_url: string | null; primary_color: string;
   currency: string; locale: string; timezone: string;
   /** INR for 1 AED, set by the Super Admin (changes daily); only used to show amounts in AED */
-  inr_per_aed?: number | null; aed_rate_on?: string | null; aed_rate_history?: { rate: number; on: string; at: string }[]; approaching_days: number; request_window_days: number;
+  inr_per_aed?: number | null; aed_rate_on?: string | null; aed_rate_mode?: 'auto' | 'manual'; aed_rate_source?: 'auto' | 'manual'; aed_rate_auto_on?: string | null; aed_rate_history?: { rate: number; on: string; at: string }[]; approaching_days: number; request_window_days: number;
   default_payout_lag_days: number; four_eyes: boolean; allow_custom_lockin: boolean; lockin_options: number[];
   default_terms: string; default_risk_disclosure: string; support_email: string; support_phone: string; legal_footer: string;
   property_site_url: string; show_properties_to: 'all' | 'unlocked';

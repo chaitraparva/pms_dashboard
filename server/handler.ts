@@ -213,6 +213,19 @@ export async function handle(body: Row, auth: string | undefined): Promise<unkno
   const done = await turn();
   try { return await handleOne(body, auth); } finally { done(); }
 }
+/** Today's market rate: INR for 1 AED (free source, no key). Tried at most once an hour per server; null when unavailable. */
+let fx: { at: number; rate: number | null } = { at: 0, rate: null };
+async function marketAedRate(): Promise<number | null> {
+  if (Date.now() - fx.at < 3600e3) return fx.rate;
+  fx = { at: Date.now(), rate: fx.rate };
+  try {
+    const r = await fetch('https://open.er-api.com/v6/latest/AED', { signal: AbortSignal.timeout(4000) });
+    const j = (await r.json()) as { result?: string; rates?: Record<string, number> };
+    const v = Number(j?.rates?.INR);
+    if (j?.result === 'success' && v > 0 && v < 1000) fx.rate = v;
+  } catch (e) { console.error('AED rate fetch failed', e); }
+  return fx.rate;
+}
 const READ_ONLY = 'This is a CRM login (read only). It can see everything but cannot add, accept, edit or delete anything.';
 /** Everything that counts as a change for a view-only login (reading notifications and viewing brochures do not). */
 const fingerprint = (S: db.Store) => JSON.stringify({ users: S.users, seq: S.seq, tables: Object.fromEntries(Object.entries(S.tables).filter(([k]) => k !== 'notifications' && k !== 'brochure_views')) });
@@ -233,6 +246,8 @@ async function handleOne(body: Row, auth: string | undefined): Promise<unknown> 
     if (uid && !S.users.some(u => u.id === uid)) uid = null;
     db.setCurrentUser(uid);
     db.catchUp();
+    // AED rate on automatic: today's market rate, fetched at most once a day (a failed fetch keeps the last rate)
+    if (db.aedAutoDue()) { const r = await marketAedRate(); if (r) db.applyAutoAedRate(r); }
     // a view-only login sees everything a Super Admin sees but cannot change anything: its request is run, and if it
     // would change any data (other than its own notifications being read) it is refused and nothing is saved
     const viewOnly = !!uid && db.isReadOnly(uid);
