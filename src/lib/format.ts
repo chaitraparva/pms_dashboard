@@ -9,9 +9,19 @@ export function configureFormat(s: Pick<Settings, 'currency' | 'locale' | 'timez
   CUR = s.currency || 'INR'; LOC = s.locale || 'en-IN'; TZ = s.timezone || 'UTC';
 }
 
+/* Display currency (Super Admin pages only): amounts are always saved in INR; when AED is chosen they are shown divided by
+   the INR-per-AED rate the Super Admin sets in Settings. Nothing saved is converted. */
+let VIEW_AED = 0; // INR per 1 AED while AED is shown; 0 = show INR
+export function setDisplayCurrency(cur: 'INR' | 'AED', inrPerAed: number) { VIEW_AED = cur === 'AED' && inrPerAed > 0 ? inrPerAed : 0; }
+export const displayCurrency = (): 'INR' | 'AED' => (VIEW_AED ? 'AED' : 'INR');
+
 export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export function money(v: number | string | null | undefined): string {
+  if (VIEW_AED) {
+    const a = Number(v ?? 0) / VIEW_AED;
+    return (a < 0 ? '−' : '') + 'AED ' + new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(a));
+  }
   const n = Number(v ?? 0);
   try {
     return new Intl.NumberFormat(LOC, { style: 'currency', currency: CUR, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n).replace('-', '−');
@@ -22,6 +32,12 @@ export function money(v: number | string | null | undefined): string {
 
 /** Compact money for KPI tiles: ₹12.4L / ₹1.2Cr for INR, 1.2M elsewhere. */
 export function moneyShort(v: number | string | null | undefined): string {
+  if (VIEW_AED) {
+    const x = Number(v ?? 0) / VIEW_AED, ax = Math.abs(x), sg = x < 0 ? '−' : '';
+    if (ax >= 1e6) return sg + 'AED ' + (ax / 1e6).toFixed(2) + 'M';
+    if (ax >= 1e4) return sg + 'AED ' + (ax / 1e3).toFixed(1) + 'K';
+    return money(v);
+  }
   const n = Number(v ?? 0), a = Math.abs(n), sign = n < 0 ? '−' : '';
   const sym = currencySymbol();
   if (CUR === 'INR') {

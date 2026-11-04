@@ -704,6 +704,16 @@ export function rpcCall(fn: string, a: Row): unknown {
     case 'admin_close_query': { requireAdmin(); const q = T('queries').find(x => x.id === a.p_id) || fail('Query not found.'); q.status = 'closed'; q.updated_at = nowIso(); touched('queries'); return null; }
     case 'mark_popped': { T('notifications').forEach(x => { if (x.user_id === currentUid && x.id === a.p_id) x.popped_at = nowIso(); }); persist('notifications'); return null; }
     case 'admin_dashboard': runAllAccruals(); return dashboard(a.p_branch || null, a.p_from || null, a.p_to || null);
+    case 'admin_set_aed_rate': {
+      // the Super Admin's INR-per-AED rate for showing amounts in AED (nothing saved is converted)
+      requireAdmin(); const rate = Number(a.p_rate);
+      if (!(rate > 0 && rate < 1000) || !/^\d+(\.\d{1,4})?$/.test(String(a.p_rate).trim())) fail('Enter how many rupees make 1 AED, e.g. 26.3');
+      const s = settings(); const before = { inr_per_aed: s.inr_per_aed ?? null, aed_rate_on: s.aed_rate_on ?? null };
+      s.inr_per_aed = rate; s.aed_rate_on = today();
+      s.aed_rate_history = [{ rate, on: today(), at: nowIso() }, ...(Array.isArray(s.aed_rate_history) ? s.aed_rate_history : [])].slice(0, 60);
+      s.updated_at = nowIso(); s.updated_by = currentUid;
+      audit('settings.aed_rate', 'settings', null, 'AED rate', '1 AED = ₹' + rate, before, { inr_per_aed: rate, aed_rate_on: s.aed_rate_on }); touched('settings'); return null;
+    }
     case 'admin_save_settings': {
       requireAdmin(); const p = a.p || {}; const s = settings(); const before = { ...s };
       if (!blank(p.property_site_url) && !/^https:\/\//i.test(p.property_site_url)) fail('The property website link must start with https://');
@@ -732,6 +742,8 @@ export function rpcCall(fn: string, a: Row): unknown {
         }
       }
       ['full_name', 'phone', 'address', 'city', 'id_number_masked', 'bank_name', 'bank_account_masked', 'bank_ifsc'].forEach(k => { if (a.p?.[k] != null) p[k] = a.p[k]; });
+      // the currency their amounts are shown in (saved amounts stay in INR)
+      if (a.p?.currency != null) p.currency = a.p.currency === 'AED' ? 'AED' : 'INR';
       if (a.p && 'introduced_by' in a.p) {
         const by = blank(a.p.introduced_by) ? null : String(a.p.introduced_by);
         if (by && !canBeIntroducer(by)) fail('Choose a valid person for "Introduced by".');
@@ -1104,6 +1116,7 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
     if (!name) fail('Enter the name.');
     const id = uuid(), code = 'INVR-' + nextSeq('investor', 1001);
     person = profileRow(id, '', name, code, 'investor', 'verified', { phone: a.p_phone, city: a.p_city, branch_id: branchId ?? up?.branch_id ?? null, introduced_by: upId });
+    if (a.p_currency === 'AED') person.currency = 'AED';
     T('profiles').push(person);
     audit('investor.create', 'profile', id, code, 'Added with a recorded investment', null, { full_name: name, phone: a.p_phone, under: up?.code || null });
   } else if (upId && !person.introduced_by) { person.introduced_by = upId; person.updated_at = nowIso(); }
@@ -1199,6 +1212,7 @@ async function registerOnly(a: Row, ib: Row): Promise<{ id: string | null; code:
       const name = str(a.p_name).trim(); if (!name) fail('Enter the sub-investor’s name.');
       const id = uuid(), code = 'INVR-' + nextSeq('investor', 1001);
       person = profileRow(id, '', name, code, 'investor', 'verified', { phone: blank(a.p_phone) ? null : a.p_phone, city: a.p_city, branch_id: branchId ?? ib.branch_id ?? null, introduced_by: ib.id });
+      if (a.p_currency === 'AED') person.currency = 'AED';
       T('profiles').push(person); isNew = true;
       audit('investor.create', 'profile', id, code, 'Added under IB ' + ib.code, null, { full_name: name, phone: a.p_phone || null, under: ib.code });
     }
@@ -1255,6 +1269,8 @@ export async function adminRecordInvestment(a: Row): Promise<{ id: string | null
 export async function adminRecordInvestments(a: Row) {
   const more: Row[] = Array.isArray(a.p_more) ? a.p_more : [];
   const first = await adminRecordInvestment({ ...a, p_more: undefined });
+  // the currency the investor's amounts are shown in, chosen by the Super Admin (saved amounts stay in INR)
+  if (a.p_currency === 'AED' || a.p_currency === 'INR') { const pr = T('profiles').find(p => p.id === first.investor_id); if (pr) { pr.currency = a.p_currency; persist('profiles'); } }
   if (!more.length) return { ...first, more: [] as { id: string; code: string }[] };
   if (!first.id) fail('Investment 1: enter the principal.');
   const sub = !!first.ib_id && first.investor_id !== first.ib_id;

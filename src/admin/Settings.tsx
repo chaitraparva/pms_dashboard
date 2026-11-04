@@ -78,6 +78,7 @@ export function Settings() {
   return (
     <>
       <PageHead crumbs={['Settings']} title="Settings" sub={`Brand, product rules and administrators. Changes are audited. Last updated ${dateTime(s.updated_at)}.`} />
+      <AedRate />
       <div className="card">
         <div className="tabs" style={{ padding: '0 12px' }} role="tablist">
           {TABS.map(([k, l]) => (
@@ -196,6 +197,37 @@ export function Settings() {
 
       {tab !== 'admins' && <AccrualJob />}
     </>
+  );
+}
+
+/** The INR-per-AED rate (changes daily). Only used to show amounts in AED with the ₹ INR / AED switch at the top; nothing saved is converted. */
+function AedRate() {
+  const { settings, reloadSettings } = useAuth();
+  const act = useAction();
+  const cur = Number(settings?.inr_per_aed || 0);
+  const [v, setV] = useState(cur ? String(cur) : '');
+  useEffect(() => { setV(cur ? String(cur) : ''); }, [cur]);
+  const n = Number(v);
+  const err = !v.trim() ? 'Enter the rate.' : !(n > 0 && n < 1000) || !/^\d+(\.\d{1,4})?$/.test(v.trim()) ? 'Enter how many rupees make 1 AED, e.g. 26.3' : null;
+  const save = async () => {
+    if (err) return;
+    const r = await act.run(() => rpc('admin_set_aed_rate', { p_rate: v.trim() }), ['AED rate saved', `1 AED = ₹${v.trim()} from today`]);
+    if (r !== undefined) await reloadSettings();
+  };
+  const hist = (settings?.aed_rate_history || []).slice(0, 5);
+  return (
+    <div className="card">
+      <div className="card-h"><h3>Currency · AED rate</h3><div className="r">{cur ? <Badge cls="b-blue">1 AED = ₹{cur}{settings?.aed_rate_on ? ` · ${date(settings.aed_rate_on)}` : ''}</Badge> : <Badge cls="b-amber">Not set</Badge>}</div></div>
+      <div className="card-b form">
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <Field label="Rupees for 1 AED (today’s rate)" err={v && err ? err : null} hint="Update it whenever the rate changes. Investors set to AED (Record investment or Edit account) see their amounts in AED at this rate, and so does their page here. Nothing saved is converted.">
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span>1 AED = ₹</span><input className="input num" style={{ maxWidth: 140 }} inputMode="decimal" value={v} onChange={e => setV(e.target.value)} placeholder="e.g. 26.3" /></div>
+          </Field>
+          <button className="btn primary" onClick={save} disabled={act.busy || !!err || n === cur}>{act.busy ? 'Saving…' : 'Save rate'}</button>
+        </div>
+        {hist.length > 1 && <p className="hint">Earlier: {hist.slice(1).map(h => `₹${h.rate} (${date(h.on)})`).join(' · ')}</p>}
+      </div>
+    </div>
   );
 }
 

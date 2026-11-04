@@ -8,7 +8,9 @@ export type EarlyRedemption = 'not_permitted' | 'permitted_with_fee' | 'admin_di
 
 export interface Settings {
   id: 1; company_name: string; tagline: string; logo_url: string | null; primary_color: string;
-  currency: string; locale: string; timezone: string; approaching_days: number; request_window_days: number;
+  currency: string; locale: string; timezone: string;
+  /** INR for 1 AED, set by the Super Admin (changes daily); only used to show amounts in AED */
+  inr_per_aed?: number | null; aed_rate_on?: string | null; aed_rate_history?: { rate: number; on: string; at: string }[]; approaching_days: number; request_window_days: number;
   default_payout_lag_days: number; four_eyes: boolean; allow_custom_lockin: boolean; lockin_options: number[];
   default_terms: string; default_risk_disclosure: string; support_email: string; support_phone: string; legal_footer: string;
   property_site_url: string; show_properties_to: 'all' | 'unlocked';
@@ -30,6 +32,8 @@ export interface Profile {
   password_changed_at?: string;
   /** Super Admin view-only login: sees everything, cannot change anything. */
   read_only?: boolean;
+  /** Investors: amounts shown in INR or AED (at the rate in Settings); saved amounts are always INR. */
+  currency?: 'INR' | 'AED';
 }
 
 export interface Branch { id: string; code: string; name: string; city: string; status: 'active' | 'inactive'; created_at: string; updated_at: string }

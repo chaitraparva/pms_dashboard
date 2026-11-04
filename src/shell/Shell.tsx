@@ -4,7 +4,7 @@ import { Icon } from '../ui/Icon';
 import { CrumbCtx } from '../ui/kit';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
-import { dateShort, initials } from '../lib/format';
+import { dateShort, initials, setDisplayCurrency } from '../lib/format';
 import { onRefresh, refreshAll } from '../lib/useQuery';
 import type { Notification } from '../lib/types';
 
@@ -26,6 +26,12 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
     mark(); new MutationObserver(mark).observe(el, { childList: true, subtree: true });
   }, []);
   const { profile, settings, signOut } = useAuth();
+  // amounts are shown in INR, or in AED (at the Super Admin's rate) for an investor set to AED; saved amounts stay INR.
+  // Super Admin pages switch to AED only on the page of an AED investor (that page sets it).
+  const admin = base === '/admin';
+  const rate = Number(settings?.inr_per_aed || 0);
+  const shown: 'INR' | 'AED' = !admin && profile?.currency === 'AED' && rate > 0 ? 'AED' : 'INR';
+  setDisplayCurrency(shown, rate);
   const navTo = useNavigate();
   const loc = useLocation();
   const [crumbs, setCrumbs] = useState<string[]>([]);
@@ -124,7 +130,8 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
               )}
             </div>
           </header>
-          <main className={'content' + (profile?.read_only ? ' ro' : '')} ref={roMark}>
+          <main key={shown + rate} className={'content' + (profile?.read_only ? ' ro' : '')} ref={roMark}>
+            {shown === 'AED' && <div className="note" style={{ marginBottom: 14 }}>Amounts are shown in <b>AED</b> at <b>1 AED = ₹{rate}</b>{settings?.aed_rate_on ? ` (rate of ${dateShort(settings.aed_rate_on)})` : ''}.</div>}
             {profile?.read_only && <div className="note info" style={{ marginBottom: 14 }}><b>CRM login · read only.</b> You can see every page and option, but nothing can be added, accepted, edited or deleted.</div>}
             <Outlet />
           </main>

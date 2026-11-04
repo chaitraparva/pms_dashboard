@@ -6,7 +6,7 @@ import { useAuth, useSettings } from '../lib/auth';
 import { createIbLogin, resetUserPassword, setInvestorLogin } from '../lib/adminApi';
 import { uploadDocument, openDocument, deleteDocument } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
-import { money, date, dateTime, initials, isUnlocked, lockinText, rate, today, LEDGER_TYPE } from '../lib/format';
+import { money, date, dateTime, initials, isUnlocked, lockinText, rate, today, LEDGER_TYPE, setDisplayCurrency } from '../lib/format';
 import type { AuditLog, Branch, Profile, Investment, Balance, LedgerEntry, DocumentRow, KycStatus, Payout } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, KycBadge, AcctBadge, InvBadge, LedgerBadge, Drawer, Modal, Field, useAction, Badge, PayBadge } from '../ui/kit';
@@ -71,7 +71,7 @@ export function Investors() {
   const branches = q.data?.branches || [];
   const branchParam = sp.get('branch') || '';
   const cols: Col<Row>[] = useMemo(() => [
-    { h: 'Investor', v: r => r.full_name, r: r => <><b>{r.full_name || '—'}</b><span className="sub">{r.code} · {r.phone || r.email}</span></> },
+    { h: 'Investor', v: r => r.full_name, r: r => <><b>{r.full_name || '—'}</b>{r.currency === 'AED' && <> <span className="badge b-blue">AED</span></>}<span className="sub">{r.code} · {r.phone || r.email}</span></> },
     { h: 'Branch', v: r => r.branch || 'zz', r: r => r.branch || <span className="muted">Not assigned</span> },
     { h: 'Under', v: r => r.introducer || 'zz', r: r => r.introducer || <span className="muted">Individual</span> },
     { h: 'Phone', v: r => r.phone, r: r => <span className="num">{r.phone || '—'}</span> },
@@ -214,6 +214,9 @@ export function InvestorDetail() {
       <Empty title="Investor not found">No investor has the code {code}. <Link to="/admin/investors">Back to investors</Link></Empty></>
   );
   const { p, invs, bal, history, ledger, payouts, docs, invCode, branches, introducer, brought, bonus, running, ib } = q.data;
+  // an AED investor's page shows amounts in AED at the rate in Settings (saved amounts stay INR)
+  const aedRate = Number(s?.inr_per_aed || 0), inAed = p.currency === 'AED' && aedRate > 0;
+  setDisplayCurrency(inAed ? 'AED' : 'INR', aedRate);
   const live = invs.filter(i => LIVE.includes(i.status));
   const principal = live.reduce((x, i) => x + Number(i.principal), 0);
   // every month across the live investments: the investor's ROI, and the IB bonus paid on top to the IB
@@ -254,6 +257,7 @@ export function InvestorDetail() {
         </div>
       </PageHead>
 
+      {p.currency === 'AED' && <div className="note info">{inAed ? <>This investor is set to <b>AED</b>: amounts on this page are shown in AED at <b>1 AED = ₹{aedRate}</b>{s?.aed_rate_on ? ` (${date(s.aed_rate_on)})` : ''}. Saved amounts are in INR.</> : <>This investor is set to <b>AED</b>, but no AED rate is set yet. Set it in <b>Settings</b>.</>}</div>}
       {p.kyc_status !== 'verified' && (
         <div className="note">
           <b>{p.kyc_status === 'rejected' ? 'Verification was rejected.' : 'Awaiting KYC verification.'}</b> Investments can only be recorded for verified investors.
@@ -521,7 +525,7 @@ function ResetPassword({ p, onClose }: { p: Profile; onClose: () => void }) {
 function EditInvestor({ p, onClose }: { p: Profile; onClose: () => void }) {
   const act = useAction();
   const aq = useQuery(loadAdmins, []);
-  const init = { introduced_by: p.introduced_by || '', full_name: p.full_name, phone: p.phone, address: p.address, city: p.city, id_number_masked: p.id_number_masked, bank_name: p.bank_name, bank_account_masked: p.bank_account_masked, bank_ifsc: p.bank_ifsc };
+  const init = { currency: p.currency === 'AED' ? 'AED' : 'INR', introduced_by: p.introduced_by || '', full_name: p.full_name, phone: p.phone, address: p.address, city: p.city, id_number_masked: p.id_number_masked, bank_name: p.bank_name, bank_account_masked: p.bank_account_masked, bank_ifsc: p.bank_ifsc };
   const [f, setF] = useState(init);
   const [reason, setReason] = useState('');
   const [newPw, setNewPw] = useState('');
@@ -558,6 +562,13 @@ function EditInvestor({ p, onClose }: { p: Profile; onClose: () => void }) {
           <Field label="Under" hint="Receives the bonus. Unpaid bonuses move to the investor you choose.">
             <SearchSelect value={f.introduced_by} onChange={v => setF({ ...f, introduced_by: v })} empty="Individual (nobody)"
               options={(aq.data || []).filter(a => a.id !== p.id && (a.account_status === 'active' || a.id === f.introduced_by)).map(a => ({ value: a.id, label: introLabel(a) }))} />
+          </Field>
+        )}
+        {p.role === 'investor' && (
+          <Field label="Currency" hint="How this investor's amounts are shown, here and in their own login. Saved amounts stay in INR; AED uses the rate in Settings.">
+            <div className="chips">
+              {(['INR', 'AED'] as const).map(c => <button key={c} type="button" className={'chip ' + (f.currency === c ? 'on' : '')} onClick={() => setF({ ...f, currency: c })}>{c === 'INR' ? '₹ INR' : 'AED'}</button>)}
+            </div>
           </Field>
         )}
         <div className="f-row">

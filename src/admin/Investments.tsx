@@ -6,7 +6,7 @@ import { useAuth, useSettings } from '../lib/auth';
 import { uploadDocument, openDocument, deleteDocument, uploadAttachment } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
 import { recordInvestmentFull } from '../lib/adminApi';
-import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText, roiWayText } from '../lib/format';
+import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText, roiWayText, setDisplayCurrency } from '../lib/format';
 import type { Investment, Balance, Branch, Profile, Plan, Accrual, Payout, LedgerEntry } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, InvBadge, PayBadge, LedgerBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
@@ -134,7 +134,7 @@ export function Investments() {
 
 /* =============================== RECORD DRAWER =============================== */
 type Found = { id: string; code: string; full_name: string; phone: string; has_login: boolean; ib_id: string | null; ib_name: string | null; people: number } | null;
-type Person = Lite & { phone?: string; has_login?: boolean; is_ib?: boolean; can_introduce?: boolean; account_status?: string };
+type Person = Lite & { phone?: string; has_login?: boolean; is_ib?: boolean; can_introduce?: boolean; account_status?: string; currency?: 'INR' | 'AED' };
 const LOCKS: [string, string][] = [['0', 'No lock-in'], ['6', '6 months'], ['12', '12 months'], ['custom', 'Custom']];
 const genPw = () => { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'; let s = ''; for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)]; return 'Parva@' + s; };
 const DEC = (v: string, d: number) => new RegExp('^\\d+(\\.\\d{1,' + d + '})?$').test(v.trim());
@@ -177,7 +177,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const t = today();
   const opts = useQuery(async () => {
     const [all, branches, pre] = await Promise.all([
-      fetchAll<Person>((a, b) => api.from('profiles').select('id,full_name,code,email,phone,branch_id,introduced_by,has_login,is_ib,can_introduce,account_status').eq('role', 'investor').order('full_name').range(a, b)),
+      fetchAll<Person>((a, b) => api.from('profiles').select('id,full_name,code,email,phone,branch_id,introduced_by,has_login,is_ib,can_introduce,account_status,currency').eq('role', 'investor').order('full_name').range(a, b)),
       api.from('branches').select('id,name,code,city,status').order('name').then(r => must(r) as Pick<Branch, 'id' | 'name' | 'code' | 'city' | 'status'>[]),
       preInvestor ? api.from('profiles').select('id,full_name,code,phone').eq('code', preInvestor).maybeSingle() : Promise.resolve({ data: null, error: null })
     ]);
@@ -185,6 +185,10 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   }, [preInvestor]);
 
   const [type, setType] = useState<'individual' | 'ib'>('individual');
+  // the currency this investor's amounts are shown in (amounts are typed and saved in INR)
+  const [currency, setCurrency] = useState<'INR' | 'AED'>('INR');
+  const [curTouched, setCurTouched] = useState(false);
+  const aedRate = Number(useSettings()?.inr_per_aed || 0);
   // branch: chosen at the top; an existing person's (or the IB's) branch is filled in until the admin changes it
   const [branch, setBranch] = useState('');
   const [branchTouched, setBranchTouched] = useState(false);
@@ -323,6 +327,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const indRow = picked || (ind.found ? all.find(x => x.id === ind.found!.id) : undefined);
   const suggested = (type === 'individual' ? indRow?.branch_id : withSub ? subRow?.branch_id || ib?.branch_id : ib?.branch_id) || '';
   useEffect(() => { if (!branchTouched) setBranch(suggested); }, [suggested, branchTouched]);
+  const personCur = (type === 'individual' ? indRow?.currency : withSub ? subRow?.currency : ib?.currency) === 'AED' ? 'AED' : 'INR';
+  useEffect(() => { if (!curTouched) setCurrency(personCur); }, [personCur, curTouched]);
   const newBranch = branch === 'new';
   const branchErr = newBranch ? (!nbName.trim() ? 'Enter the branch name.' : !nbCode.trim() ? 'Enter a short branch code, e.g. BLR.' : (opts.data?.branches || []).some(x => x.code.toLowerCase() === nbCode.trim().toLowerCase() || x.name.toLowerCase() === nbName.trim().toLowerCase()) ? 'A branch with this name or code already exists. Choose it from the list.' : null) : null;
 
@@ -341,7 +347,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
       try {
         return await recordInvestmentFull({
           p_more: more.map((x, k) => ({ p_proof: files[k], p_rate: x.roi.trim(), p_bonus: withSub ? (x.bonus.trim() || '0') : '0', p_lockin_months: x.lock === 'custom' ? Number(x.customLock) : Number(x.lock), p_principal: Number(x.amount), p_start_date: x.start, p_reference: x.ref.trim(), p_notes: x.notes.trim(), p_roi_method: x.roiWay, p_roi_upi: x.roiWay === 'upi' ? x.roiUpi.trim() : '' })),
-          p_type: type, p_branch: branchId || null, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: regOnly ? 0 : amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_roi_method: roiWay, p_roi_upi: roiWay === 'upi' ? roiUpi.trim() : '',
+          p_type: type, p_currency: currency, p_branch: branchId || null, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: regOnly ? 0 : amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_roi_method: roiWay, p_roi_upi: roiWay === 'upi' ? roiUpi.trim() : '',
           ...(type === 'individual'
             ? { p_person: picked ? picked.id : null, p_name: name.trim(), p_phone: phone.trim(), p_password: needPw ? pw : '' }
             : {
@@ -423,6 +429,11 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
               <button type="button" role="radio" aria-checked={type === 'ib'} className={'chip ' + (type === 'ib' ? 'on' : '')} onClick={() => setType('ib')}>IB</button>
             </div>
             <p className="hint">{type === 'individual' ? 'An investor in their own name. Nobody earns a bonus on this investment.' : 'An IB (introducing broker). Add a sub-investor to record the investment under the IB, or leave it empty for the IB’s own investment.'}</p>
+          </Field>
+          <Field label="Currency" hint={currency === 'AED' ? (aedRate > 0 ? `Their amounts are shown in AED (here and in their login) at 1 AED = ₹${aedRate}. Type amounts below in INR.` : 'Set the AED rate in Settings so amounts can be shown in AED. Type amounts below in INR.') : 'Their amounts are shown in INR.'}>
+            <div className="chips" role="radiogroup" aria-label="Currency">
+              {(['INR', 'AED'] as const).map(c => <button key={c} type="button" role="radio" aria-checked={currency === c} className={'chip ' + (currency === c ? 'on' : '')} onClick={() => { setCurrency(c); setCurTouched(true); }}>{c === 'INR' ? '₹ INR' : 'AED'}</button>)}
+            </div>
           </Field>
 
           {type === 'individual' ? (
@@ -516,7 +527,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
 
           <div className="sec">
           <h4>Investment 1</h4>
-          <Field label={type === 'ib' ? 'Principal (INR)' : 'Principal (INR) *'} err={e('amount')} hint={type === 'ib' ? (withSub ? 'Optional. Leave empty to only add the sub-investor (name is enough); fill it to record an investment too.' : 'Optional. Leave empty or 0 to only register the IB.') : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder="e.g. 500000" /><AmountWords v={amount} /></Field>
+          <Field label={type === 'ib' ? 'Principal (INR)' : 'Principal (INR) *'} err={e('amount')} hint={type === 'ib' ? (withSub ? 'Optional. Leave empty to only add the sub-investor (name is enough); fill it to record an investment too.' : 'Optional. Leave empty or 0 to only register the IB.') : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder="e.g. 500000" /><AmountWords v={amount} />{currency === 'AED' && aedRate > 0 && amt > 0 && <p className="hint">≈ AED {(amt / aedRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at 1 AED = ₹{aedRate}</p>}</Field>
           <div className="f-row">
             <Field label={'Monthly ROI (% per month)' + star} err={e('roi')} hint="Any rate, e.g. 0.25, 2.3, 3.3, 4.3, 6.">
               <input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} placeholder="e.g. 6" />
@@ -601,6 +612,8 @@ interface Amendment {
 interface DetailData {
   i: Investment; investor: Lite | undefined; bal: Balance | null; accruals: Accrual[]; payouts: Payout[]; ledger: LedgerEntry[];
   amendments: Amendment[]; plan: Plan | null; names: Record<string, Lite>; introducedBy: string | null;
+  /** the investor is shown in AED */
+  aed: boolean;
 }
 
 async function loadInvestment(code: string): Promise<DetailData | null> {
@@ -615,10 +628,10 @@ async function loadInvestment(code: string): Promise<DetailData | null> {
     api.from('plans').select('*').eq('id', i.plan_id).maybeSingle()
   ]);
   const amendments = must(amend) as Amendment[];
-  const ip = must(await api.from('profiles').select('introduced_by').eq('id', i.investor_id).maybeSingle()) as { introduced_by?: string | null } | null;
+  const ip = must(await api.from('profiles').select('introduced_by,currency').eq('id', i.investor_id).maybeSingle()) as { introduced_by?: string | null; currency?: string | null } | null;
   const introducedBy = ip?.introduced_by || null;
   const names = await namesFor([i.investor_id, introducedBy, i.created_by, i.activated_by, ...amendments.flatMap(a => [a.requested_by, a.approved_by])]);
-  return { i, investor: names[i.investor_id], bal: must(bal) as Balance | null, accruals, payouts, ledger, amendments, plan: must(plan) as Plan | null, names, introducedBy };
+  return { i, investor: names[i.investor_id], bal: must(bal) as Balance | null, accruals, payouts, ledger, amendments, plan: must(plan) as Plan | null, names, introducedBy, aed: ip?.currency === 'AED' };
 }
 
 type Dialog = null | 'fund' | 'cancel' | 'amend' | 'edit' | 'delete';
@@ -634,7 +647,9 @@ export function InvestmentDetail() {
   if (q.error) return <><PageHead crumbs={['Investments', code]} title={code} /><ErrorNote msg={q.error} retry={q.reload} /></>;
   if (!q.data && q.loading) return <><PageHead crumbs={['Investments', code]} title={code} /><Loading rows={6} /></>;
   if (!q.data) return <><PageHead crumbs={['Investments', 'Not found']} title="Investment not found" /><Empty title="Investment not found">No investment has the code {code}. <Link to="/admin/investments">Back to the register</Link></Empty></>;
-  const { i, investor, bal, accruals, payouts, ledger, amendments, plan, names, introducedBy } = q.data;
+  const { i, investor, bal, accruals, payouts, ledger, amendments, plan, names, introducedBy, aed } = q.data;
+  // an AED investor's investment is shown in AED at the rate in Settings (saved amounts stay INR)
+  setDisplayCurrency(aed && Number(s?.inr_per_aed || 0) > 0 ? 'AED' : 'INR', Number(s?.inr_per_aed || 0));
   const t = today();
   const pending = i.status === 'pending_funding';
   const closed = i.status === 'redeemed' || i.status === 'cancelled';
