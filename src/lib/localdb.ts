@@ -231,16 +231,18 @@ export function redact(table: string, r: Row): Row {
 export function canWrite(table: string): boolean { return isAdmin() && ['documents'].includes(table); }
 
 /* ---------- accrual engine ---------- */
-function runAccrualsFor(i: Row, asOf: string): number {
+function runAccrualsFor(i: Row, asOf: string, idx?: Map<string, Row[]>): number {
   if (!i.start_date || !LIVE.includes(i.status)) return 0;
   if (i.accrual_mode === 'anniversary_review') return 0; // recorded before calendar months with returns already paid: flagged for the Super Admin
   let n = 0;
+  // this investment's returns, looked up once (not searched in the whole list for every month)
+  const mine = idx ? (idx.get(i.id) || []) : T('accruals').filter(a => a.investment_id === i.id);
   // calendar months: started 10 Oct → 11–31 Oct (pro-rata), then 1–30 Nov, 1–31 Dec …; a month is accrued once it has ended
   for (const full of periodsOf(i, asOf)) {
     if (full.end >= asOf) break;
     const k = full.k, end = full.end;
     // a month already accrued only in part (it used to stop at the lock-in end) gets the rest of the month as a top-up
-    const have = T('accruals').filter(a => a.investment_id === i.id && a.period_no === k && (a.kind === 'regular' || a.kind === 'stub'));
+    const have = mine.filter(a => a.period_no === k && (a.kind === 'regular' || a.kind === 'stub'));
     const covered = have.map(a => String(a.period_end)).sort().pop();
     if (covered && covered >= end) continue;
     const p: CalPeriod = covered ? { ...full, start: addDays(covered, 1), days: diffDays(addDays(covered, 1), end) + 1, full: false } : full;
@@ -250,7 +252,7 @@ function runAccrualsFor(i: Row, asOf: string): number {
     const bonusAmt = i.bonus_on_top ? periodReturn(i, p, Number(i.admin_bonus_rate || 0)) : round2(periodReturn(i, p, Number(i.monthly_rate)) - mineAmt);
     if (mineAmt <= 0 && principalOn(i, p.start) <= 0) { closeIfEmpty(i); break; }
     const acc = { id: uuid(), investment_id: i.id, period_no: k, kind, period_start: p.start, period_end: end, accrual_date: end, days: p.days, days_in_period: p.daysInMonth, amount: mineAmt, reverses_id: null, reason: null, created_by: null, created_at: nowIso() };
-    T('accruals').push(acc); n++;
+    T('accruals').push(acc); mine.push(acc); if (idx && !idx.has(i.id)) idx.set(i.id, mine); n++;
     // months up to the closing date (everything already given) are recorded as paid straight away
     const cl = settings().paid_until as Row | undefined, closed = !!cl && end <= String(cl.end);
     const pay = { id: uuid(), code: 'PAY-' + pad(nextSeq('payout', 1), 6), accrual_id: acc.id, investment_id: i.id, investor_id: i.investor_id, amount: mineAmt, due_date: addDays(end, i.payout_lag_days), status: closed ? 'paid' : 'accrued',
@@ -288,7 +290,10 @@ function closeIfEmpty(i: Row) {
 }
 /** The hourly job of the old server: run on load and every hour while the app is open. */
 export function runAllAccruals(asOf = today()): number {
-  let n = 0; T('investments').forEach(i => { n += runAccrualsFor(i, asOf); });
+  // one lookup of everyone's returns, so each investment's months are found instantly
+  const idx = new Map<string, Row[]>();
+  T('accruals').forEach(a => { const l = idx.get(a.investment_id); if (l) l.push(a); else idx.set(a.investment_id, [a]); });
+  let n = 0; T('investments').forEach(i => { n += runAccrualsFor(i, asOf, idx); });
   if (n) persist('accruals', 'payouts', 'ledger_entries', 'notifications', 'investments', 'admin_bonuses');
   return n;
 }
@@ -703,7 +708,7 @@ export function rpcCall(fn: string, a: Row): unknown {
     case 'reply_query': replyQuery(a); touched('queries', 'notifications'); return null;
     case 'admin_close_query': { requireAdmin(); const q = T('queries').find(x => x.id === a.p_id) || fail('Query not found.'); q.status = 'closed'; q.updated_at = nowIso(); touched('queries'); return null; }
     case 'mark_popped': { T('notifications').forEach(x => { if (x.user_id === currentUid && x.id === a.p_id) x.popped_at = nowIso(); }); persist('notifications'); return null; }
-    case 'admin_dashboard': runAllAccruals(); return dashboard(a.p_branch || null, a.p_from || null, a.p_to || null);
+    case 'admin_dashboard': return dashboard(a.p_branch || null, a.p_from || null, a.p_to || null);
     case 'admin_set_aed_rate': {
       // the Super Admin's INR-per-AED rate for showing amounts in AED (nothing saved is converted)
       requireAdmin(); const rate = Number(a.p_rate);
@@ -2045,7 +2050,15 @@ function parvaProperties(by: string | null): Row[] {
 export function attach(store: Store) { S = store; TABLES.forEach(t => { S.tables[t] ||= []; }); }
 export const current = () => S;
 /** Monthly returns that have fallen due since the last request. */
-export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); runAllAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
+/** The full returns check for every investment runs once a day (the first request of the day). Changes in between
+ *  (recording, editing, withdrawals) already check their own investment straight away. */
+function dailyAccruals() {
+  const d = Number(today().replace(/-/g, ''));
+  if (S.seq.accruals_day === d) return;
+  runAllAccruals();
+  S.seq.accruals_day = d;
+}
+export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); dailyAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
 /** IB bonuses recorded while the person was not yet placed under their IB (or before the IB was known) belong to the IB the
  *  person is under now: they are given to that IB, so every IB sees all the bonus on the people under them. */
 function bonusOwners() {
