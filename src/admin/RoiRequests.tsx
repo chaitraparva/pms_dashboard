@@ -10,7 +10,7 @@ import { DateInput } from '../ui/DateInput';
 import { RoiBadge, monthText, type RoiRequest } from '../investor/RequestRoi';
 import { PayView, payText } from '../ui/PayTo';
 
-/* ROI requests from investors (any day, for months that have ended) and from IBs for people under them without a login.
+/* ROI requests from investors (any day, for months that have ended) and from IBs for anyone under them.
    Pay a request with "Mark fulfilled": its returns become paid, highest ROI % first. ROI not requested stays pending. */
 
 type P = { id: string; code: string; full_name: string; phone: string | null };
@@ -28,7 +28,7 @@ export function RoiRequests() {
   const [pay, setPay] = useState<RoiRequest | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const act = useAction();
-  const head = <PageHead crumbs={['ROI requests']} title="ROI requests" sub="Investors request a month’s ROI any day after it ends (in November → October; missed months can be requested together). IBs can request for people under them who have no login. ROI that is not requested stays pending." />;
+  const head = <PageHead crumbs={['ROI requests']} title="ROI requests" sub="Investors request a month’s ROI any day after it ends (in November → October; missed months can be requested together). IBs can request for anyone under them. ROI that is not requested stays pending." />;
   if (q.error) return <>{head}<ErrorNote msg={q.error} retry={q.reload} /></>;
   if (!q.data) return <>{head}<Loading /></>;
   const { reqs, pm } = q.data;
@@ -37,7 +37,7 @@ export function RoiRequests() {
   const cancel = async (r: RoiRequest) => { const x = await act.run(() => rpc('cancel_roi_request', { p_id: r.id, p_reason: 'Cancelled by the company' }), ['Request cancelled', r.code + ' · its ROI is pending again']); if (x !== undefined) { refreshAll(); q.reload(); } };
   return (
     <>
-      <PageHead crumbs={['ROI requests']} title="ROI requests" sub="Investors request a month’s ROI any day after it ends (in November → October; missed months can be requested together). IBs can request for people under them who have no login. ROI that is not requested stays pending."
+      <PageHead crumbs={['ROI requests']} title="ROI requests" sub="Investors request a month’s ROI any day after it ends (in November → October; missed months can be requested together). IBs can request for anyone under them. ROI that is not requested stays pending."
         actions={<button className="btn" onClick={() => downloadCsv('roi-requests', ['Request', 'Investor ID', 'Investor', 'Phone', 'Requested by', 'Requested on', 'Months', 'Amount', 'Pay to', 'Status', 'Paid on', 'Reference'],
           rows.map(r => [r.code, pm.get(r.investor_id)?.code, pm.get(r.investor_id)?.full_name, pm.get(r.investor_id)?.phone, r.requested_by !== r.investor_id ? pm.get(r.requested_by)?.full_name : 'Self', r.requested_on, r.months.map(monthText).join(', '), Number(r.amount).toFixed(2), payText(r), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export to Excel</button>} />
       <div className="kpis">

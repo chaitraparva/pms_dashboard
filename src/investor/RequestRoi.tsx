@@ -8,7 +8,7 @@ import { PayChips, PayFields, PayView, emptyPay, payArgs, payErrors, type PayDet
 import type { BankDetails } from '../lib/types';
 
 /* Request ROI: on any day the investor asks for the ROI of the months that have ended (in November → October),
-   together with any earlier month they did not ask for. ROI is paid only after it is requested. An IB can ask for the people under them who have no login.
+   together with any earlier month they did not ask for. ROI is paid only after it is requested. An IB can ask for anyone under them, with or without a login.
    They choose how it is paid: Bank (name, account no., IFSC, branch), UPI (ID or phone), Cash or MT5 (MT5 ID). */
 
 interface Item { payout_id: string | null; investment_id?: string; code: string; rate: number; amount: number; month?: string }
@@ -37,6 +37,8 @@ export function RequestRoi() {
   const [how, setHow] = useState<Record<string, PayMethod>>({});
   const [pays, setPays] = useState<Record<string, PayDetails>>({});
   const [tried, setTried] = useState<Record<string, boolean>>({});
+  const [forWho, setForWho] = useState<'me' | 'subs' | null>(null);
+  const [sel, setSel] = useState<string[]>([]);
 
   const head = <PageHead crumbs={['Request ROI']} title="Request ROI" sub="Request the ROI of a month after it ends (in November → October). ROI is paid only after you request it; months you have not requested stay here so you can request them together." />;
   if (q.error) return <>{head}<ErrorNote msg={q.error} retry={q.reload} /></>;
@@ -54,10 +56,15 @@ export function RequestRoi() {
       for (const p of withMonths) await rpc('request_roi', { p_investor: p.id, p_months: chosen(p), p_method: how[p.id], ...payArgs(how[p.id], pays[p.id] || emptyPay()) });
       return true;
     }, ['ROI requested', `${withMonths.length === 1 ? withMonths[0].name : withMonths.length + ' people'} · the company pays it and you see it here`]);
-    if (r) { setPick({}); setHow({}); setPays({}); setTried({}); refreshAll(); q.reload(); }
+    if (r) { setPick({}); setHow({}); setPays({}); setTried({}); setSel([]); refreshAll(); q.reload(); }
   };
   const me = opts.people.find(p => p.self);
   const subs = opts.people.filter(p => !p.self);
+  const canPick = subs.filter(p => p.months.length);
+  const picked = subs.filter(p => sel.includes(p.id) && p.months.length);
+  const isIb = subs.length > 0;
+  // an IB with no ROI of their own starts on their sub-investors
+  const mode = !me ? 'subs' : !isIb ? 'me' : forWho ?? (me.months.length ? 'me' : 'subs');
   const total = (p: Person) => p.months.filter(m => chosen(p).includes(m.month)).reduce((x, m) => x + m.amount, 0);
 
   const card = (p: Person, title: string) => (
@@ -86,13 +93,43 @@ export function RequestRoi() {
   return (
     <>
       {head}
-      {me && card(me, 'My ROI')}
-      {me && me.months.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy || !chosen(me).length} onClick={() => send([me])}>{act.busy ? 'Sending…' : `Request ${money(total(me))}`}</button>}
-      {subs.length > 0 && <>
-        <h3 style={{ margin: '18px 0 4px' }}>People under you without a login</h3>
-        <p className="hint">They cannot sign in, so you can request their ROI for them, all together.</p>
-        {subs.map(p => card(p, p.name + ' · ' + p.code))}
-        {subs.some(p => p.months.length) && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy} onClick={() => send(subs)}>{act.busy ? 'Sending…' : `Request for all (${subs.filter(p => p.months.length && chosen(p).length).length} people · ${money(subs.reduce((x, p) => x + total(p), 0))})`}</button>}
+      {me && isIb && (
+        <div className="card"><div className="card-b">
+          <Field label="Requesting for">
+            <div className="chips" role="radiogroup">
+              <button type="button" role="radio" aria-checked={mode === 'me'} className={'chip ' + (mode === 'me' ? 'on' : '')} onClick={() => setForWho('me')}>Myself</button>
+              <button type="button" role="radio" aria-checked={mode === 'subs'} className={'chip ' + (mode === 'subs' ? 'on' : '')} onClick={() => setForWho('subs')}>My sub-investors</button>
+            </div>
+          </Field>
+        </div></div>
+      )}
+      {mode === 'me' && me && <>
+        {card(me, 'My ROI')}
+        {me.months.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy || !chosen(me).length} onClick={() => send([me])}>{act.busy ? 'Sending…' : `Request ${money(total(me))}`}</button>}
+      </>}
+      {mode === 'subs' && <>
+        <div className="card">
+          <div className="card-h"><h3>My sub-investors</h3><div className="r">{picked.length} selected</div></div>
+          <div className="card-b form">
+            <p className="hint">Choose who to request for. They are notified and see the request too.</p>
+            {!subs.length ? <p className="hint">No sub-investors yet.</p> : <div style={{ display: 'grid', gap: 6 }}>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 600 }}>
+                <input type="checkbox" disabled={!canPick.length} checked={canPick.length > 0 && picked.length === canPick.length}
+                  onChange={e => setSel(e.target.checked ? canPick.map(p => p.id) : [])} />Select all
+              </label>
+              {subs.map(p => (
+                <label key={p.id} style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: p.months.length ? 1 : 0.55 }}>
+                  <input type="checkbox" disabled={!p.months.length} checked={sel.includes(p.id) && p.months.length > 0}
+                    onChange={e => setSel(e.target.checked ? [...sel, p.id] : sel.filter(x => x !== p.id))} />
+                  <span>{p.name} <span className="muted mono">{p.code}</span></span>
+                  <span className="muted" style={{ marginLeft: 'auto' }}>{p.months.length ? money(p.months.reduce((x, m) => x + m.amount, 0)) : 'nothing to request'}</span>
+                </label>
+              ))}
+            </div>}
+          </div>
+        </div>
+        {picked.map(p => card(p, p.name + ' · ' + p.code))}
+        {picked.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy} onClick={() => send(picked)}>{act.busy ? 'Sending…' : `Request for ${picked.length === 1 ? picked[0].name : picked.length + ' people'} · ${money(picked.reduce((x, p) => x + total(p), 0))}`}</button>}
       </>}
       <div className="card" style={{ marginTop: 18 }}>
         <div className="card-h"><h3>My requests</h3></div>

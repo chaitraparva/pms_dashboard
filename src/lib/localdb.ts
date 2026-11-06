@@ -501,7 +501,7 @@ function dashboard(branch: string | null, pFrom: string | null, pTo: string | nu
 
 
 /* ---------- ROI requests: on any day an investor asks for the ROI of the months that have ended (in November → October,
-   plus any earlier month they did not ask for). An IB can ask for the people under them who have no login.
+   plus any earlier month they did not ask for). An IB can ask for anyone under them (with or without a login).
    ROI that is not asked for stays pending. The Super Admin pays a request; it is listed highest ROI % first. ---------- */
 /** Unpaid returns of ended months that are not in a request yet, per month (highest ROI % first). */
 function roiAvailable(investorId: string): Row[] {
@@ -519,10 +519,10 @@ function roiAvailable(investorId: string): Row[] {
   return [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, items]) => ({ month, amount: round2(items.reduce((x, it) => x + it.amount, 0)),
     items: items.sort((a, b) => b.rate - a.rate || String(a.code).localeCompare(String(b.code))) }));
 }
-/** What the signed-in user can request now: for themselves, and (for an IB) for each person under them without a login. */
+/** What the signed-in user can request now: for themselves, and (for an IB) for each person under them. */
 function roiOptions(onlyFor: string | null) {
   const u = me() || fail('Not signed in.');
-  const subs = isAdmin() ? [] : T('profiles').filter(p => p.role === 'investor' && p.introduced_by === u.id && !hasLogin(p.id));
+  const subs = isAdmin() ? [] : T('profiles').filter(p => p.role === 'investor' && p.introduced_by === u.id);
   const who = onlyFor ? [onlyFor] : [...(u.role === 'investor' ? [u.id] : []), ...subs.map(p => p.id)];
   return { people: who.map(id => { const p = T('profiles').find(x => x.id === id); return { id, code: p?.code, name: p?.full_name, self: id === u.id, months: roiAvailable(id) }; }) };
 }
@@ -537,10 +537,9 @@ function requestRoi(a: Row): string[] {
   const ids: string[] = [];
   for (const id of targets) {
     const p = T('profiles').find(x => x.id === id && x.role === 'investor') || fail('Investor not found.');
-    // yourself; or, as their IB, someone under you who has no login (people with a login ask for themselves)
+    // yourself; or, as their IB, anyone under you (with or without a login)
     if (!isAdmin() && id !== mePr.id) {
       if (p.introduced_by !== mePr.id) fail('You can only request ROI for yourself or the people under you.');
-      if (hasLogin(id)) fail(`${p.full_name} has their own login and requests their ROI themselves.`);
     }
     const avail = roiAvailable(id).filter(x => months.includes(x.month));
     if (!avail.length) { if (targets.length === 1) fail('There is no ROI to request for the chosen month(s).'); continue; }
