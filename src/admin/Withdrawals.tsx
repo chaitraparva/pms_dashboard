@@ -8,12 +8,13 @@ import type { Profile, Withdrawal, WithdrawalPart } from '../lib/types';
 import { Drawer, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
 import { DataTable, Col } from '../ui/DataTable';
 import { Icon } from '../ui/Icon';
-import { WdBadge, methodText, EditWithdrawal, DeleteWithdrawal } from '../investor/Withdraw';
+import { WdBadge, EditWithdrawal, DeleteWithdrawal } from '../investor/Withdraw';
 import { AttachmentLinks } from '../ui/Attach';
 import type { WithdrawalMethod } from '../lib/types';
 import { SearchSelect } from '../ui/SearchSelect';
 import { AmountWords } from '../ui/AmountWords';
 import { DateInput } from '../ui/DateInput';
+import { PayChips, PayFields, PayView, emptyPay, payArgs, payErrors, payText, type PayDetails, type PayMethod } from '../ui/PayTo';
 
 /* Withdrawals: requested by investors (or recorded here for them), taken from the highest monthly ROI first.
    Returns already use the lower amount from the request date. The Super Admin pays and marks them completed. */
@@ -48,7 +49,7 @@ export function Withdrawals() {
     { h: 'Investor', v: r => r.who?.full_name || '', r: r => r.who ? <><Link to={'/admin/investors/' + r.who.code}>{r.who.full_name}</Link><span className="sub">{r.who.code} · {r.who.phone}</span>{r.by && <span className="sub">requested by IB {r.by.full_name}</span>}</> : '—' },
     { h: 'Withdrawal date', v: r => r.requested_on, r: r => date(r.requested_on) },
     { h: 'Amount', n: true, v: r => Number(r.amount), r: r => <b>{money(r.amount)}</b> },
-    { h: 'How', v: r => r.method, r: r => <>{methodText(r.method)}{r.method === 'mt5' && r.mt5_account && <span className="sub mono">{r.mt5_account}</span>}{r.method === 'ib' && <span className="sub">to {r.ib?.full_name || 'IB'} · needs approval</span>}</> },
+    { h: 'Pay to', v: r => payText(r) + (r.ib ? ' ' + r.ib.full_name : ''), r: r => r.method === 'ib' ? <>Transfer to IB<span className="sub">to {r.ib?.full_name || 'IB'} · needs approval</span></> : <PayView r={r} amount={Number(r.amount)} /> },
     { h: 'Proof', v: r => (r.attachments || []).length, r: r => <AttachmentLinks items={r.attachments} /> },
     { h: 'Taken from (highest ROI first)', v: r => (r.allocations || []).map(p => p.code).join(' '), r: r => <>{(r.allocations || []).map((p: WithdrawalPart) => <div key={p.investment_id} className="sub" style={{ display: 'block' }}><span className="mono">{p.code}</span> · {rateShort(p.plan_rate ?? p.rate)} · {money(p.amount)} → {money(p.after)} left</div>)}</> },
     { h: 'Status', v: r => r.status, r: r => <><WdBadge s={r.status} />{r.status === 'completed' && <span className="sub">{date(r.completed_on)}{r.payment_ref ? ' · ' + r.payment_ref : ''}</span>}{r.status === 'cancelled' && <span className="sub">{r.cancelled_reason}</span>}</> },
@@ -63,8 +64,8 @@ export function Withdrawals() {
     <>
       <PageHead crumbs={['Withdrawals']} title="Withdrawals" sub="Taken automatically from the investor’s highest monthly ROI first, whatever the lock-in. Returns already use the lower amount from the request date. Pay the investor, then click Mark fulfilled."
         actions={<>
-          <button className="btn" disabled={!rows.length} onClick={() => downloadCsv('withdrawals-' + tab, ['Request', 'Investor ID', 'Investor', 'Phone', 'Applied on', 'Amount', 'How', 'Taken from', 'Status', 'Paid on', 'Reference'],
-            rows.map(r => [r.code, r.who?.code, r.who?.full_name, r.who?.phone, r.requested_on, Number(r.amount).toFixed(2), methodText(r.method) + (r.mt5_account ? ' ' + r.mt5_account : '') + (r.ib ? ' ' + r.ib.full_name : ''), (r.allocations || []).map(p => `${p.code} ${p.amount}`).join('; '), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export to Excel</button>
+          <button className="btn" disabled={!rows.length} onClick={() => downloadCsv('withdrawals-' + tab, ['Request', 'Investor ID', 'Investor', 'Phone', 'Applied on', 'Amount', 'Pay to', 'Taken from', 'Status', 'Paid on', 'Reference'],
+            rows.map(r => [r.code, r.who?.code, r.who?.full_name, r.who?.phone, r.requested_on, Number(r.amount).toFixed(2), payText(r) + (r.ib ? ' ' + r.ib.full_name : ''), (r.allocations || []).map(p => `${p.code} ${p.amount}`).join('; '), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export to Excel</button>
           <button className="btn accent" onClick={() => setAdding(true)}><Icon name="plus" />Record withdrawals</button>
         </>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : (
@@ -72,7 +73,7 @@ export function Withdrawals() {
           <div className="kpis k4">
             <Kpi label="Payment processed" value={money(sum(all.filter(r => r.status === 'pending')))} sub={`${n('pending')} to pay`} subCls={n('pending') ? 'warn' : ''} />
             <Kpi label="Payment fulfilled" cls="pos" value={money(sum(all.filter(r => r.status === 'completed')))} sub={`${n('completed')} fulfilled`} />
-            <Kpi label="To bank accounts" value={money(sum(all.filter(r => r.status !== 'cancelled' && r.method === 'bank')))} sub={'cash ' + money(sum(all.filter(r => r.status !== 'cancelled' && r.method === 'cash')))} />
+            <Kpi label="To bank / UPI" value={money(sum(all.filter(r => r.status !== 'cancelled' && (r.method === 'bank' || r.method === 'upi'))))} sub={'cash ' + money(sum(all.filter(r => r.status !== 'cancelled' && r.method === 'cash')))} />
             <Kpi label="To MT5 / to IB" value={money(sum(all.filter(r => r.status !== 'cancelled' && (r.method === 'mt5' || r.method === 'ib'))))} sub={`${all.filter(r => r.status === 'pending' && r.method === 'ib').length} IB transfer${all.filter(r => r.status === 'pending' && r.method === 'ib').length === 1 ? '' : 's'} to approve`} />
           </div>
           <div style={{ display: 'grid', gap: 8 }}>
@@ -111,14 +112,15 @@ function CompleteDialog({ w, onClose }: { w: Row; onClose: () => void }) {
       <div className="form">
         {(w.attachments || []).length > 0 && <Field label="Attached by the investor"><AttachmentLinks items={w.attachments} /></Field>}
         {w.note && <p className="hint">Note: {w.note}</p>}
+        {w.method !== 'ib' && <Field label="Requested to"><div><PayView r={w} amount={Number(w.amount)} /></div></Field>}
         <Field label="Paid by"><div className="chips">
-          {(w.method === 'ib' ? [['ib', 'Transfer to IB']] : [['bank', 'Bank transfer'], ['mt5', 'MT5 account'], ['cash', 'Cash']]).map(([k, l]) =>
+          {(w.method === 'ib' ? [['ib', 'Transfer to IB']] : [['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5']]).map(([k, l]) =>
             <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k as WithdrawalMethod)}>{l}</button>)}
         </div></Field>
         {method === 'mt5' && <Field label="MT5 account"><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
         <div className="f-row">
           <Field label={method === 'ib' ? 'Approved on' : 'Paid on'}><DateInput className="input" value={on} onChange={e => setOn(e.target.value)} /></Field>
-          <Field label={method === 'cash' ? 'Receipt number' : method === 'ib' ? 'Reference (optional)' : method === 'mt5' ? 'MT5 deposit / ticket reference' : 'Bank / UTR reference'}><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>
+          <Field label={method === 'cash' ? 'Receipt number' : method === 'upi' ? 'UPI transaction reference' : method === 'ib' ? 'Reference (optional)' : method === 'mt5' ? 'MT5 deposit / ticket reference' : 'Bank / UTR reference'}><input className="input mono" value={ref} onChange={e => setRef(e.target.value)} /></Field>
         </div>
       </div>
     </Modal>
@@ -140,8 +142,8 @@ function CancelDialog({ w, onClose }: { w: Row; onClose: () => void }) {
   );
 }
 
-interface WdRow { amount: string; on: string; method: WithdrawalMethod; mt5: string; paid: boolean; paidOn: string; ref: string; parts: WithdrawalPart[] }
-const newRow = (prev?: WdRow): WdRow => ({ amount: '', on: today(), method: prev?.method || 'bank', mt5: prev?.mt5 || '', paid: prev ? prev.paid : true, paidOn: '', ref: '', parts: [] });
+interface WdRow { amount: string; on: string; method: WithdrawalMethod; pay: PayDetails; paid: boolean; paidOn: string; ref: string; parts: WithdrawalPart[] }
+const newRow = (prev?: WdRow): WdRow => ({ amount: '', on: today(), method: prev?.method || 'bank', pay: prev?.pay || emptyPay(), paid: prev ? prev.paid : true, paidOn: '', ref: '', parts: [] });
 
 /** Record withdrawals made offline or in the past: one investor, as many withdrawals as needed (+), each with its date,
  *  amount, how it was paid and whether it is already paid. All are saved together, in date order (first in, first out). */
@@ -162,7 +164,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
   const errsOf = (r: WdRow) => ({
     amount: !(Number(r.amount) > 0) || !/^\d+(\.\d{1,2})?$/.test(r.amount.trim()) ? 'Enter the amount.' : null,
     on: r.on && r.on > t ? 'Today or an earlier date.' : null,
-    mt5: null as string | null,
+    mt5: Object.values(payErrors(r.method, r.pay, false))[0] || null,
     paidOn: r.paid && r.paidOn && (r.paidOn < r.on || r.paidOn > t) ? 'On or after the withdrawal date, and not after today.' : null
   });
   const errs = rows.map(errsOf);
@@ -172,7 +174,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
     setTried(true); if (bad) return;
     const r = await act.run(() => rpc('admin_record_withdrawals', {
       p_investor: who,
-      p_items: rows.map(x => ({ p_amount: Number(x.amount), p_date: x.on || t, p_method: x.method, p_mt5: x.mt5.trim(), p_paid: x.paid, p_paid_on: x.paid ? (x.paidOn || x.on) : '', p_ref: x.ref.trim(), p_note: 'Recorded by Super Admin' }))
+      p_items: rows.map(x => ({ p_amount: Number(x.amount), p_date: x.on || t, p_method: x.method, ...payArgs(x.method, x.pay), p_paid: x.paid, p_paid_on: x.paid ? (x.paidOn || x.on) : '', p_ref: x.ref.trim(), p_note: 'Recorded by Super Admin' }))
     }), [rows.length === 1 ? 'Withdrawal recorded' : `${rows.length} withdrawals recorded`, `${money(total)} in total · applied in date order; returns recalculated from the earliest date.`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
@@ -193,13 +195,10 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
                 <Field label="Amount (INR) *" err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={r.amount} onChange={ev => upd(k, { amount: ev.target.value })} placeholder="e.g. 50000" /><AmountWords v={r.amount} /></Field>
               </div>
               <Field label="How it was paid">
-                <div className="chips">
-                  {([['bank', 'Bank transfer'], ['mt5', 'MT5 account'], ['cash', 'Cash'], ...(hasIb ? [['ib', 'Transfer to IB']] : [])] as [WithdrawalMethod, string][]).map(([m, l]) =>
-                    <button key={m} type="button" className={'chip ' + (r.method === m ? 'on' : '')} onClick={() => set(k, { method: m })}>{l}</button>)}
-                </div>
-                {r.method === 'mt5' && <input className={'input mono ' + (e('mt5') ? 'bad' : '')} style={{ marginTop: 8 }} value={r.mt5} onChange={ev => set(k, { mt5: ev.target.value })} placeholder="MT5 account number (optional)" />}
-                {e('mt5') && <p className="hint" style={{ color: 'var(--red)' }}>{e('mt5')}</p>}
+                <PayChips ways={[['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5'], ...(hasIb ? [['ib', 'Transfer to IB'] as [PayMethod, string]] : [])]} value={r.method} onChange={m => set(k, { method: m })} />
+                <p className="hint">Details are optional here.</p>
               </Field>
+              <PayFields method={r.method} d={r.pay} onChange={pay => set(k, { pay })} tried={tried} required={false} amount={Number(r.amount) || undefined} />
               <Field label="Status">
                 <div className="chips">
                   <button type="button" className={'chip ' + (r.paid ? 'on' : '')} onClick={() => set(k, { paid: true })}>Payment fulfilled (already paid)</button>

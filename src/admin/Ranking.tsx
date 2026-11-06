@@ -12,19 +12,18 @@ type Period = '' | '6m' | '1y';
 
 export const multipleText = (m: number) => (m >= 1 ? m.toFixed(1) + '×' : Math.round(m * 100) + '%');
 
-/** Investors ranked by when they last put money in: the most recent investment is rank 1, the earliest is last. */
+/** Investors ranked by total invested: the most money in live investments is rank 1. */
 export function Ranking() {
   const nav = useNavigate();
   const [branch, setBranch] = useState('');
   const [period, setPeriod] = useState<Period>('');
   const bq = useQuery(loadBranches, []);
   const q = useQuery(() => rpc<{ total: number; rows: RankRow[] }>('admin_investor_ranking', { p_branch: branch || null, p_period: period || null }), [branch, period]);
-  const head = <PageHead crumbs={['Investor ranking']} title="Investor ranking" sub="Ranked by when the investor last put money in: the newest investment is rank 1, the earliest investors are last. Each investor sees their own rank in their portal." />;
+  const head = <PageHead crumbs={['Investor ranking']} title="Investor ranking" sub="Ranked by total invested: the investor with the most money invested is rank 1. Each investor sees their own rank in their portal." />;
   if (q.loading && !q.data) return <>{head}<Loading /></>;
   if (q.error || !q.data) return <>{head}<ErrorNote msg={q.error || 'Could not load the ranking.'} retry={q.reload} /></>;
   const { rows, total } = q.data;
-  const days = (d: string | null) => (d ? Math.max(0, Math.round((Date.now() - Date.parse(d + 'T00:00:00Z')) / 864e5)) : 0);
-  const oldest = Math.max(1, ...rows.map(r => days(r.last)));
+  const top = Math.max(1, ...rows.map(r => Number(r.principal)));
   const open = (r: RankRow) => nav('/admin/investors/' + r.code);
   return (
     <>
@@ -41,14 +40,14 @@ export function Ranking() {
       {!rows.length ? <div className="card"><div className="card-b"><Empty title="No investors to rank yet">Investors appear here once they have a live investment.</Empty></div></div> : (
         <>
           <div className="card">
-            <div className="card-h"><h3>Newest investors first</h3><div className="r hint">Longer bar = more recent · click to open</div></div>
+            <div className="card-h"><h3>Highest invested first</h3><div className="r hint">Longer bar = more invested · click to open</div></div>
             <div className="card-b rank-bars">
               {rows.slice(0, 15).map(r => (
-                <button key={r.id} type="button" className="rank-bar" onClick={() => open(r)} title={`${r.name}: last invested ${date(r.last)} · ${money(r.released)} released · ${money(r.to_release)} to be released`}>
+                <button key={r.id} type="button" className="rank-bar" onClick={() => open(r)} title={`${r.name}: ${money(r.principal)} invested · ${money(r.released)} released · ${money(r.to_release)} to be released`}>
                   <span className="rank-no">#{r.rank}</span>
                   <span className="rank-name">{r.name}<small>{r.branch || 'No branch'}</small></span>
-                  <span className="rank-track"><i style={{ width: Math.max(4, (1 - days(r.last) / (oldest + 1)) * 100) + '%' }} /></span>
-                  <b className="num">{date(r.last)}</b>
+                  <span className="rank-track"><i style={{ width: Math.max(4, (Number(r.principal) / top) * 100) + '%' }} /></span>
+                  <b className="num">{moneyShort(r.principal)}</b>
                 </button>
               ))}
             </div>
@@ -88,12 +87,12 @@ export function TopInvestors() {
   const rows = (q.data?.rows || []).slice(0, 5);
   return (
     <div className="card">
-      <div className="card-h"><h3>Ranking · 5 newest investors</h3><div className="r"><a style={{ cursor: 'pointer' }} onClick={() => nav('/admin/ranking')}>Full ranking</a></div></div>
+      <div className="card-h"><h3>Ranking · top 5 by amount invested</h3><div className="r"><a style={{ cursor: 'pointer' }} onClick={() => nav('/admin/ranking')}>Full ranking</a></div></div>
       <div className="card-b rank-bars">
         {rows.map(r => (
-          <button key={r.id} type="button" className="rank-bar" onClick={() => nav('/admin/investors/' + r.code)} title={`Last invested ${date(r.last)} · ${money(r.to_release)} to be released`}>
+          <button key={r.id} type="button" className="rank-bar" onClick={() => nav('/admin/investors/' + r.code)} title={`${money(r.principal)} invested · ${money(r.to_release)} to be released`}>
             <span className="rank-no">#{r.rank}</span><span className="rank-name">{r.name}<small>{r.branch || 'No branch'}</small></span>
-            <span className="rank-track"><i style={{ width: Math.max(4, 100 - r.rank * 15) + '%' }} /></span><b className="num">{date(r.last)}</b>
+            <span className="rank-track"><i style={{ width: Math.max(4, (Number(r.principal) / Math.max(1, Number(rows[0]?.principal || 1))) * 100) + '%' }} /></span><b className="num">{moneyShort(r.principal)}</b>
           </button>
         ))}
         {!rows.length && <Empty title="No investors to rank yet" />}

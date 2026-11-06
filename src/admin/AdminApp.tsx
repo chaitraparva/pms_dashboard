@@ -22,6 +22,7 @@ import { Search } from './Search';
 import { Ranking } from './Ranking';
 import { Bonuses } from './Bonuses';
 import { Bills } from './Bills';
+import { RoiRequests } from './RoiRequests';
 import { IBs } from './IBs';
 import { Withdrawals } from './Withdrawals';
 import { Queries } from './Queries';
@@ -31,13 +32,14 @@ import { SubTabs } from '../ui/kit';
 export default function AdminApp() {
   const nav = useNavigate();
   const counts = useQuery(async () => {
-    const [p, w, qy, rq] = await Promise.all([
+    const [p, w, qy, rq, ro] = await Promise.all([
       api.from('payouts').select('id', { count: 'exact', head: true }).in('status', ['approved', 'processing', 'failed']),
       api.from('withdrawals').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
       api.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open'),
-      api.from('investment_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending')
+      api.from('investment_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+      api.from('roi_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending')
     ]);
-    return { payouts: p.count || 0, withdrawals: w.count || 0, queries: qy.count || 0, requests: rq.count || 0 };
+    return { payouts: p.count || 0, withdrawals: w.count || 0, queries: qy.count || 0, requests: rq.count || 0, roi: ro.count || 0 };
   }, []);
   const items: NavItem[] = [
     { group: 'Dashboard' }, { to: '/admin', label: 'Overview', icon: 'home', also: ['/admin/branches', '/admin/ranking'] },
@@ -47,6 +49,7 @@ export default function AdminApp() {
     { to: '/admin/bonuses', label: 'Bonus', icon: 'roi' },
     { to: '/admin/bills', label: 'Monthly bills', icon: 'report' },
     { to: '/admin/withdrawals', label: 'Withdrawals', icon: 'payout', count: counts.data?.withdrawals },
+    { to: '/admin/roi-requests', label: 'ROI requests', icon: 'roi', count: counts.data?.roi },
     { to: '/admin/queries', label: 'Queries', icon: 'announce', count: counts.data?.queries },
     { to: '/admin/announcements', label: 'Updates', icon: 'announce', also: ['/admin/brochures'] },
     { to: '/admin/properties', label: 'Parva Properties', icon: 'building' },
@@ -69,6 +72,7 @@ export default function AdminApp() {
         <Route path="bills" element={<Bills />} />
         <Route path="ibs" element={<IBs />} />
         <Route path="withdrawals" element={<Withdrawals />} />
+        <Route path="roi-requests" element={<RoiRequests />} />
         <Route path="queries" element={<Queries />} />
         <Route path="requests" element={<Requests />} />
         <Route path="payouts" element={<>{peopleTabs}<Payouts /></>} />

@@ -11,15 +11,17 @@ import { AttachmentLinks, FilePicker } from '../ui/Attach';
 import { loadAccount } from './data';
 import { AmountWords } from '../ui/AmountWords';
 import { DateInput } from '../ui/DateInput';
+import { PayChips, PayFields, emptyPay, payArgs, payErrors, payFrom, payText, type PayDetails, type PayMethod } from '../ui/PayTo';
 
 /* Withdrawals. The amount is always taken from the highest monthly ROI first, whatever the lock-in.
    From the day of the request, returns are calculated on the lower amount. The company pays and marks it completed.
    An investor requests for themselves; an IB also for the sub-investors under them.
-   Paid to the bank account, to an MT5 account, or transferred to the IB (the Super Admin approves). */
+   Paid by bank (the person fills in name, account no., IFSC, branch), UPI, cash, to an MT5 ID, or transferred to the IB
+   (the Super Admin approves). What they fill in is shown to the Super Admin. */
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 export const WdBadge = ({ s }: { s: string }) => s === 'completed' ? <Badge cls="b-green">Payment fulfilled</Badge> : s === 'cancelled' ? <Badge cls="b-grey">Cancelled</Badge> : <Badge cls="b-amber">Payment processed</Badge>;
-export const methodText = (m: string) => (m === 'cash' ? 'Cash' : m === 'mt5' ? 'MT5 account' : m === 'ib' ? 'Transfer to IB' : 'Bank transfer');
+export const methodText = (m: string) => (m === 'cash' ? 'Cash' : m === 'mt5' ? 'MT5 account' : m === 'ib' ? 'Transfer to IB' : m === 'upi' ? 'UPI' : 'Bank transfer');
 
 async function load(id: string) {
   const acc = await loadAccount();
@@ -40,7 +42,7 @@ export function Withdraw() {
   const [forId, setForId] = useState(sp.get('for') || me);
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState<WithdrawalMethod>('bank');
-  const [mt5, setMt5] = useState('');
+  const [pay, setPay] = useState<PayDetails>(emptyPay());
   const [note, setNote] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [order, setOrder] = useState<WithdrawalPart[] | null>(null);
@@ -77,30 +79,26 @@ export function Withdraw() {
   if (!q.data) return <><PageHead crumbs={['Withdraw']} title="Withdraw" /><Loading /></>;
   const { invs, wds } = q.data;
   const whoName = (id: string) => (id === me ? 'Me' : acc?.subs.find(s => s.id === id)?.full_name || '—');
-  const bank = forMe ? acc?.bank : sub ? { name: sub.bank_name, account: sub.bank_account } : undefined;
   const err = !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount to withdraw.' : amt > available ? `Up to ${money(available)} can be withdrawn.` : null;
-  const mt5Err = method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5.trim()) ? 'Enter the MT5 account number.' : null;
+  const mt5Err = Object.keys(payErrors(method, pay, true)).length ? 'Fill in where the money goes.' : null;
   const mine = wds.filter(w => w.investor_id === forId);
   const pending = mine.filter(w => w.status === 'pending');
   const monthlyOf = (list: WithdrawalPart[], useAfter: boolean) => list.reduce((s, p) => s + Math.round((useAfter ? p.after : p.before) * Number(p.rate)) / 100, 0);
   const nowMonthly = monthlyOf(parts, false);
   const newMonthly = nowMonthly - monthlyOf(preview, false) + monthlyOf(preview, true);
   const lockOf = (id: string) => invs.find(i => i.id === id && LIVE.includes(i.status));
-  const how = method === 'mt5' ? `to MT5 account ${mt5.trim()}` : method === 'ib' ? `as a transfer to ${forMe ? 'your IB ' + ibName : 'you (IB)'}` : `to ${forMe ? 'your' : sub!.full_name + '’s'} bank account${bank?.account ? ' ' + bank.account : ''}`;
+  const how = method === 'ib' ? `as a transfer to ${forMe ? 'your IB ' + ibName : 'you (IB)'}` : 'paid by ' + payText({ method, ...(() => { const x = payArgs(method, pay); return { mt5_account: x.p_mt5, upi_id: x.p_upi, bank_details: x.p_bank }; })() });
 
   const send = async () => {
     const r = await act.run(async () => {
       const attachments = [];
       for (const f of files) attachments.push(await uploadAttachment(f, me));
-      return rpc('request_withdrawal', { ...forArg, p_amount: amt, p_method: method, p_mt5: method === 'mt5' ? mt5.trim() : '', p_note: note.trim(), p_attachments: attachments });
+      return rpc('request_withdrawal', { ...forArg, p_amount: amt, p_method: method, ...payArgs(method, pay), p_note: note.trim(), p_attachments: attachments });
     }, [method === 'ib' ? 'Transfer to IB requested' : 'Withdrawal requested', method === 'ib' ? 'The company approves it. It shows as Payment processed until then.' : 'It shows as Payment processed; it becomes Payment fulfilled when the company pays it.']);
-    if (r !== undefined) { setConfirm(false); setAmount(''); setNote(''); setFiles([]); setTried(false); refreshAll(); q.reload(); }
+    if (r !== undefined) { setConfirm(false); setAmount(''); setPay(emptyPay()); setNote(''); setFiles([]); setTried(false); refreshAll(); q.reload(); }
   };
-  const ways: [WithdrawalMethod, string, string][] = [
-    ['bank', forMe ? 'Request withdrawal to my bank account' : 'Withdraw to their bank account', bank?.account ? `${bank.name || 'Bank'} · ${bank.account}` : 'Registered bank account'],
-    ['mt5', forMe ? 'Transfer to my MT5 account' : 'Transfer to their MT5 account', 'Enter the MT5 account number'],
-    ...(ibName ? [['ib', forMe ? 'Transfer to my IB' : 'Transfer to me (IB)', (forMe ? ibName : 'You') + ' · the company approves it'] as [WithdrawalMethod, string, string]] : [])
-  ];
+  const ways: [PayMethod, string][] = [['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5'],
+    ...(ibName ? [['ib', forMe ? 'Transfer to my IB · ' + ibName : 'Transfer to me (IB)'] as [PayMethod, string]] : [])];
 
   return (
     <>
@@ -134,18 +132,10 @@ export function Withdraw() {
                   <AmountWords v={amount} />
                 </Field>
                 <Field label="Where should the money go? *">
-                  <div style={{ display: 'grid', gap: 8 }} role="radiogroup">
-                    {ways.map(([k, l, s]) => (
-                      <button key={k} type="button" role="radio" aria-checked={method === k} className={'role ' + (method === k ? 'on' : '')} style={{ textAlign: 'left' }} onClick={() => setMethod(k)}>
-                        <b>{l}</b><span>{s}</span>
-                      </button>
-                    ))}
-                  </div>
+                  <PayChips ways={ways} value={method} onChange={m => setMethod(m)} />
+                  {method === 'ib' && <p className="hint">{forMe ? ibName : 'You'} · the company approves it.</p>}
                 </Field>
-                {method === 'mt5' && (
-                  <Field label="MT5 account number *" err={tried ? mt5Err : null}><input className={'input mono ' + (tried && mt5Err ? 'bad' : '')} value={mt5} onChange={e => setMt5(e.target.value)} placeholder="e.g. 51234567" /></Field>
-                )}
-                {method === 'bank' && !bank?.account && <div className="note">No bank account is registered{forMe ? ' for you' : ''} yet. The company will confirm the account details before paying.</div>}
+                <PayFields method={method} d={pay} onChange={setPay} tried={tried} required amount={amt > 0 ? amt : undefined} />
                 <Field label="Note (optional)"><input className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="Anything the company should know" /></Field>
                 <FilePicker label="Attachments (optional)" files={files} onChange={setFiles} hint="Optional: a signed request, bank details or other proof (image, PDF, Word or Excel, 3 MB each)." />
                 {preview.length > 0 && !err && (
@@ -184,7 +174,7 @@ export function Withdraw() {
                 {acc && acc.subs.length > 0 && <td>{whoName(w.investor_id)}</td>}
                 <td>{date(w.requested_on)}</td>
                 <td className="n">{money(w.amount)}</td>
-                <td>{methodText(w.method)}{w.method === 'mt5' && w.mt5_account && <span className="sub mono">{w.mt5_account}</span>}</td>
+                <td>{methodText(w.method)}{w.method !== 'ib' && payText(w).includes(' · ') && <span className="sub mono">{payText(w).split(' · ').slice(1).join(' · ')}</span>}</td>
                 <td>{(w.allocations || []).map(p => `${p.code} (${rateShort(p.rate)}): ${money(p.amount)}`).join(', ')}</td>
                 <td><AttachmentLinks items={w.attachments} /></td>
                 <td><WdBadge s={w.status} />{w.status === 'completed' && <span className="sub">{w.method === 'ib' ? 'approved' : 'paid'} {date(w.completed_on)}{w.payment_ref ? ' · ' + w.payment_ref : ''}</span>}{w.status === 'cancelled' && w.cancelled_reason && <span className="sub">{w.cancelled_reason}</span>}</td>
@@ -211,7 +201,7 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
   const act = useAction();
   const [amount, setAmount] = useState(String(w.amount));
   const [method, setMethod] = useState<WithdrawalMethod>(w.method);
-  const [mt5, setMt5] = useState(w.mt5_account || '');
+  const [pay, setPay] = useState<PayDetails>(payFrom(w));
   const [note, setNote] = useState(w.note || '');
   // Super Admin only: date, paid or not, paid-on and reference
   const [on, setOn] = useState(w.requested_on);
@@ -220,11 +210,11 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
   const [ref, setRef] = useState(w.payment_ref || '');
   const t = today();
   const amt = Number(amount);
-  const err = !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount.' : !admin && method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5.trim()) ? 'Enter the MT5 account number.'
+  const err = !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount.' : Object.keys(payErrors(method, pay, !admin)).length ? 'Fill in where the money goes.'
     : admin && on && on > t ? 'The withdrawal date must be today or earlier.' : admin && paid && paidOn && (paidOn < on || paidOn > t) ? 'Paid on must be on or after the withdrawal date.' : null;
-  const ways: [WithdrawalMethod, string][] = [['bank', 'Bank account'], ['mt5', 'MT5 account'], ...(hasIb ? [['ib', ibLabel] as [WithdrawalMethod, string]] : []), ...(admin ? [['cash', 'Cash'] as [WithdrawalMethod, string]] : [])];
+  const ways: [PayMethod, string][] = [['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5'], ...(hasIb ? [['ib', ibLabel] as [PayMethod, string]] : [])];
   const go = async () => {
-    const r = await act.run(() => rpc('update_withdrawal', { p_id: w.id, p_amount: amt, p_method: method, p_mt5: method === 'mt5' ? mt5.trim() : '', p_note: note.trim(),
+    const r = await act.run(() => rpc('update_withdrawal', { p_id: w.id, p_amount: amt, p_method: method, ...payArgs(method, pay), p_note: note.trim(),
       ...(admin ? { p_date: on, p_paid: paid, p_paid_on: paid ? (paidOn || on) : '', p_ref: ref.trim() } : {}) }), ['Withdrawal updated', `${w.code} · ${money(amt)}`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
@@ -234,10 +224,8 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
       <div className="form">
         {admin && <Field label="Withdrawal date" hint="Empty = keep the current date."><DateInput className="input" max={t} value={on} onChange={e => setOn(e.target.value)} /></Field>}
         <Field label="Amount (INR) *" err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /><AmountWords v={amount} /></Field>
-        <Field label="Where should the money go?"><div className="chips">
-          {ways.map(([k, l]) => <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k)}>{l}</button>)}
-        </div></Field>
-        {method === 'mt5' && <Field label={admin ? 'MT5 account number' : 'MT5 account number *'}><input className="input mono" value={mt5} onChange={e => setMt5(e.target.value)} /></Field>}
+        <Field label="Where should the money go?"><PayChips ways={ways} value={method} onChange={m => setMethod(m)} /></Field>
+        <PayFields method={method} d={pay} onChange={setPay} tried required={!admin} amount={amt > 0 ? amt : undefined} />
         {admin && <>
           <Field label="Status"><div className="chips">
             <button type="button" className={'chip ' + (paid ? 'on' : '')} onClick={() => setPaid(true)}>Payment fulfilled (paid)</button>

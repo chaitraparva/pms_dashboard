@@ -224,20 +224,20 @@ const PLAN_COLORS = ['var(--chart-3)', 'var(--chart-2)', 'var(--chart-1)', 'var(
 interface MyRank { rank: number; total: number; multiple: number; branch: string | null; branch_rank: number; branch_total: number;
   last: string | null; since: string | null; principal: number; released: number; pending: number; upcoming: number; to_release: number }
 
-/** "You are here": the investor's rank (most recent money in = rank 1), with ROI released and ROI still to be released. */
+/** "You are here": the investor's rank (most invested = rank 1), with ROI released and ROI still to be released. */
 function YourRank({ r }: { r: MyRank }) {
   const nav = useNavigate();
   const pct = r.total > 1 ? Math.round(((r.total - r.rank) / (r.total - 1)) * 100) : 100;
   return (
     <div className="card rank-card">
-      <div className="card-h"><h3>Your rank</h3><div className="r hint">Newest investment = rank 1</div></div>
+      <div className="card-h"><h3>Your rank</h3><div className="r hint">Most invested = rank 1</div></div>
       <div className="card-b" style={{ display: 'grid', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
           <div className="num" style={{ fontSize: 40, fontWeight: 700, lineHeight: 1 }}><Icon name="rank" /> #{r.rank}</div>
           <div><b>You are at rank {r.rank} of {r.total}</b>
-            <div className="hint">{r.last ? `Based on your latest investment on ${date(r.last)}.` : ''}{r.branch ? ` #${r.branch_rank} of ${r.branch_total} in ${r.branch}.` : ''}</div></div>
+            <div className="hint">{`Based on your total invested, ${moneyShort(r.principal)}.`}{r.branch ? ` #${r.branch_rank} of ${r.branch_total} in ${r.branch}.` : ''}</div></div>
         </div>
-        <div className="rank-line" aria-hidden="true"><span>Rank {r.total}<small>earliest</small></span><div className="rank-rail"><i style={{ left: pct + '%' }} /></div><span>Rank 1<small>newest</small></span></div>
+        <div className="rank-line" aria-hidden="true"><span>Rank {r.total}<small>least invested</small></span><div className="rank-rail"><i style={{ left: pct + '%' }} /></div><span>Rank 1<small>most invested</small></span></div>
         <div className="kpis k3" style={{ margin: 0 }}>
           <Kpi label="ROI released" cls="pos" value={moneyShort(r.released)} sub="paid to you so far" onClick={() => nav('/portal/returns')} />
           <Kpi label="ROI to be released" value={moneyShort(r.to_release)} sub={`${money(r.pending)} earned, not yet paid${r.upcoming ? ` · ${money(r.upcoming)} still to come in your lock-in` : ''}`} onClick={() => nav('/portal/returns')}
@@ -274,7 +274,7 @@ export function RoiReleased({ p, inv, principal, rank }: { p: Portfolio; inv: In
   return (
     <div className="card roi-card">
       <div className="card-h"><h3>Your ROI released</h3>
-        {rank && <span className="rank-pill" title="Your position among all investors: the newest investment is rank 1"><Icon name="rank" />Rank {rank.rank} of {rank.total}{rank.branch ? ` · #${rank.branch_rank} of ${rank.branch_total} in ${rank.branch}` : ''}</span>}
+        {rank && <span className="rank-pill" title="Your position among all investors: the most invested is rank 1"><Icon name="rank" />Rank {rank.rank} of {rank.total}{rank.branch ? ` · #${rank.branch_rank} of ${rank.branch_total} in ${rank.branch}` : ''}</span>}
         <div className="r chips" role="group" aria-label="Time range">
           {(['6m', '1y', 'all'] as Range[]).map(r => <button key={r} type="button" className={'chip ' + (range === r ? 'on' : '')} onClick={() => setRange(r)}>{r === '6m' ? '6 months' : r === '1y' ? '1 year' : 'Since you started'}</button>)}
         </div>

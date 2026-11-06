@@ -13,7 +13,7 @@ export const phoneKey = (s: unknown) => String(s ?? '').replace(/\D/g, '').slice
 /* ---------- state ---------- */
 let S: Store;
 export const TABLES = ['settings', 'profiles', 'branches', 'plans', 'plan_versions', 'investments', 'contract_amendments', 'accruals', 'payouts', 'ledger_entries',
-  'announcements', 'notifications', 'documents', 'audit_logs', 'brochures', 'brochure_views', 'properties', 'admin_bonuses', 'withdrawals', 'queries', 'investment_requests', 'password_requests'];
+  'announcements', 'notifications', 'documents', 'audit_logs', 'brochures', 'brochure_views', 'properties', 'admin_bonuses', 'withdrawals', 'queries', 'investment_requests', 'password_requests', 'roi_requests'];
 const listeners = new Set<(table: string) => void>();
 export const onChange = (f: (table: string) => void) => { listeners.add(f); return () => { listeners.delete(f); }; };
 /** Marks tables as changed (the server saves every table whose contents changed after the request). */
@@ -207,7 +207,7 @@ export function canRead(table: string, r: Row): boolean {
     case 'notifications': return r.user_id === u;
     case 'queries': return r.investor_id === u;
     // an IB also sees the withdrawals and investment requests of the sub-investors under them
-    case 'withdrawals': case 'investment_requests': return r.investor_id === u || r.requested_by === u || isMySub(r.investor_id);
+    case 'withdrawals': case 'investment_requests': case 'roi_requests': return r.investor_id === u || r.requested_by === u || isMySub(r.investor_id);
     case 'documents': return r.owner_id === u && r.visible_to_investor;
     case 'announcements': return r.status === 'published' && audienceOf(r).includes(u);
     case 'brochures': return brochureVisible(r.id, u);
@@ -258,6 +258,25 @@ function runAccrualsFor(i: Row, asOf: string, idx?: Map<string, Row[]>): number 
     const pay = { id: uuid(), code: 'PAY-' + pad(nextSeq('payout', 1), 6), accrual_id: acc.id, investment_id: i.id, investor_id: i.investor_id, amount: mineAmt, due_date: addDays(end, i.payout_lag_days), status: closed ? 'paid' : 'accrued',
       batch_ref: null, payment_ref: closed ? cl!.ref : null, failure_reason: null, approved_by: null, approved_at: null, sent_by: null, sent_at: null, confirmed_by: null, confirmed_at: null, paid_on: closed ? cl!.on : null, closed, updated_at: nowIso() };
     T('payouts').push(pay);
+    if (!closed) {
+      const rq = T('roi_requests').find(x => x.investor_id === i.investor_id && x.status !== 'cancelled' && (x.months || []).includes(end.slice(0, 7)));
+      if (rq) {
+        (pay as Row).roi_request_id = rq.id;
+        // the month's estimate in the request becomes the calculated amount
+        const m = end.slice(0, 7), items: Row[] = rq.items || (rq.items = []);
+        const it = items.find(x => x.investment_id === i.id && x.month === m && (!x.payout_id || !T('payouts').some(y => y.id === x.payout_id)));
+        if (it) Object.assign(it, { payout_id: pay.id, amount: mineAmt, period_start: p.start, period_end: end, estimate: false });
+        else items.push({ payout_id: pay.id, investment_id: i.id, code: i.code, rate: investorRate(i), amount: mineAmt, period_start: p.start, period_end: end, month: m });
+        items.sort((x, y) => y.rate - x.rate || String(x.month).localeCompare(String(y.month)));
+        if (rq.status === 'pending') rq.amount = round2(items.reduce((x, y) => x + Number(y.amount), 0));
+        rq.updated_at = nowIso();
+        if (rq.status === 'completed') {
+          const on = String(rq.completed_on);
+          Object.assign(pay, { status: 'paid', payment_ref: rq.payment_ref || rq.code, paid_on: on, confirmed_by: rq.completed_by, confirmed_at: nowIso() });
+          ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_payout', amount: mineAmt, status: 'confirmed', occurred_on: on, reference: rq.payment_ref || rq.code, note: pay.code + ' · ' + rq.code, source_table: 'payouts', source_id: pay.id });
+        }
+      }
+    }
     if (closed) ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_payout', amount: mineAmt, status: 'confirmed', occurred_on: cl!.on, reference: cl!.ref, note: pay.code, source_table: 'payouts', source_id: pay.id });
     const span = fmtDate(p.start) + ' – ' + fmtDate(end) + (p.full ? '' : ' (' + p.days + ' of ' + p.daysInMonth + ' days)');
     ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_accrual', amount: mineAmt, status: 'posted', occurred_on: end, reference: i.code + ' · ' + MONTH_NAMES[+end.slice(5, 7) - 1] + ' ' + end.slice(0, 4),
@@ -481,6 +500,98 @@ function dashboard(branch: string | null, pFrom: string | null, pTo: string | nu
 }
 
 
+/* ---------- ROI requests: on any day an investor asks for the ROI of the months that have ended (in November → October,
+   plus any earlier month they did not ask for). An IB can ask for the people under them who have no login.
+   ROI that is not asked for stays pending. The Super Admin pays a request; it is listed highest ROI % first. ---------- */
+/** Unpaid returns of ended months that are not in a request yet, per month (highest ROI % first). */
+function roiAvailable(investorId: string): Row[] {
+  const cur = today().slice(0, 7);
+  const accById = new Map(T('accruals').map(x => [x.id, x]));
+  const invById = new Map(T('investments').map(i => [i.id, i]));
+  const byMonth = new Map<string, Row[]>();
+  T('payouts').forEach(p => {
+    if (p.investor_id !== investorId || p.status === 'paid' || p.roi_request_id) return;
+    const ac = accById.get(p.accrual_id); if (!ac) return;
+    const m = String(ac.period_end).slice(0, 7); if (m >= cur) return;
+    const i = invById.get(p.investment_id);
+    const l = byMonth.get(m) || []; l.push({ payout_id: p.id, investment_id: p.investment_id, code: i?.code || '', rate: i ? investorRate(i) : 0, amount: Number(p.amount), period_start: ac.period_start, period_end: ac.period_end }); byMonth.set(m, l);
+  });
+  return [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, items]) => ({ month, amount: round2(items.reduce((x, it) => x + it.amount, 0)),
+    items: items.sort((a, b) => b.rate - a.rate || String(a.code).localeCompare(String(b.code))) }));
+}
+/** What the signed-in user can request now: for themselves, and (for an IB) for each person under them without a login. */
+function roiOptions(onlyFor: string | null) {
+  const u = me() || fail('Not signed in.');
+  const subs = isAdmin() ? [] : T('profiles').filter(p => p.role === 'investor' && p.introduced_by === u.id && !hasLogin(p.id));
+  const who = onlyFor ? [onlyFor] : [...(u.role === 'investor' ? [u.id] : []), ...subs.map(p => p.id)];
+  return { people: who.map(id => { const p = T('profiles').find(x => x.id === id); return { id, code: p?.code, name: p?.full_name, self: id === u.id, months: roiAvailable(id) }; }) };
+}
+function requestRoi(a: Row): string[] {
+  const mePr = me() || fail('Not signed in.');
+  const months: string[] = Array.isArray(a.p_months) ? a.p_months.map(String) : [];
+  if (!months.length) fail('Choose the month(s) to request.');
+  const method = blank(a.p_method) ? '' : String(a.p_method);
+  if (method ? !ROI_PAY_METHODS.includes(method) : !isAdmin()) fail('Choose how the ROI should be paid: bank, UPI, cash or MT5.');
+  const to = method ? payTo(method, a, !isAdmin()) : { mt5_account: null, upi_id: null, bank_details: null };
+  const targets: string[] = Array.isArray(a.p_investors) && a.p_investors.length ? a.p_investors.map(String) : [String(a.p_investor || mePr.id)];
+  const ids: string[] = [];
+  for (const id of targets) {
+    const p = T('profiles').find(x => x.id === id && x.role === 'investor') || fail('Investor not found.');
+    // yourself; or, as their IB, someone under you who has no login (people with a login ask for themselves)
+    if (!isAdmin() && id !== mePr.id) {
+      if (p.introduced_by !== mePr.id) fail('You can only request ROI for yourself or the people under you.');
+      if (hasLogin(id)) fail(`${p.full_name} has their own login and requests their ROI themselves.`);
+    }
+    const avail = roiAvailable(id).filter(x => months.includes(x.month));
+    if (!avail.length) { if (targets.length === 1) fail('There is no ROI to request for the chosen month(s).'); continue; }
+    const items = avail.flatMap(x => x.items.map((it: Row) => ({ ...it, month: x.month }))).sort((x, y) => y.rate - x.rate || x.month.localeCompare(y.month));
+    const rid = uuid(), code = 'ROI-' + pad(nextSeq('roi_request', 1), 5);
+    const amount = round2(items.reduce((x, it) => x + it.amount, 0));
+    T('roi_requests').push({ id: rid, code, investor_id: id, requested_by: mePr.id, months: avail.map(x => x.month), items, amount, method: method || null, ...to, status: 'pending', requested_on: today(), requested_at: nowIso(),
+      completed_on: null, completed_by: null, payment_ref: null, cancelled_reason: null, note: str(a.p_note), updated_at: nowIso() });
+    items.forEach(it => { if (!it.payout_id) return; const py = T('payouts').find(x => x.id === it.payout_id); if (py) { py.roi_request_id = rid; py.updated_at = nowIso(); } });
+    const label = avail.map(x => MONTH_NAMES[+x.month.slice(5, 7) - 1] + ' ' + x.month.slice(0, 4)).join(', ');
+    T('profiles').filter(x => x.role === 'super_admin' && x.account_status === 'active' && !x.read_only).forEach(ad =>
+      notify(ad.id, 'roi_request', 'ROI request ' + code + ': ' + fmtMoney(amount), p.full_name + ' · ' + label + (method ? ' · ' + payText({ method, ...to }) : '') + (id !== mePr.id ? ' · requested by ' + mePr.full_name : ''), '/admin/roi-requests', 'roi_requests', rid));
+    if (id !== mePr.id) notify(id, 'roi_request', 'ROI requested for you: ' + fmtMoney(amount), label + ' · by ' + mePr.full_name, '/portal/roi', 'roi_requests', rid + ':for');
+    audit('roi.request', 'roi_request', rid, code, 'ROI requested', null, { investor: p.code, months: avail.map(x => x.month), amount, method: method || null, ...to });
+    ids.push(rid);
+  }
+  if (!ids.length) fail('There is no ROI to request for the chosen month(s).');
+  return ids;
+}
+function completeRoiRequest(a: Row) {
+  requireAdmin();
+  const r = T('roi_requests').find(x => x.id === a.p_id) || fail('Request not found.');
+  if (r.status !== 'pending') fail(`${r.code} is already ${r.status}.`);
+  const on = str(a.p_paid_on, today());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(on) || on > today()) fail('Enter the paid-on date (today or earlier).');
+  const ref = str(a.p_ref, r.code).trim();
+  // released highest ROI % first (the items are in that order)
+  const rate = (id: string) => { const i = T('investments').find(x => x.id === id); return i ? investorRate(i) : 0; };
+  T('payouts').filter(p => p.roi_request_id === r.id && p.status !== 'paid').sort((x, y) => rate(y.investment_id) - rate(x.investment_id)).forEach(p => {
+    Object.assign(p, { status: 'paid', approved_by: p.approved_by || currentUid, approved_at: p.approved_at || nowIso(), sent_by: p.sent_by || currentUid, sent_at: p.sent_at || nowIso(),
+      payment_ref: ref, paid_on: on, confirmed_by: currentUid, confirmed_at: nowIso(), failure_reason: null, updated_at: nowIso() });
+    const led = T('ledger_entries').filter(l => l.source_table === 'payouts' && l.source_id === p.id);
+    if (led.length) led.forEach(l => Object.assign(l, { status: 'confirmed', reference: ref, occurred_on: on, updated_at: nowIso() }));
+    else ledger({ investment_id: p.investment_id, investor_id: p.investor_id, type: 'return_payout', amount: p.amount, status: 'confirmed', occurred_on: on, reference: ref, note: p.code + ' · ' + r.code, source_table: 'payouts', source_id: p.id });
+  });
+  Object.assign(r, { status: 'completed', completed_on: on, completed_by: currentUid, payment_ref: ref, updated_at: nowIso() });
+  notify(r.investor_id, 'roi_paid', 'ROI ' + r.code + ' · payment fulfilled', fmtMoney(r.amount) + ' paid on ' + fmtDate(on) + (ref ? ' · ' + ref : ''), '/portal/roi', 'roi_requests', r.id + ':done');
+  if (r.requested_by && r.requested_by !== r.investor_id) notify(r.requested_by, 'roi_paid', 'ROI ' + r.code + ' · payment fulfilled', fmtMoney(r.amount) + ' for ' + (T('profiles').find(x => x.id === r.investor_id)?.full_name || ''), '/portal/roi', 'roi_requests', r.id + ':done-ib');
+  audit('roi.complete', 'roi_request', r.id, r.code, 'ROI paid', { status: 'pending' }, { status: 'completed', paid_on: on, reference: ref });
+}
+function cancelRoiRequest(a: Row) {
+  const mePr = me() || fail('Not signed in.');
+  const r = T('roi_requests').find(x => x.id === a.p_id) || fail('Request not found.');
+  if (!isAdmin() && r.requested_by !== mePr.id && r.investor_id !== mePr.id) fail('Request not found.');
+  if (r.status !== 'pending') fail(`${r.code} is already ${r.status}.`);
+  T('payouts').forEach(p => { if (p.roi_request_id === r.id && p.status !== 'paid') { p.roi_request_id = null; p.updated_at = nowIso(); } });
+  Object.assign(r, { status: 'cancelled', cancelled_reason: str(a.p_reason, 'Cancelled'), updated_at: nowIso() });
+  if (isAdmin()) notify(r.investor_id, 'roi_request', 'ROI request ' + r.code + ' cancelled', str(a.p_reason), '/portal/roi', 'roi_requests', r.id + ':cancel');
+  audit('roi.cancel', 'roi_request', r.id, r.code, str(a.p_reason, 'Cancelled'), { status: 'pending' }, { status: 'cancelled' });
+}
+
 /* ---------- monthly bills: closed months (accrued and billed) and the running month (day by day) ---------- */
 /** Running-month figures for the investments the signed-in user may see (Super Admin: all, or one investor). */
 function runningList(investorId: string | null, ibId: string | null = null) {
@@ -579,8 +690,8 @@ function toBeReleased(investorId: string): { pending: number; upcoming: number }
   T('investments').filter(i => i.investor_id === investorId).forEach(i => { upcoming += runningMonth(i)?.roi || 0; });
   return { pending, upcoming: round2(upcoming) };
 }
-/** Investor ranking: whoever put money in most recently is rank 1; the earliest investors are last.
- *  The date used is the start date of the investor's most recent live investment (larger principal first on the same day). */
+/** Investor ranking by total invested: the investor with the most money in live investments is rank 1
+ *  (on an equal amount, whoever invested first comes first). */
 function ranking(branch: string | null, period: string | null = null) {
   const from = period === '6m' ? addMonths(today(), -6) : period === '1y' ? addMonths(today(), -12) : null;
   const rows: Row[] = T('profiles').filter(p => p.role === 'investor' && p.account_status === 'active').map(p => {
@@ -594,7 +705,7 @@ function ranking(branch: string | null, period: string | null = null) {
       pending: tb.pending, upcoming: tb.upcoming, to_release: round2(tb.pending + tb.upcoming),
       multiple: principal ? Math.round((released / principal) * 1000) / 1000 : 0, since: dates[0] || null, last: dates[dates.length - 1] || null, rank: 0, branch_rank: 0 };
   }).filter(r => r.principal > 0 && r.last && (!from || r.last >= from))
-    .sort((a, b) => String(b.last).localeCompare(String(a.last)) || b.principal - a.principal || a.name.localeCompare(b.name));
+    .sort((a, b) => b.principal - a.principal || String(a.since).localeCompare(String(b.since)) || a.name.localeCompare(b.name));
   rows.forEach((r, k) => { r.rank = k + 1; });
   const perBranch = new Map<string, number>();
   rows.forEach(r => { const k = r.branch_id || '-'; perBranch.set(k, (perBranch.get(k) || 0) + 1); r.branch_rank = perBranch.get(k)!; r.branch_total = 0; });
@@ -656,6 +767,10 @@ export function rpcCall(fn: string, a: Row): unknown {
       audit('investment_request.reject', 'investment_request', r.id, r.code, a.p_reason, { status: 'pending' }, { status: 'rejected' }); touched('investment_requests', 'notifications'); return null;
     }
     case 'request_withdrawal': { const id = requestWithdrawal(a); touched('withdrawals', ...RET_TABLES); return id; }
+    case 'roi_request_options': return roiOptions(a.p_investor ? String(a.p_investor) : null);
+    case 'request_roi': { const ids = requestRoi(a); touched('roi_requests', 'payouts', 'notifications'); return ids; }
+    case 'admin_complete_roi_request': completeRoiRequest(a); touched('roi_requests', 'payouts', 'ledger_entries', 'notifications'); return null;
+    case 'cancel_roi_request': cancelRoiRequest(a); touched('roi_requests', 'payouts', 'notifications'); return null;
     case 'admin_record_withdrawals': {
       // several withdrawals of one investor at once (past or offline ones), saved in date order; one error and nothing is saved
       requireAdmin();
@@ -1394,7 +1509,7 @@ function mySubInvestor(id: string): Row {
     paid: pays.filter(x => x.status === 'paid').map(x => ({ date: x.paid_on, amount: Number(x.amount) })),
     bonuses: bon.map(b => ({ date: b.accrual_date, amount: Number(b.amount), status: b.status })),
     withdrawals: T('withdrawals').filter(w => w.investor_id === p.id).sort((x, y) => String(y.requested_at).localeCompare(String(x.requested_at)))
-      .map(w => ({ id: w.id, code: w.code, amount: Number(w.amount), method: w.method, mt5_account: w.mt5_account || null, status: w.status, requested_on: w.requested_on, completed_on: w.completed_on, cancelled_reason: w.cancelled_reason })),
+      .map(w => ({ id: w.id, code: w.code, amount: Number(w.amount), method: w.method, mt5_account: w.mt5_account || null, upi_id: w.upi_id || null, bank_details: w.bank_details || null, status: w.status, requested_on: w.requested_on, completed_on: w.completed_on, cancelled_reason: w.cancelled_reason })),
     requests: T('investment_requests').filter(r => r.investor_id === p.id).sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)))
       .map(r => ({ id: r.id, code: r.code, amount: Number(r.amount), status: r.status, created_at: r.created_at, investment_code: r.investment_code, decision_note: r.decision_note }))
   };
@@ -1443,14 +1558,47 @@ function planWithdrawal(investorId: string, amount: number, on?: string): Row[] 
   }
   return out;
 }
-/** How a withdrawal is paid: to the bank account, to an MT5 trading account, transferred to the investor's IB, or (Super Admin only) in cash. */
-export const WD_METHODS = ['bank', 'mt5', 'ib', 'cash'];
-function wdHow(w: Row): string {
-  if (w.method === 'cash') return 'cash';
-  if (w.method === 'mt5') return 'transfer to MT5 account ' + (w.mt5_account || '');
-  if (w.method === 'ib') return 'transfer to IB ' + (T('profiles').find(p => p.id === w.ib_id)?.full_name || '');
-  return 'bank transfer';
+/** How a withdrawal is paid: bank transfer, UPI, cash, to an MT5 trading account, or transferred to the investor's IB. */
+export const WD_METHODS = ['bank', 'upi', 'cash', 'mt5', 'ib'];
+/** How a ROI request is paid. */
+export const ROI_PAY_METHODS = ['bank', 'upi', 'cash', 'mt5'];
+const MT5_RE = /^[A-Za-z0-9._-]{3,40}$/, UPI_RE = /^[\w.\-]{1,64}@[\w.\-]{2,64}$/, IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+/** Where the money goes, as the person filled it in: the bank account (name, account no., IFSC, branch), the UPI ID or
+ *  UPI phone number, or the MT5 ID. `required`: all of it must be filled (investors and IBs); the Super Admin may leave it out.
+ *  Not sent → kept from `prev` (an edit). */
+function payTo(method: string, a: Row, required: boolean, prev?: Row | null): Row {
+  const out: Row = { mt5_account: null, upi_id: null, bank_details: null };
+  if (method === 'mt5') {
+    const v = str(a.p_mt5, prev?.mt5_account || '').trim();
+    if ((v || required) && !MT5_RE.test(v)) fail('Enter the MT5 ID (letters and digits only).');
+    out.mt5_account = v || null;
+  } else if (method === 'upi') {
+    const v = str(a.p_upi, prev?.upi_id || '').trim(), ph = v.replace(/[\s-]/g, '');
+    if ((v || required) && !(UPI_RE.test(v) || /^(\+?91)?[6-9]\d{9}$/.test(ph))) fail('Enter the UPI ID (e.g. name@okaxis) or the 10-digit UPI phone number.');
+    out.upi_id = v || null;
+  } else if (method === 'bank') {
+    const b: Row = (a.p_bank && typeof a.p_bank === 'object' ? a.p_bank : prev?.bank_details) || {};
+    const d = { name: str(b.name).trim(), account: str(b.account).replace(/[\s-]/g, ''), ifsc: str(b.ifsc).trim().toUpperCase(), branch: str(b.branch).trim() };
+    if (required || d.name || d.account || d.ifsc || d.branch) {
+      if (!d.name) fail('Enter the account holder name.');
+      if (!/^\d{6,20}$/.test(d.account)) fail('Enter the bank account number (6 to 20 digits).');
+      if (!IFSC_RE.test(d.ifsc)) fail('Enter the IFSC code (11 characters, e.g. SBIN0001234).');
+      if (!d.branch) fail('Enter the branch.');
+      out.bank_details = d;
+    }
+  }
+  return out;
 }
+/** "bank transfer to NAME · A/c … · IFSC … · BRANCH", "UPI …", "MT5 ID …", "cash". */
+function payText(w: Row): string {
+  if (w.method === 'cash') return 'cash';
+  if (w.method === 'mt5') return 'transfer to MT5 ID ' + (w.mt5_account || '');
+  if (w.method === 'upi') return 'UPI ' + (w.upi_id || '');
+  if (w.method === 'ib') return 'transfer to IB ' + (T('profiles').find(p => p.id === w.ib_id)?.full_name || '');
+  const b = w.bank_details;
+  return 'bank transfer' + (b ? ` to ${b.name} · A/c ${b.account} · IFSC ${b.ifsc} · ${b.branch}` : '');
+}
+const wdHow = payText;
 /** Withdrawals in the order they happened: by withdrawal date, then by when they were recorded. */
 const wdOrder = (x: Row, y: Row) => String(x.requested_on).localeCompare(String(y.requested_on)) || String(x.requested_at).localeCompare(String(y.requested_at));
 /** Takes a withdrawal's parts out of the investments (principal change from its date + ledger lines). */
@@ -1509,14 +1657,13 @@ function adminEditWithdrawal(a: Row) {
   const w = T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.');
   if (w.status === 'cancelled') fail(`${w.code} is cancelled. Delete it and record it again instead.`);
   const who = T('profiles').find(p => p.id === w.investor_id) || fail('Investor not found.');
-  const before = { amount: w.amount, date: w.requested_on, method: w.method, mt5_account: w.mt5_account, status: w.status, completed_on: w.completed_on, payment_ref: w.payment_ref, note: w.note };
+  const before = { amount: w.amount, date: w.requested_on, method: w.method, mt5_account: w.mt5_account, upi_id: w.upi_id, bank_details: w.bank_details, status: w.status, completed_on: w.completed_on, payment_ref: w.payment_ref, note: w.note };
   const amount = blank(a.p_amount) ? Number(w.amount) : Number(a.p_amount);
   if (!(amount > 0) || round2(amount) !== amount) fail('Enter the amount (at most 2 decimals).');
   const d = blank(a.p_date) ? String(w.requested_on) : String(a.p_date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d > today()) fail('Enter the withdrawal date (today or earlier).');
   const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : w.method;
-  const mt5 = str(a.p_mt5, w.mt5_account || '').trim();
-  if (method === 'mt5' && mt5 && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5)) fail('Enter the MT5 account number (letters and digits only).');
+  const to = payTo(method, a, false, w);
   const ib = who.introduced_by ? T('profiles').find(p => p.id === who.introduced_by && p.role === 'investor') || null : null;
   if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
   const paid = a.p_paid == null ? w.status === 'completed' : !!a.p_paid;
@@ -1524,12 +1671,12 @@ function adminEditWithdrawal(a: Row) {
   if (paid && (!/^\d{4}-\d{2}-\d{2}$/.test(String(paidOn)) || String(paidOn) < d || String(paidOn) > today())) fail('The paid-on date must be on or after the withdrawal date, and not after today.');
   const snap = new Map(T('investments').filter(i => i.investor_id === who.id).map(i => [i.id, JSON.stringify(i.principal_changes || [])]));
   const from = d < String(w.requested_on) ? d : String(w.requested_on);
-  Object.assign(w, { amount, requested_on: d, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null,
+  Object.assign(w, { amount, requested_on: d, method, ...to, ib_id: method === 'ib' ? ib!.id : null,
     status: paid ? 'completed' : 'pending', completed_on: paidOn, completed_by: paid ? (w.completed_by || currentUid) : null,
     payment_ref: paid ? (a.p_ref != null ? str(a.p_ref).trim() || null : w.payment_ref) : null, note: a.p_note != null ? str(a.p_note).trim() : w.note, updated_at: nowIso() });
   applyInOrder(who, from, w, null, snap);
   audit('withdrawal.update', 'withdrawal', w.id, w.code, str(a.p_reason, 'Withdrawal changed'), before,
-    { amount, date: d, method, mt5_account: w.mt5_account, status: w.status, completed_on: w.completed_on, payment_ref: w.payment_ref, note: w.note });
+    { amount, date: d, method, ...to, status: w.status, completed_on: w.completed_on, payment_ref: w.payment_ref, note: w.note });
 }
 /** Super Admin: delete a withdrawal; the investor's later withdrawals are applied again in date order. */
 function adminDeleteWithdrawal(w: Row) {
@@ -1558,14 +1705,12 @@ function requestWithdrawal(a: Row): string {
   const paid = isAdmin() && !!a.p_paid;
   if (paid && !blank(a.p_paid_on) && (!/^\d{4}-\d{2}-\d{2}$/.test(String(a.p_paid_on)) || String(a.p_paid_on) < d || String(a.p_paid_on) > today())) fail('The paid-on date must be on or after the withdrawal date, and not after today.');
   const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : 'bank';
-  if (method === 'cash' && !isAdmin()) fail('Choose your bank account, your MT5 account or a transfer to your IB.');
-  const mt5 = str(a.p_mt5).trim();
-  if (method === 'mt5' && (mt5 || !isAdmin()) && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5)) fail('Enter the MT5 account number (letters and digits only).');
+  const to = payTo(method, a, !isAdmin());
   const ib = who.introduced_by ? T('profiles').find(p => p.id === who.introduced_by && p.role === 'investor') || null : null;
   if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
   const attachments = cleanAttachments(a.p_attachments);
   const id = uuid(), code = 'WDR-' + pad(nextSeq('withdrawal', 1), 5);
-  const row: Row = { id, code, investor_id: who.id, amount, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null, note: str(a.p_note), status: paid ? 'completed' : 'pending', requested_on: d, requested_at: nowIso(), requested_by: currentUid,
+  const row: Row = { id, code, investor_id: who.id, amount, method, ...to, ib_id: method === 'ib' ? ib!.id : null, note: str(a.p_note), status: paid ? 'completed' : 'pending', requested_on: d, requested_at: nowIso(), requested_by: currentUid,
     allocations: [], attachments, completed_on: paid ? str(a.p_paid_on, d) : null, completed_by: paid ? currentUid : null, payment_ref: paid ? str(a.p_ref) || null : null, admin_note: null, cancelled_reason: null, updated_at: nowIso() };
   const how = wdHow(row);
   const parts = placeWithdrawal(row, who);
@@ -1575,7 +1720,7 @@ function requestWithdrawal(a: Row): string {
     notify(ad.id, 'withdrawal', (method === 'ib' ? 'Transfer to IB ' : 'Withdrawal request ') + code + ': ' + fmtMoney(amount), who.full_name + (byIb ? ' (requested by IB ' + mePr.full_name + ')' : '') + ' · ' + how + ' · from ' + parts.map(p => p.code + ' (' + p.plan_rate + '%)').join(', ') + (method === 'ib' ? ' · needs your approval' : ''), '/admin/withdrawals', 'withdrawals', id));
   notify(who.id, 'withdrawal', 'Withdrawal ' + code + (paid ? ' · payment fulfilled' : ' · payment processed'), fmtMoney(amount) + ' · ' + how + ' · returns are calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
   if (byIb) notify(mePr.id, 'withdrawal', 'Withdrawal ' + code + ' for ' + who.full_name + ' · payment processed', fmtMoney(amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', id + ':req-ib');
-  audit('withdrawal.request', 'withdrawal', id, code, str(a.p_note, 'Withdrawal requested'), null, { amount, date: d, status: row.status, method, mt5_account: row.mt5_account, ib: ib?.code || null, requested_by: mePr.code, parts: parts.map(p => ({ code: p.code, amount: p.amount })) });
+  audit('withdrawal.request', 'withdrawal', id, code, str(a.p_note, 'Withdrawal requested'), null, { amount, date: d, status: row.status, method, ...to, ib: ib?.code || null, requested_by: mePr.code, parts: parts.map(p => ({ code: p.code, amount: p.amount })) });
   return id;
 }
 function completeWithdrawal(a: Row) {
@@ -1585,8 +1730,9 @@ function completeWithdrawal(a: Row) {
   const on = str(a.p_paid_on, today());
   const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : w.method;
   let ibId = w.ib_id;
+  const to = payTo(method, a, false, w);
   if (method === 'ib' && !ibId) { ibId = T('profiles').find(p => p.id === w.investor_id)?.introduced_by || null; if (!ibId) fail('This investor is not under an IB.'); }
-  Object.assign(w, { status: 'completed', completed_on: on, completed_by: adminId, payment_ref: str(a.p_ref), method, mt5_account: method === 'mt5' ? str(a.p_mt5, w.mt5_account) : w.mt5_account ?? null, ib_id: method === 'ib' ? ibId : w.ib_id ?? null, admin_note: str(a.p_note), updated_at: nowIso() });
+  Object.assign(w, { status: 'completed', completed_on: on, completed_by: adminId, payment_ref: str(a.p_ref), method, ...to, ib_id: method === 'ib' ? ibId : w.ib_id ?? null, admin_note: str(a.p_note), updated_at: nowIso() });
   const how = wdHow(w);
   T('ledger_entries').filter(l => l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')).forEach(l => Object.assign(l, { status: 'confirmed', occurred_on: on, reference: w.payment_ref || w.code, note: 'Withdrawal paid · ' + how, updated_at: nowIso() }));
   notify(w.investor_id, 'withdrawal', 'Withdrawal ' + w.code + ' · payment fulfilled', fmtMoney(w.amount) + ' · ' + how + ' on ' + fmtDate(on) + (w.payment_ref ? ' · ' + w.payment_ref : ''), '/portal/withdraw', 'withdrawals', w.id + ':done');
@@ -1726,14 +1872,12 @@ function updateWithdrawal(a: Row) {
   const w = T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.');
   mayChangeWithdrawal(w);
   if (w.status !== 'pending') fail(`${w.code} is already ${w.status}. Only pending requests can be edited; delete it instead.`);
-  const before = { amount: w.amount, method: w.method, mt5_account: w.mt5_account, note: w.note };
+  const before = { amount: w.amount, method: w.method, mt5_account: w.mt5_account, upi_id: w.upi_id, bank_details: w.bank_details, note: w.note };
   const who = T('profiles').find(p => p.id === w.investor_id) || fail('Investor not found.');
   const amount = blank(a.p_amount) ? Number(w.amount) : Number(a.p_amount);
   if (!(amount > 0) || round2(amount) !== amount) fail('Enter the amount to withdraw (at most 2 decimals).');
   const method = WD_METHODS.includes(String(a.p_method)) ? String(a.p_method) : w.method;
-  if (method === 'cash' && !isAdmin()) fail('Choose the bank account, an MT5 account or a transfer to the IB.');
-  const mt5 = str(a.p_mt5, w.mt5_account || '').trim();
-  if (method === 'mt5' && !/^[A-Za-z0-9._-]{3,40}$/.test(mt5)) fail('Enter the MT5 account number (letters and digits only).');
+  const to = payTo(method, a, true, w);
   const ib = who.introduced_by ? T('profiles').find(p => p.id === who.introduced_by && p.role === 'investor') || null : null;
   if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
   const invs = undoWithdrawal(w);
@@ -1741,7 +1885,7 @@ function updateWithdrawal(a: Row) {
   if (amount > available) fail(`Up to ${fmtMoney(available)} can be withdrawn.`);
   const parts = planWithdrawal(who.id, amount, String(w.requested_on));
   if (round2(parts.reduce((t, q) => t + Number(q.amount), 0)) < amount) fail(`Up to ${fmtMoney(round2(parts.reduce((t, q) => t + Number(q.amount), 0)))} can be withdrawn on ${fmtDate(w.requested_on)}.`);
-  Object.assign(w, { amount, method, mt5_account: method === 'mt5' ? mt5 : null, ib_id: method === 'ib' ? ib!.id : null, note: a.p_note != null ? str(a.p_note).trim() : w.note, allocations: parts, updated_at: nowIso() });
+  Object.assign(w, { amount, method, ...to, ib_id: method === 'ib' ? ib!.id : null, note: a.p_note != null ? str(a.p_note).trim() : w.note, allocations: parts, updated_at: nowIso() });
   if (a.p_attachments != null) w.attachments = cleanAttachments(a.p_attachments);
   const how = wdHow(w), d = w.requested_on;
   parts.forEach(pt => {
@@ -1754,7 +1898,7 @@ function updateWithdrawal(a: Row) {
   [...invs, ...parts.map(pt => T('investments').find(x => x.id === pt.investment_id)!)].forEach(i => runAccrualsFor(i, today()));
   if (!isAdmin()) T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
     notify(ad.id, 'withdrawal', 'Withdrawal ' + w.code + ' was changed: ' + fmtMoney(amount), who.full_name + ' · ' + how, '/admin/withdrawals', 'withdrawals', w.id + ':edit:' + nowIso()));
-  audit('withdrawal.update', 'withdrawal', w.id, w.code, str(a.p_reason, 'Withdrawal changed'), before, { amount, method, mt5_account: w.mt5_account, note: w.note });
+  audit('withdrawal.update', 'withdrawal', w.id, w.code, str(a.p_reason, 'Withdrawal changed'), before, { amount, method, ...to, note: w.note });
 }
 function deleteWithdrawal(a: Row) {
   const w = T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.');

@@ -17,6 +17,7 @@ import { Statement } from './Statement';
 import { Announcements } from './Announcements';
 import { MyNetwork } from './Network';
 import { Withdraw } from './Withdraw';
+import { RequestRoi } from './RequestRoi';
 import { Queries } from './Queries';
 import { RequestInvestment } from './RequestInvestment';
 import { SubInvestor } from './SubInvestor';
@@ -39,6 +40,7 @@ export default function PortalApp() {
     { to: '/portal/request-investment', label: 'Request Investment', icon: 'plus' },
     ...(isIb ? [{ to: '/portal/network', label: 'My Sub-Investors', icon: 'users' }] : []),
     { to: '/portal/withdraw', label: 'Withdraw', icon: 'payout' },
+    { to: '/portal/roi', label: 'Request ROI', icon: 'roi' },
     { to: '/portal/queries', label: 'Ask a query', icon: 'announce' },
     { to: '/portal/properties', label: 'Explore Properties', icon: 'building' },
     { to: '/portal/announcements', label: 'Announcements', icon: 'announce', count: counts.data?.announcements },
@@ -62,6 +64,7 @@ export default function PortalApp() {
         <Route path="network/:id" element={<SubInvestor />} />
         <Route path="request-investment" element={<RequestInvestment />} />
         <Route path="withdraw" element={<Withdraw />} />
+        <Route path="roi" element={<RequestRoi />} />
         <Route path="queries" element={<Queries />} />
         <Route path="notifications" element={<Notifications />} />
         <Route path="profile" element={<ProfileSecurity />} />
