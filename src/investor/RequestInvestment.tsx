@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
-import { useAuth } from '../lib/auth';
+import { useAuth, useSettings } from '../lib/auth';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { money, date, dateTime, lockinText, today, addMonths } from '../lib/format';
+import { money, date, dateTime, lockinText, today, addMonths, displayCurrency } from '../lib/format';
 import { uploadAttachment } from '../lib/docs';
 import type { InvestmentRequest } from '../lib/types';
 import { Badge, Empty, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -12,6 +12,7 @@ import { loadAccount } from './data';
 import { SearchSelect } from '../ui/SearchSelect';
 import { AmountWords } from '../ui/AmountWords';
 import { DateInput } from '../ui/DateInput';
+import { AedNote, CurChips, toInr, type AmtCur } from '../ui/CurAmount';
 
 /* Request an investment. An investor requests for themselves; an IB also for a sub-investor (existing or new).
    Every request goes to the Super Admin, who sets the ROI and approves it. Approved investments then show in the portal. */
@@ -39,6 +40,9 @@ export function RequestInvestment() {
   const [newPhone, setNewPhone] = useState('');
   const [newCity, setNewCity] = useState('');
   const [amount, setAmount] = useState('');
+  // the amount can be typed in AED (converted at the AED rate, saved in INR); AED investors start in AED
+  const aedRate = Number(useSettings()?.inr_per_aed || 0);
+  const [amtCur, setAmtCur] = useState<AmtCur>(displayCurrency() === 'AED' && aedRate > 0 ? 'AED' : 'INR');
   const [lock, setLock] = useState('12');
   const [customLock, setCustomLock] = useState('');
   const [start, setStart] = useState(today());
@@ -55,7 +59,7 @@ export function RequestInvestment() {
   const subs = acc?.subs || [];
   const isNew = forWho === 'sub' && subId === 'new';
   const months = lock === 'custom' ? Number(customLock) : Number(lock);
-  const amt = Number(amount);
+  const amt = toInr(amount, amtCur, aedRate);
   const digits = newPhone.replace(/\D/g, '').slice(-10);
   const errs: Record<string, string | null> = {
     sub: forWho === 'sub' && !subId ? 'Choose the sub-investor, or add a new one.' : null,
@@ -126,7 +130,8 @@ export function RequestInvestment() {
                 </div>
               )}
               <div className="f-row">
-                <Field label="Amount (INR) *" err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder="e.g. 500000" /><AmountWords v={amount} /></Field>
+                <Field label="Amount in"><CurChips cur={amtCur} onChange={c => { setAmtCur(c); setAmount(''); }} rate={aedRate} /></Field>
+                <Field label={`Amount (${amtCur}) *`} err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder={amtCur === 'AED' ? 'e.g. 20000' : 'e.g. 500000'} />{amtCur === 'INR' && <AmountWords v={amount} />}<AedNote text={amount} cur={amtCur} rate={aedRate} /></Field>
                 <Field label="Preferred start date *" err={e('start')}><DateInput className="input" value={start} onChange={ev => setStart(ev.target.value)} /></Field>
               </div>
               <Field label="Preferred lock-in *" err={e('lock')}>

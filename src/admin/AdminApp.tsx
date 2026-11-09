@@ -49,7 +49,7 @@ export default function AdminApp() {
     { to: '/admin/bonuses', label: 'Bonus', icon: 'roi' },
     { to: '/admin/bills', label: 'Monthly bills', icon: 'report' },
     { to: '/admin/withdrawals', label: 'Withdrawals', icon: 'payout', count: counts.data?.withdrawals },
-    { to: '/admin/roi-requests', label: 'ROI requests', icon: 'roi', count: counts.data?.roi },
+    { to: '/admin/roi-requests', label: 'ROI & bonus requests', icon: 'roi', count: counts.data?.roi },
     { to: '/admin/queries', label: 'Queries', icon: 'announce', count: counts.data?.queries },
     { to: '/admin/announcements', label: 'Updates', icon: 'announce', also: ['/admin/brochures'] },
     { to: '/admin/properties', label: 'Parva Properties', icon: 'building' },

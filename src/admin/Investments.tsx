@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useAuth, useSettings } from '../lib/auth';
+import { AedNote, CurChips, toInr, type AmtCur } from '../ui/CurAmount';
 import { uploadDocument, openDocument, deleteDocument, uploadAttachment } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
 import { recordInvestmentFull } from '../lib/adminApi';
@@ -189,6 +190,9 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const [currency, setCurrency] = useState<'INR' | 'AED'>('INR');
   const [curTouched, setCurTouched] = useState(false);
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
+  // amounts can be typed in AED: converted at the AED rate and saved in INR
+  const [amtCur, setAmtCur] = useState<AmtCur>('INR');
+  const inr = (t: string) => toInr(t, amtCur, aedRate);
   // branch: chosen at the top; an existing person's (or the IB's) branch is filled in until the admin changes it
   const [branch, setBranch] = useState('');
   const [branchTouched, setBranchTouched] = useState(false);
@@ -255,7 +259,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   const ibList = [...all.filter(isIb), ...all.filter(p => !isIb(p))].filter(p => p.account_status !== 'suspended');
 
   const months = lock === 'custom' ? Number(customLock) : Number(lock);
-  const r = Number(roi), b = withSub ? Number(bonus || 0) : 0, amt = Number(amount);
+  const r = Number(roi), b = withSub ? Number(bonus || 0) : 0, amt = inr(amount);
   // an IB can be registered with principal 0: the IB (and the sub-investor) are added without an investment
   const regOnly = type === 'ib' && !more.length && (!amount.trim() || amt === 0) && DEC(amount.trim() || '0', 2);
   const picked = pick ? all.find(x => x.id === pick) : undefined;
@@ -291,7 +295,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
     roiWay: regOnly ? null : !roiWay ? (withSub ? null : 'Choose cash, UPI or bank transfer.') : roiWay === 'upi' && roiUpi.trim() && !/^[\w.\-]{1,64}@[\w.\-]{2,64}$/.test(roiUpi.trim()) ? 'Enter a valid UPI ID, e.g. name@okaxis, or leave it empty.' : null
   };
   const itemErrs = (it: Item): Record<string, string | null> => {
-    const ir = Number(it.roi), ib2 = Number(it.bonus || 0), im = it.lock === 'custom' ? Number(it.customLock) : Number(it.lock), ia = Number(it.amount);
+    const ir = Number(it.roi), ib2 = Number(it.bonus || 0), im = it.lock === 'custom' ? Number(it.customLock) : Number(it.lock), ia = inr(it.amount);
     return {
       roi: !(ir > 0 && ir <= 100) || !DEC(it.roi, 4) ? 'Enter the monthly ROI, e.g. 0.25, 2.3, 4.3 or 6.' : null,
       bonus: withSub && (!DEC(it.bonus || '0', 4) || ib2 > 100) ? 'Enter the bonus as 0 or more.' : null,
@@ -309,11 +313,11 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
     setMore([...more, { ...src, amount: '', start: t, ref: '', notes: '', proof: [] }]);
   };
   const setItem = (k: number, patch: Partial<Item>) => setMore(more.map((x, j) => (j === k ? { ...x, ...patch } : x)));
-  const itemMonthly = (it: Item) => { const a = Number(it.amount), x = Number(it.roi); return a > 0 && x > 0 ? Math.round(a * x) / 100 : 0; };
-  const totalAmt = amt + more.reduce((s2, x) => s2 + (Number(x.amount) || 0), 0);
+  const itemMonthly = (it: Item) => { const a = inr(it.amount), x = Number(it.roi); return a > 0 && x > 0 ? Math.round(a * x) / 100 : 0; };
+  const totalAmt = amt + more.reduce((s2, x) => s2 + (inr(x.amount) || 0), 0);
   const totalMonthly = (amt > 0 && r > 0 ? Math.round(amt * r) / 100 : 0) + more.reduce((s2, x) => s2 + itemMonthly(x), 0);
   // the IB bonus of each investment (paid to the IB on top of the investor's ROI)
-  const itemBonus = (it: Item) => { const a = Number(it.amount), x = withSub ? Number(it.bonus || 0) : 0; return a > 0 && x > 0 ? Math.round(a * x) / 100 : 0; };
+  const itemBonus = (it: Item) => { const a = inr(it.amount), x = withSub ? Number(it.bonus || 0) : 0; return a > 0 && x > 0 ? Math.round(a * x) / 100 : 0; };
   const totalBonus = (amt > 0 && b > 0 ? Math.round(amt * b) / 100 : 0) + more.reduce((s2, x) => s2 + itemBonus(x), 0);
   // with a sub-investor only the name is mandatory: the investment fields are needed only when a principal is entered
   const star = regOnly ? '' : ' *';
@@ -346,7 +350,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
       const files = await Promise.all(more.map(x => (x.proof.length ? uploadAttachment(x.proof[0], 'proofs') : Promise.resolve(null))));
       try {
         return await recordInvestmentFull({
-          p_more: more.map((x, k) => ({ p_proof: files[k], p_rate: x.roi.trim(), p_bonus: withSub ? (x.bonus.trim() || '0') : '0', p_lockin_months: x.lock === 'custom' ? Number(x.customLock) : Number(x.lock), p_principal: Number(x.amount), p_start_date: x.start, p_reference: x.ref.trim(), p_notes: x.notes.trim(), p_roi_method: x.roiWay, p_roi_upi: x.roiWay === 'upi' ? x.roiUpi.trim() : '' })),
+          p_more: more.map((x, k) => ({ p_proof: files[k], p_rate: x.roi.trim(), p_bonus: withSub ? (x.bonus.trim() || '0') : '0', p_lockin_months: x.lock === 'custom' ? Number(x.customLock) : Number(x.lock), p_principal: inr(x.amount), p_start_date: x.start, p_reference: x.ref.trim(), p_notes: x.notes.trim(), p_roi_method: x.roiWay, p_roi_upi: x.roiWay === 'upi' ? x.roiUpi.trim() : '' })),
           p_type: type, p_currency: currency, p_branch: branchId || null, p_proof: file, p_rate: roi.trim(), p_bonus: withSub ? (bonus.trim() || '0') : '0', p_lockin_months: months, p_principal: regOnly ? 0 : amt, p_start_date: start, p_reference: ref.trim(), p_notes: notes.trim(), p_roi_method: roiWay, p_roi_upi: roiWay === 'upi' ? roiUpi.trim() : '',
           ...(type === 'individual'
             ? { p_person: picked ? picked.id : null, p_name: name.trim(), p_phone: phone.trim(), p_password: needPw ? pw : '' }
@@ -368,7 +372,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
       if (type === 'ib' && ibMode === 'new') logins.push([nibName.trim() + ' (IB)', nibPhone.trim(), nibPw]);
       if (needIbPw && ib) logins.push([ib.full_name + ' (IB)', ib.phone || '', ibPw]);
       if (withSub && subLogin) logins.push([investorName + ' (sub-investor)', (subChosen ? subChosen.phone : subPhone.trim()) || '', subPw]);
-      setDone({ code: res.code, investorCode: res.investor, investor: investorName, logins, more: (res.more || []).map((m, k) => ({ code: m.code, amt: Number(more[k]?.amount) || 0, r: Number(more[k]?.roi) || 0 })) });
+      setDone({ code: res.code, investorCode: res.investor, investor: investorName, logins, more: (res.more || []).map((m, k) => ({ code: m.code, amt: inr(more[k]?.amount || '') || 0, r: Number(more[k]?.roi) || 0 })) });
     }
   };
 
@@ -430,10 +434,13 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
             </div>
             <p className="hint">{type === 'individual' ? 'An investor in their own name. Nobody earns a bonus on this investment.' : 'An IB (introducing broker). Add a sub-investor to record the investment under the IB, or leave it empty for the IB’s own investment.'}</p>
           </Field>
-          <Field label="Currency" hint={currency === 'AED' ? (aedRate > 0 ? `Their amounts are shown in AED (here and in their login) at 1 AED = ₹${aedRate}. Type amounts below in INR.` : 'Set the AED rate in Settings so amounts can be shown in AED. Type amounts below in INR.') : 'Their amounts are shown in INR.'}>
+          <Field label="Currency" hint={currency === 'AED' ? (aedRate > 0 ? `Their amounts are shown in AED (here and in their login) at 1 AED = ₹${aedRate}. ` : 'Set the AED rate in Settings so amounts can be shown in AED.') : 'Their amounts are shown in INR.'}>
             <div className="chips" role="radiogroup" aria-label="Currency">
-              {(['INR', 'AED'] as const).map(c => <button key={c} type="button" role="radio" aria-checked={currency === c} className={'chip ' + (currency === c ? 'on' : '')} onClick={() => { setCurrency(c); setCurTouched(true); }}>{c === 'INR' ? '₹ INR' : 'AED'}</button>)}
+              {(['INR', 'AED'] as const).map(c => <button key={c} type="button" role="radio" aria-checked={currency === c} className={'chip ' + (currency === c ? 'on' : '')} onClick={() => { setCurrency(c); setCurTouched(true); setAmtCur(c === 'AED' && aedRate > 0 ? 'AED' : 'INR'); }}>{c === 'INR' ? '₹ INR' : 'AED'}</button>)}
             </div>
+          </Field>
+          <Field label="Type the amounts in" hint={amtCur === 'AED' ? `Type the principal in AED; it is converted at 1 AED = ₹${aedRate} and saved in INR.` : 'Type the principal in INR.'}>
+            <CurChips cur={amtCur} onChange={setAmtCur} rate={aedRate} />
           </Field>
 
           {type === 'individual' ? (
@@ -527,7 +534,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
 
           <div className="sec">
           <h4>Investment 1</h4>
-          <Field label={type === 'ib' ? 'Principal (INR)' : 'Principal (INR) *'} err={e('amount')} hint={type === 'ib' ? (withSub ? 'Optional. Leave empty to only add the sub-investor (name is enough); fill it to record an investment too.' : 'Optional. Leave empty or 0 to only register the IB.') : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder="e.g. 500000" /><AmountWords v={amount} />{currency === 'AED' && aedRate > 0 && amt > 0 && <p className="hint">≈ AED {(amt / aedRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at 1 AED = ₹{aedRate}</p>}</Field>
+          <Field label={(type === 'ib' ? 'Principal' : 'Principal *').replace('Principal', 'Principal (' + amtCur + ')')} err={e('amount')} hint={type === 'ib' ? (withSub ? 'Optional. Leave empty to only add the sub-investor (name is enough); fill it to record an investment too.' : 'Optional. Leave empty or 0 to only register the IB.') : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} placeholder={amtCur === 'AED' ? 'e.g. 20000' : 'e.g. 500000'} />{amtCur === 'INR' && <AmountWords v={amount} />}<AedNote text={amount} cur={amtCur} rate={aedRate} />{amtCur === 'INR' && currency === 'AED' && aedRate > 0 && amt > 0 && <p className="hint">≈ AED {(amt / aedRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at 1 AED = ₹{aedRate}</p>}</Field>
           <div className="f-row">
             <Field label={'Monthly ROI (% per month)' + star} err={e('roi')} hint="Any rate, e.g. 0.25, 2.3, 3.3, 4.3, 6.">
               <input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} placeholder="e.g. 6" />
@@ -556,7 +563,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
               <div className="sec" key={k}>
                 <h4 style={{ display: 'flex', alignItems: 'center' }}>Investment {k + 2}
                   <button type="button" className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => setMore(more.filter((_, j) => j !== k))}>✕ Remove</button></h4>
-                <Field label="Principal (INR) *" err={er('amount')}><input className={'input num ' + (er('amount') ? 'bad' : '')} inputMode="decimal" value={it.amount} onChange={ev => setItem(k, { amount: ev.target.value })} placeholder="e.g. 500000" /><AmountWords v={it.amount} /></Field>
+                <Field label={`Principal (${amtCur}) *`} err={er('amount')}><input className={'input num ' + (er('amount') ? 'bad' : '')} inputMode="decimal" value={it.amount} onChange={ev => setItem(k, { amount: ev.target.value })} placeholder="e.g. 500000" />{amtCur === 'INR' && <AmountWords v={it.amount} />}<AedNote text={it.amount} cur={amtCur} rate={aedRate} /></Field>
                 <div className="f-row">
                   <Field label="Monthly ROI (% per month) *" err={er('roi')}><input className={'input num ' + (er('roi') ? 'bad' : '')} inputMode="decimal" value={it.roi} onChange={ev => setItem(k, { roi: ev.target.value })} placeholder="e.g. 6" /></Field>
                   <Field label={withSub && ibName ? `Bonus to ${ibName} (% per month)` : 'IB bonus (% per month)'} err={er('bonus')}><input className={'input num ' + (er('bonus') ? 'bad' : '')} inputMode="decimal" value={withSub ? it.bonus : ''} onChange={ev => setItem(k, { bonus: ev.target.value })} disabled={!withSub} placeholder={withSub ? 'e.g. 2' : '—'} /></Field>
@@ -590,7 +597,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                 <dt>Lock-in ends</dt><dd>{start && months > 0 ? date(addMonths(start, months)) : months === 0 ? 'No lock-in' : '—'}</dd>
                 <dt>Monthly ROI taken by</dt><dd>{roiWay ? roiWayText(roiWay, roiUpi.trim()) : '—'}</dd>
                 {more.length > 0 && <>
-                  {more.map((x, k) => <Fragment key={k}><dt>Investment {k + 2}</dt><dd>{Number(x.amount) > 0 ? money(Number(x.amount)) : '—'} at {Number(x.roi) > 0 ? rate(Number(x.roi)) : '—'}{itemMonthly(x) > 0 ? ' · ' + money(itemMonthly(x)) + ' / month' : ''}{withSub && Number(x.bonus || 0) > 0 ? ' · IB bonus ' + rate(Number(x.bonus)) + (itemBonus(x) > 0 ? ' · ' + money(itemBonus(x)) + ' / month' : '') : ''}{x.start ? ' · from ' + date(x.start) : ''}{x.roiWay ? ' · ' + roiWayText(x.roiWay, x.roiUpi.trim()) : ''}</dd></Fragment>)}
+                  {more.map((x, k) => <Fragment key={k}><dt>Investment {k + 2}</dt><dd>{inr(x.amount) > 0 ? money(inr(x.amount)) : '—'} at {Number(x.roi) > 0 ? rate(Number(x.roi)) : '—'}{itemMonthly(x) > 0 ? ' · ' + money(itemMonthly(x)) + ' / month' : ''}{withSub && Number(x.bonus || 0) > 0 ? ' · IB bonus ' + rate(Number(x.bonus)) + (itemBonus(x) > 0 ? ' · ' + money(itemBonus(x)) + ' / month' : '') : ''}{x.start ? ' · from ' + date(x.start) : ''}{x.roiWay ? ' · ' + roiWayText(x.roiWay, x.roiUpi.trim()) : ''}</dd></Fragment>)}
                   <dt>Total principal</dt><dd><b>{money(totalAmt)}</b> in {more.length + 1} investments</dd>
                   <dt>Total monthly ROI</dt><dd><b>{money(totalMonthly)}</b> / month <span className="muted">to {investorName || 'the investor'}</span></dd>
                   {withSub && <><dt>Total IB bonus</dt><dd><b>{money(totalBonus)}</b> / month <span className="muted">to {ibName || 'the IB'}, on top of the ROI</span></dd></>}

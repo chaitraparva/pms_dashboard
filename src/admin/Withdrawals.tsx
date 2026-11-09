@@ -14,6 +14,8 @@ import type { WithdrawalMethod } from '../lib/types';
 import { SearchSelect } from '../ui/SearchSelect';
 import { AmountWords } from '../ui/AmountWords';
 import { DateInput } from '../ui/DateInput';
+import { AedNote, CurChips, toInr, type AmtCur } from '../ui/CurAmount';
+import { useSettings } from '../lib/auth';
 import { PayChips, PayFields, PayView, emptyPay, payArgs, payErrors, payText, type PayDetails, type PayMethod } from '../ui/PayTo';
 
 /* Withdrawals: requested by investors (or recorded here for them), taken from the highest monthly ROI first.
@@ -152,29 +154,33 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
   const [who, setWho] = useState('');
   const [rows, setRows] = useState<WdRow[]>([newRow()]);
   const [tried, setTried] = useState(false);
+  // amounts can be typed in AED: converted at the AED rate and saved in INR
+  const aedRate = Number(useSettings()?.inr_per_aed || 0);
+  const [amtCur, setAmtCur] = useState<AmtCur>('INR');
+  const inr = (t: string) => toInr(t, amtCur, aedRate);
   const hasIb = !!people.find(p => p.id === who)?.introduced_by;
   const t = today();
   const set = (k: number, patch: Partial<WdRow>) => setRows(rs => rs.map((r, j) => (j === k ? { ...r, ...patch } : r)));
   const look = async (k: number, id: string, r: WdRow) => {
-    const a = Number(r.amount);
+    const a = inr(r.amount);
     const parts = id && a > 0 && r.on ? await rpc<WithdrawalPart[]>('withdrawal_preview', { p_investor: id, p_amount: a, p_date: r.on }).catch(() => []) : [];
     set(k, { parts });
   };
   const upd = (k: number, patch: Partial<WdRow>) => { const r = { ...rows[k], ...patch }; set(k, patch); look(k, who, r); };
   const errsOf = (r: WdRow) => ({
-    amount: !(Number(r.amount) > 0) || !/^\d+(\.\d{1,2})?$/.test(r.amount.trim()) ? 'Enter the amount.' : null,
+    amount: !(inr(r.amount) > 0) || !/^\d+(\.\d{1,2})?$/.test(r.amount.trim()) ? 'Enter the amount.' : null,
     on: r.on && r.on > t ? 'Today or an earlier date.' : null,
     mt5: Object.values(payErrors(r.method, r.pay, false))[0] || null,
     paidOn: r.paid && r.paidOn && (r.paidOn < r.on || r.paidOn > t) ? 'On or after the withdrawal date, and not after today.' : null
   });
   const errs = rows.map(errsOf);
   const bad = !who || errs.some(x => Object.values(x).some(Boolean));
-  const total = rows.reduce((x, r) => x + (Number(r.amount) || 0), 0);
+  const total = rows.reduce((x, r) => x + (inr(r.amount) || 0), 0);
   const go = async () => {
     setTried(true); if (bad) return;
     const r = await act.run(() => rpc('admin_record_withdrawals', {
       p_investor: who,
-      p_items: rows.map(x => ({ p_amount: Number(x.amount), p_date: x.on || t, p_method: x.method, ...payArgs(x.method, x.pay), p_paid: x.paid, p_paid_on: x.paid ? (x.paidOn || x.on) : '', p_ref: x.ref.trim(), p_note: 'Recorded by Super Admin' }))
+      p_items: rows.map(x => ({ p_amount: inr(x.amount), p_date: x.on || t, p_method: x.method, ...payArgs(x.method, x.pay), p_paid: x.paid, p_paid_on: x.paid ? (x.paidOn || x.on) : '', p_ref: x.ref.trim(), p_note: 'Recorded by Super Admin' }))
     }), [rows.length === 1 ? 'Withdrawal recorded' : `${rows.length} withdrawals recorded`, `${money(total)} in total · applied in date order; returns recalculated from the earliest date.`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
@@ -184,6 +190,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
       <div className="form">
         <Field label="Investor *" err={tried && !who ? 'Choose the investor.' : null}><SearchSelect value={who} onChange={v => { setWho(v); rows.forEach((r, k) => look(k, v, r)); }} bad={tried && !who}
           options={people.map(p => ({ value: p.id, label: p.full_name + ' · ' + p.code, sub: p.phone || undefined }))} /></Field>
+        <Field label="Type the amounts in"><CurChips cur={amtCur} onChange={c => { setAmtCur(c); setRows(rs => rs.map(r => ({ ...r, amount: '', parts: [] }))); }} rate={aedRate} /></Field>
         {rows.map((r, k) => {
           const e = (f: keyof ReturnType<typeof errsOf>) => (tried ? errs[k][f] : null);
           return (
@@ -192,7 +199,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
                 {rows.length > 1 && <button type="button" className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => setRows(rows.filter((_, j) => j !== k))}>✕ Remove</button>}</h4>
               <div className="f-row">
                 <Field label="Withdrawal date" err={e('on')} hint="Empty = today."><DateInput className="input" max={t} value={r.on} onChange={ev => upd(k, { on: ev.target.value })} /></Field>
-                <Field label="Amount (INR) *" err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={r.amount} onChange={ev => upd(k, { amount: ev.target.value })} placeholder="e.g. 50000" /><AmountWords v={r.amount} /></Field>
+                <Field label={`Amount (${amtCur}) *`} err={e('amount')}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={r.amount} onChange={ev => upd(k, { amount: ev.target.value })} placeholder="e.g. 50000" />{amtCur === 'INR' && <AmountWords v={r.amount} />}<AedNote text={r.amount} cur={amtCur} rate={aedRate} /></Field>
               </div>
               <Field label="How it was paid">
                 <PayChips ways={[['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5'], ...(hasIb ? [['ib', 'Transfer to IB'] as [PayMethod, string]] : [])]} value={r.method} onChange={m => set(k, { method: m })} />

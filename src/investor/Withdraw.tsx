@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
-import { useAuth } from '../lib/auth';
+import { useAuth, useSettings } from '../lib/auth';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { money, date, rateShort, today } from '../lib/format';
+import { money, date, rateShort, today, displayCurrency } from '../lib/format';
 import { uploadAttachment } from '../lib/docs';
 import type { Investment, MyAccount, Withdrawal, WithdrawalMethod, WithdrawalPart } from '../lib/types';
 import { Badge, Empty, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -11,6 +11,7 @@ import { AttachmentLinks, FilePicker } from '../ui/Attach';
 import { loadAccount } from './data';
 import { AmountWords } from '../ui/AmountWords';
 import { DateInput } from '../ui/DateInput';
+import { AedNote, CurChips, toInr, type AmtCur } from '../ui/CurAmount';
 import { PayChips, PayFields, emptyPay, payArgs, payErrors, payFrom, payText, type PayDetails, type PayMethod } from '../ui/PayTo';
 
 /* Withdrawals. The amount is always taken from the highest monthly ROI first, whatever the lock-in.
@@ -41,6 +42,9 @@ export function Withdraw() {
   const q = useQuery(() => load(me), [me]);
   const [forId, setForId] = useState(sp.get('for') || me);
   const [amount, setAmount] = useState('');
+  // the amount can be typed in AED (converted at the AED rate, saved in INR); AED investors start in AED
+  const aedRate = Number(useSettings()?.inr_per_aed || 0);
+  const [amtCur, setAmtCur] = useState<AmtCur>(displayCurrency() === 'AED' && aedRate > 0 ? 'AED' : 'INR');
   const [method, setMethod] = useState<WithdrawalMethod>('bank');
   const [pay, setPay] = useState<PayDetails>(emptyPay());
   const [note, setNote] = useState('');
@@ -64,7 +68,9 @@ export function Withdraw() {
   }, [forId, me, q.data]);
   const parts = order || [];
   const available = Math.round(parts.reduce((s, p) => s + Number(p.before), 0) * 100) / 100;
-  const amt = Number(amount);
+  const typed = toInr(amount, amtCur, aedRate);
+  // the whole amount typed in AED (rounded to fils) counts as everything available
+  const amt = amtCur === 'AED' && Math.abs(typed - available) < aedRate / 100 ? available : typed;
   useEffect(() => {
     if (!(amt > 0)) { setPreview([]); return; }
     let live = true;
@@ -127,9 +133,10 @@ export function Withdraw() {
           <div className="card-b">
             {!order ? <Loading rows={2} /> : !parts.length ? <Empty title="Nothing to withdraw">{forMe ? 'You have' : sub!.full_name + ' has'} no live investment right now.</Empty> : (
               <div className="form">
-                <Field label="Amount (INR) *" err={tried ? err : null} hint={`Up to ${money(available)}.`}>
-                  <input className={'input num ' + (tried && err ? 'bad' : '')} inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="e.g. 100000" />
-                  <AmountWords v={amount} />
+                <Field label="Amount in"><CurChips cur={amtCur} onChange={c => { setAmtCur(c); setAmount(''); }} rate={aedRate} /></Field>
+                <Field label={`Amount (${amtCur}) *`} err={tried ? err : null} hint={`Up to ${money(available)}${amtCur === 'AED' && displayCurrency() !== 'AED' && aedRate > 0 ? ` (AED ${(available / aedRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}.`}>
+                  <input className={'input num ' + (tried && err ? 'bad' : '')} inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder={amtCur === 'AED' ? 'e.g. 5000' : 'e.g. 100000'} />
+                  {amtCur === 'INR' && <AmountWords v={amount} />}<AedNote text={amount} cur={amtCur} rate={aedRate} />
                 </Field>
                 <Field label="Where should the money go? *">
                   <PayChips ways={ways} value={method} onChange={m => setMethod(m)} />
@@ -200,6 +207,8 @@ export function Withdraw() {
 export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admin = false, onClose }: { w: Withdrawal; who: string; hasIb: boolean; ibLabel?: string; admin?: boolean; onClose: () => void }) {
   const act = useAction();
   const [amount, setAmount] = useState(String(w.amount));
+  const aedRate = Number(useSettings()?.inr_per_aed || 0);
+  const [amtCur, setAmtCur] = useState<AmtCur>('INR');
   const [method, setMethod] = useState<WithdrawalMethod>(w.method);
   const [pay, setPay] = useState<PayDetails>(payFrom(w));
   const [note, setNote] = useState(w.note || '');
@@ -209,7 +218,7 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
   const [paidOn, setPaidOn] = useState(w.completed_on || '');
   const [ref, setRef] = useState(w.payment_ref || '');
   const t = today();
-  const amt = Number(amount);
+  const amt = toInr(amount, amtCur, aedRate);
   const err = !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount.' : Object.keys(payErrors(method, pay, !admin)).length ? 'Fill in where the money goes.'
     : admin && on && on > t ? 'The withdrawal date must be today or earlier.' : admin && paid && paidOn && (paidOn < on || paidOn > t) ? 'Paid on must be on or after the withdrawal date.' : null;
   const ways: [PayMethod, string][] = [['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5'], ...(hasIb ? [['ib', ibLabel] as [PayMethod, string]] : [])];
@@ -223,7 +232,8 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !!err}>{act.busy ? 'Saving…' : 'Save'}</button></>}>
       <div className="form">
         {admin && <Field label="Withdrawal date" hint="Empty = keep the current date."><DateInput className="input" max={t} value={on} onChange={e => setOn(e.target.value)} /></Field>}
-        <Field label="Amount (INR) *" err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /><AmountWords v={amount} /></Field>
+        <Field label="Amount in"><CurChips cur={amtCur} onChange={c => { if (c === amtCur) return; setAmtCur(c); setAmount(c === 'INR' ? String(w.amount) : ''); }} rate={aedRate} /></Field>
+        <Field label={`Amount (${amtCur}) *`} err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} />{amtCur === 'INR' && <AmountWords v={amount} />}<AedNote text={amount} cur={amtCur} rate={aedRate} /></Field>
         <Field label="Where should the money go?"><PayChips ways={ways} value={method} onChange={m => setMethod(m)} /></Field>
         <PayFields method={method} d={pay} onChange={setPay} tried required={!admin} amount={amt > 0 ? amt : undefined} />
         {admin && <>

@@ -7,7 +7,7 @@ import { downloadCsv } from '../lib/csv';
 import { ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction, Empty } from '../ui/kit';
 import { Icon } from '../ui/Icon';
 import { DateInput } from '../ui/DateInput';
-import { RoiBadge, monthText, type RoiRequest } from '../investor/RequestRoi';
+import { KindTag, RoiBadge, monthText, type RoiRequest } from '../investor/RequestRoi';
 import { PayView, payText } from '../ui/PayTo';
 
 /* ROI requests from investors (any day, for months that have ended) and from IBs for anyone under them.
@@ -28,7 +28,7 @@ export function RoiRequests() {
   const [pay, setPay] = useState<RoiRequest | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const act = useAction();
-  const head = <PageHead crumbs={['ROI requests']} title="ROI requests" sub="Investors request a month’s ROI any day after it ends (in November → October; missed months can be requested together). IBs can request for anyone under them. ROI that is not requested stays pending." />;
+  const head = <PageHead crumbs={['ROI requests']} title="ROI & IB bonus requests" sub="Investors request a month’s ROI any day after it ends (in November → October; missed months can be requested together). IBs can request for anyone under them, and their own IB bonus. ROI and bonus that are not requested stay pending." />;
   if (q.error) return <>{head}<ErrorNote msg={q.error} retry={q.reload} /></>;
   if (!q.data) return <>{head}<Loading /></>;
   const { reqs, pm } = q.data;
@@ -37,9 +37,9 @@ export function RoiRequests() {
   const cancel = async (r: RoiRequest) => { const x = await act.run(() => rpc('cancel_roi_request', { p_id: r.id, p_reason: 'Cancelled by the company' }), ['Request cancelled', r.code + ' · its ROI is pending again']); if (x !== undefined) { refreshAll(); q.reload(); } };
   return (
     <>
-      <PageHead crumbs={['ROI requests']} title="ROI requests" sub="Investors request a month’s ROI any day after it ends (in November → October; missed months can be requested together). IBs can request for anyone under them. ROI that is not requested stays pending."
-        actions={<button className="btn" onClick={() => downloadCsv('roi-requests', ['Request', 'Investor ID', 'Investor', 'Phone', 'Requested by', 'Requested on', 'Months', 'Amount', 'Pay to', 'Status', 'Paid on', 'Reference'],
-          rows.map(r => [r.code, pm.get(r.investor_id)?.code, pm.get(r.investor_id)?.full_name, pm.get(r.investor_id)?.phone, r.requested_by !== r.investor_id ? pm.get(r.requested_by)?.full_name : 'Self', r.requested_on, r.months.map(monthText).join(', '), Number(r.amount).toFixed(2), payText(r), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export to Excel</button>} />
+      <PageHead crumbs={['ROI requests']} title="ROI & IB bonus requests" sub="Investors request a month’s ROI any day after it ends (in November → October; missed months can be requested together). IBs can request for anyone under them, and their own IB bonus. ROI and bonus that are not requested stay pending."
+        actions={<button className="btn" onClick={() => downloadCsv('roi-requests', ['Request', 'Type', 'Investor ID', 'Investor', 'Phone', 'Requested by', 'Requested on', 'Months', 'Amount', 'Pay to', 'Status', 'Paid on', 'Reference'],
+          rows.map(r => [r.code, r.kind === 'bonus' ? 'IB bonus' : 'ROI', pm.get(r.investor_id)?.code, pm.get(r.investor_id)?.full_name, pm.get(r.investor_id)?.phone, r.requested_by !== r.investor_id ? pm.get(r.requested_by)?.full_name : 'Self', r.requested_on, r.months.map(monthText).join(', '), Number(r.amount).toFixed(2), payText(r), r.status, r.completed_on, r.payment_ref]))}><Icon name="download" />Export to Excel</button>} />
       <div className="kpis">
         <Kpi label="Payment processed" value={money(sum('pending'))} sub={`${reqs.filter(r => r.status === 'pending').length} to pay`} subCls={reqs.some(r => r.status === 'pending') ? 'warn' : ''} />
         <Kpi label="Payment fulfilled" cls="pos" value={money(sum('completed'))} sub={`${reqs.filter(r => r.status === 'completed').length} paid`} />
@@ -55,7 +55,7 @@ export function RoiRequests() {
               const who = pm.get(r.investor_id), by = r.requested_by !== r.investor_id ? pm.get(r.requested_by) : null;
               const main = (
                 <tr key={r.id} className="click" onClick={() => setOpen(open === r.id ? null : r.id)}>
-                  <td className="mono">{r.code}<span className="sub">{date(r.requested_on)}</span></td>
+                  <td className="mono">{r.code} <KindTag r={r} /><span className="sub">{date(r.requested_on)}</span></td>
                   <td>{who ? <Link to={'/admin/investors/' + who.code} onClick={e => e.stopPropagation()}><b>{who.full_name}</b></Link> : '—'}<span className="sub">{who?.code}{who?.phone ? ' · ' + who.phone : ''}</span></td>
                   <td>{by ? <>{by.full_name}<span className="sub">IB</span></> : 'Self'}</td>
                   <td>{r.months.map(monthText).join(', ')}</td>
@@ -68,8 +68,8 @@ export function RoiRequests() {
                 </tr>
               );
               if (open !== r.id) return [main];
-              return [main, <tr key={r.id + ':d'}><td colSpan={8}><div className="hint" style={{ marginBottom: 4 }}>Released highest ROI first:</div>
-                {(r.items || []).map((it, k) => <div key={k} className="sub" style={{ display: 'block' }}><span className="mono">{it.code}</span> · {rateShort(it.rate)} · {it.month ? monthText(it.month) : ''} · {money(it.amount)}</div>)}</td></tr>];
+              return [main, <tr key={r.id + ':d'}><td colSpan={8}><div className="hint" style={{ marginBottom: 4 }}>{r.kind === 'bonus' ? 'IB bonus from:' : 'Released highest ROI first:'}</div>
+                {(r.items || []).map((it, k) => <div key={k} className="sub" style={{ display: 'block' }}>{it.investor ? it.investor + ' · ' : ''}<span className="mono">{it.code}</span> · {rateShort(it.rate)} · {it.month ? monthText(it.month) : ''} · {money(it.amount)}</div>)}</td></tr>];
             })}</tbody>
           </table></div>
         )}

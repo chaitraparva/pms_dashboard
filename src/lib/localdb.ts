@@ -259,7 +259,7 @@ function runAccrualsFor(i: Row, asOf: string, idx?: Map<string, Row[]>): number 
       batch_ref: null, payment_ref: closed ? cl!.ref : null, failure_reason: null, approved_by: null, approved_at: null, sent_by: null, sent_at: null, confirmed_by: null, confirmed_at: null, paid_on: closed ? cl!.on : null, closed, updated_at: nowIso() };
     T('payouts').push(pay);
     if (!closed) {
-      const rq = T('roi_requests').find(x => x.investor_id === i.investor_id && x.status !== 'cancelled' && (x.months || []).includes(end.slice(0, 7)));
+      const rq = T('roi_requests').find(x => x.investor_id === i.investor_id && x.kind !== 'bonus' && x.status !== 'cancelled' && (x.months || []).includes(end.slice(0, 7)));
       if (rq) {
         (pay as Row).roi_request_id = rq.id;
         // the month's estimate in the request becomes the calculated amount
@@ -282,9 +282,24 @@ function runAccrualsFor(i: Row, asOf: string, idx?: Map<string, Row[]>): number 
     ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_accrual', amount: mineAmt, status: 'posted', occurred_on: end, reference: i.code + ' · ' + MONTH_NAMES[+end.slice(5, 7) - 1] + ' ' + end.slice(0, 4),
       note: 'Monthly return ' + investorRate(i).toFixed(2) + '% on ' + fmtMoney(principalOn(i, p.start)) + ' · ' + span, source_table: 'accruals', source_id: acc.id, created_by: null });
     if (!closed) notify(i.investor_id, 'accrual', 'Return earned on ' + i.code + ': ' + fmtMoney(mineAmt), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
-    if (bonusAmt > 0) T('admin_bonuses').push({ id: uuid(), code: 'BON-' + pad(nextSeq('bonus', 1), 6), investment_id: i.id, investor_id: i.investor_id,
-      admin_id: T('profiles').find(p2 => p2.id === i.investor_id)?.introduced_by ?? null, accrual_id: acc.id, period_no: k, accrual_date: end, rate: Number(i.admin_bonus_rate),
-      amount: bonusAmt, status: closed ? 'paid' : 'accrued', payment_ref: closed ? cl!.ref : null, paid_on: closed ? cl!.on : null, paid_by: null, closed, created_at: nowIso(), updated_at: nowIso() });
+    if (bonusAmt > 0) {
+      const bon: Row = { id: uuid(), code: 'BON-' + pad(nextSeq('bonus', 1), 6), investment_id: i.id, investor_id: i.investor_id,
+        admin_id: T('profiles').find(p2 => p2.id === i.investor_id)?.introduced_by ?? null, accrual_id: acc.id, period_no: k, accrual_date: end, rate: Number(i.admin_bonus_rate),
+        amount: bonusAmt, status: closed ? 'paid' : 'accrued', payment_ref: closed ? cl!.ref : null, paid_on: closed ? cl!.on : null, paid_by: null, closed, created_at: nowIso(), updated_at: nowIso() };
+      T('admin_bonuses').push(bon);
+      // a bonus recalculated for a month the IB already requested stays in that request (paid if the request is paid)
+      const brq = closed || !bon.admin_id ? null : T('roi_requests').find(x => x.kind === 'bonus' && x.investor_id === bon.admin_id && x.status !== 'cancelled' && (x.months || []).includes(end.slice(0, 7)));
+      if (brq) {
+        bon.roi_request_id = brq.id;
+        const items: Row[] = brq.items || (brq.items = []), m = end.slice(0, 7);
+        const it = items.find(x => x.investment_id === i.id && x.month === m && (!x.bonus_id || !T('admin_bonuses').some(y => y.id === x.bonus_id)));
+        if (it) Object.assign(it, { bonus_id: bon.id, amount: bonusAmt });
+        else items.push({ bonus_id: bon.id, payout_id: null, investment_id: i.id, code: i.code, investor: T('profiles').find(x => x.id === i.investor_id)?.full_name || '', rate: Number(i.admin_bonus_rate || 0), amount: bonusAmt, month: m });
+        if (brq.status === 'pending') brq.amount = round2(items.reduce((x, y) => x + Number(y.amount), 0));
+        if (brq.status === 'completed') Object.assign(bon, { status: 'paid', payment_ref: brq.payment_ref || brq.code, paid_on: brq.completed_on, paid_by: brq.completed_by });
+        brq.updated_at = nowIso();
+      }
+    }
   }
   closeIfEmpty(i);
   if (!i.maturity_date || !LIVE.includes(i.status)) { /* no lock-in (nothing to unlock) or closed */ }
@@ -519,19 +534,38 @@ function roiAvailable(investorId: string): Row[] {
   return [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, items]) => ({ month, amount: round2(items.reduce((x, it) => x + it.amount, 0)),
     items: items.sort((a, b) => b.rate - a.rate || String(a.code).localeCompare(String(b.code))) }));
 }
+/** An IB's unpaid bonus of ended months that is not in a request yet, per month (highest bonus % first). */
+function bonusAvailable(ibId: string): Row[] {
+  const cur = today().slice(0, 7);
+  const invById = new Map(T('investments').map(i => [i.id, i]));
+  const names = new Map(T('profiles').map(p => [p.id, p.full_name]));
+  const byMonth = new Map<string, Row[]>();
+  T('admin_bonuses').forEach(b => {
+    if (b.admin_id !== ibId || b.status !== 'accrued' || b.roi_request_id) return;
+    const m = String(b.accrual_date).slice(0, 7); if (m >= cur) return;
+    const i = invById.get(b.investment_id);
+    const l = byMonth.get(m) || []; l.push({ bonus_id: b.id, payout_id: null, investment_id: b.investment_id, code: i?.code || '', investor: names.get(b.investor_id) || '', rate: Number(b.rate || 0), amount: Number(b.amount) }); byMonth.set(m, l);
+  });
+  return [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, items]) => ({ month, amount: round2(items.reduce((x, it) => x + it.amount, 0)),
+    items: items.sort((a, b) => b.rate - a.rate || String(a.code).localeCompare(String(b.code))) }));
+}
 /** What the signed-in user can request now: for themselves, and (for an IB) for each person under them. */
 function roiOptions(onlyFor: string | null) {
   const u = me() || fail('Not signed in.');
   const subs = isAdmin() ? [] : T('profiles').filter(p => p.role === 'investor' && p.introduced_by === u.id);
   const who = onlyFor ? [onlyFor] : [...(u.role === 'investor' ? [u.id] : []), ...subs.map(p => p.id)];
-  return { people: who.map(id => { const p = T('profiles').find(x => x.id === id); return { id, code: p?.code, name: p?.full_name, self: id === u.id, months: roiAvailable(id) }; }) };
+  // an IB also requests their own IB bonus (the total bonus of a month, from everyone under them)
+  const ib = !onlyFor && !isAdmin() && (isIbProfile(u) || T('admin_bonuses').some(b => b.admin_id === u.id));
+  return { people: who.map(id => { const p = T('profiles').find(x => x.id === id); return { id, code: p?.code, name: p?.full_name, self: id === u.id, months: roiAvailable(id) }; }),
+    bonus: ib ? { id: u.id, code: u.code, name: u.full_name, months: bonusAvailable(u.id) } : null };
 }
 function requestRoi(a: Row): string[] {
   const mePr = me() || fail('Not signed in.');
   const months: string[] = Array.isArray(a.p_months) ? a.p_months.map(String) : [];
   if (!months.length) fail('Choose the month(s) to request.');
   const method = blank(a.p_method) ? '' : String(a.p_method);
-  if (method ? !ROI_PAY_METHODS.includes(method) : !isAdmin()) fail('Choose how the ROI should be paid: bank, UPI, cash or MT5.');
+  const bonus = a.p_kind === 'bonus', what = bonus ? 'IB bonus' : 'ROI';
+  if (method ? !ROI_PAY_METHODS.includes(method) : !isAdmin()) fail(`Choose how the ${what} should be paid: bank, UPI, cash or MT5.`);
   const to = method ? payTo(method, a, !isAdmin()) : { mt5_account: null, upi_id: null, bank_details: null };
   const targets: string[] = Array.isArray(a.p_investors) && a.p_investors.length ? a.p_investors.map(String) : [String(a.p_investor || mePr.id)];
   const ids: string[] = [];
@@ -539,24 +573,28 @@ function requestRoi(a: Row): string[] {
     const p = T('profiles').find(x => x.id === id && x.role === 'investor') || fail('Investor not found.');
     // yourself; or, as their IB, anyone under you (with or without a login)
     if (!isAdmin() && id !== mePr.id) {
-      if (p.introduced_by !== mePr.id) fail('You can only request ROI for yourself or the people under you.');
+      // an IB bonus is requested only by the IB themselves
+      if (bonus || p.introduced_by !== mePr.id) fail(bonus ? 'You can only request your own IB bonus.' : 'You can only request ROI for yourself or the people under you.');
     }
-    const avail = roiAvailable(id).filter(x => months.includes(x.month));
-    if (!avail.length) { if (targets.length === 1) fail('There is no ROI to request for the chosen month(s).'); continue; }
+    const avail = (bonus ? bonusAvailable(id) : roiAvailable(id)).filter(x => months.includes(x.month));
+    if (!avail.length) { if (targets.length === 1) fail(`There is no ${what} to request for the chosen month(s).`); continue; }
     const items = avail.flatMap(x => x.items.map((it: Row) => ({ ...it, month: x.month }))).sort((x, y) => y.rate - x.rate || x.month.localeCompare(y.month));
-    const rid = uuid(), code = 'ROI-' + pad(nextSeq('roi_request', 1), 5);
+    const rid = uuid(), code = bonus ? 'BNS-' + pad(nextSeq('bonus_request', 1), 5) : 'ROI-' + pad(nextSeq('roi_request', 1), 5);
     const amount = round2(items.reduce((x, it) => x + it.amount, 0));
-    T('roi_requests').push({ id: rid, code, investor_id: id, requested_by: mePr.id, months: avail.map(x => x.month), items, amount, method: method || null, ...to, status: 'pending', requested_on: today(), requested_at: nowIso(),
+    T('roi_requests').push({ id: rid, code, investor_id: id, requested_by: mePr.id, kind: bonus ? 'bonus' : 'roi', months: avail.map(x => x.month), items, amount, method: method || null, ...to, status: 'pending', requested_on: today(), requested_at: nowIso(),
       completed_on: null, completed_by: null, payment_ref: null, cancelled_reason: null, note: str(a.p_note), updated_at: nowIso() });
-    items.forEach(it => { if (!it.payout_id) return; const py = T('payouts').find(x => x.id === it.payout_id); if (py) { py.roi_request_id = rid; py.updated_at = nowIso(); } });
+    items.forEach(it => {
+      const row = it.bonus_id ? T('admin_bonuses').find(x => x.id === it.bonus_id) : it.payout_id ? T('payouts').find(x => x.id === it.payout_id) : null;
+      if (row) { row.roi_request_id = rid; row.updated_at = nowIso(); }
+    });
     const label = avail.map(x => MONTH_NAMES[+x.month.slice(5, 7) - 1] + ' ' + x.month.slice(0, 4)).join(', ');
     T('profiles').filter(x => x.role === 'super_admin' && x.account_status === 'active' && !x.read_only).forEach(ad =>
-      notify(ad.id, 'roi_request', 'ROI request ' + code + ': ' + fmtMoney(amount), p.full_name + ' · ' + label + (method ? ' · ' + payText({ method, ...to }) : '') + (id !== mePr.id ? ' · requested by ' + mePr.full_name : ''), '/admin/roi-requests', 'roi_requests', rid));
+      notify(ad.id, 'roi_request', what + ' request ' + code + ': ' + fmtMoney(amount), p.full_name + ' · ' + label + (method ? ' · ' + payText({ method, ...to }) : '') + (id !== mePr.id ? ' · requested by ' + mePr.full_name : ''), '/admin/roi-requests', 'roi_requests', rid));
     if (id !== mePr.id) notify(id, 'roi_request', 'ROI requested for you: ' + fmtMoney(amount), label + ' · by ' + mePr.full_name, '/portal/roi', 'roi_requests', rid + ':for');
-    audit('roi.request', 'roi_request', rid, code, 'ROI requested', null, { investor: p.code, months: avail.map(x => x.month), amount, method: method || null, ...to });
+    audit(bonus ? 'bonus.request' : 'roi.request', 'roi_request', rid, code, what + ' requested', null, { investor: p.code, months: avail.map(x => x.month), amount, method: method || null, ...to });
     ids.push(rid);
   }
-  if (!ids.length) fail('There is no ROI to request for the chosen month(s).');
+  if (!ids.length) fail(`There is no ${what} to request for the chosen month(s).`);
   return ids;
 }
 function completeRoiRequest(a: Row) {
@@ -568,6 +606,9 @@ function completeRoiRequest(a: Row) {
   const ref = str(a.p_ref, r.code).trim();
   // released highest ROI % first (the items are in that order)
   const rate = (id: string) => { const i = T('investments').find(x => x.id === id); return i ? investorRate(i) : 0; };
+  // an IB bonus request: its bonuses are marked paid, highest bonus % first
+  T('admin_bonuses').filter(b => b.roi_request_id === r.id && b.status === 'accrued').sort((x, y) => Number(y.rate || 0) - Number(x.rate || 0))
+    .forEach(b => Object.assign(b, { status: 'paid', payment_ref: ref, paid_on: on, paid_by: currentUid, updated_at: nowIso() }));
   T('payouts').filter(p => p.roi_request_id === r.id && p.status !== 'paid').sort((x, y) => rate(y.investment_id) - rate(x.investment_id)).forEach(p => {
     Object.assign(p, { status: 'paid', approved_by: p.approved_by || currentUid, approved_at: p.approved_at || nowIso(), sent_by: p.sent_by || currentUid, sent_at: p.sent_at || nowIso(),
       payment_ref: ref, paid_on: on, confirmed_by: currentUid, confirmed_at: nowIso(), failure_reason: null, updated_at: nowIso() });
@@ -576,9 +617,10 @@ function completeRoiRequest(a: Row) {
     else ledger({ investment_id: p.investment_id, investor_id: p.investor_id, type: 'return_payout', amount: p.amount, status: 'confirmed', occurred_on: on, reference: ref, note: p.code + ' · ' + r.code, source_table: 'payouts', source_id: p.id });
   });
   Object.assign(r, { status: 'completed', completed_on: on, completed_by: currentUid, payment_ref: ref, updated_at: nowIso() });
-  notify(r.investor_id, 'roi_paid', 'ROI ' + r.code + ' · payment fulfilled', fmtMoney(r.amount) + ' paid on ' + fmtDate(on) + (ref ? ' · ' + ref : ''), '/portal/roi', 'roi_requests', r.id + ':done');
-  if (r.requested_by && r.requested_by !== r.investor_id) notify(r.requested_by, 'roi_paid', 'ROI ' + r.code + ' · payment fulfilled', fmtMoney(r.amount) + ' for ' + (T('profiles').find(x => x.id === r.investor_id)?.full_name || ''), '/portal/roi', 'roi_requests', r.id + ':done-ib');
-  audit('roi.complete', 'roi_request', r.id, r.code, 'ROI paid', { status: 'pending' }, { status: 'completed', paid_on: on, reference: ref });
+  const what = r.kind === 'bonus' ? 'IB bonus ' : 'ROI ';
+  notify(r.investor_id, 'roi_paid', what + r.code + ' · payment fulfilled', fmtMoney(r.amount) + ' paid on ' + fmtDate(on) + (ref ? ' · ' + ref : ''), '/portal/roi', 'roi_requests', r.id + ':done');
+  if (r.requested_by && r.requested_by !== r.investor_id) notify(r.requested_by, 'roi_paid', what + r.code + ' · payment fulfilled', fmtMoney(r.amount) + ' for ' + (T('profiles').find(x => x.id === r.investor_id)?.full_name || ''), '/portal/roi', 'roi_requests', r.id + ':done-ib');
+  audit(r.kind === 'bonus' ? 'bonus.complete' : 'roi.complete', 'roi_request', r.id, r.code, what + 'paid', { status: 'pending' }, { status: 'completed', paid_on: on, reference: ref });
 }
 function cancelRoiRequest(a: Row) {
   const mePr = me() || fail('Not signed in.');
@@ -586,8 +628,9 @@ function cancelRoiRequest(a: Row) {
   if (!isAdmin() && r.requested_by !== mePr.id && r.investor_id !== mePr.id) fail('Request not found.');
   if (r.status !== 'pending') fail(`${r.code} is already ${r.status}.`);
   T('payouts').forEach(p => { if (p.roi_request_id === r.id && p.status !== 'paid') { p.roi_request_id = null; p.updated_at = nowIso(); } });
+  T('admin_bonuses').forEach(b => { if (b.roi_request_id === r.id && b.status !== 'paid') { b.roi_request_id = null; b.updated_at = nowIso(); } });
   Object.assign(r, { status: 'cancelled', cancelled_reason: str(a.p_reason, 'Cancelled'), updated_at: nowIso() });
-  if (isAdmin()) notify(r.investor_id, 'roi_request', 'ROI request ' + r.code + ' cancelled', str(a.p_reason), '/portal/roi', 'roi_requests', r.id + ':cancel');
+  if (isAdmin()) notify(r.investor_id, 'roi_request', (r.kind === 'bonus' ? 'IB bonus' : 'ROI') + ' request ' + r.code + ' cancelled', str(a.p_reason), '/portal/roi', 'roi_requests', r.id + ':cancel');
   audit('roi.cancel', 'roi_request', r.id, r.code, str(a.p_reason, 'Cancelled'), { status: 'pending' }, { status: 'cancelled' });
 }
 
@@ -767,9 +810,9 @@ export function rpcCall(fn: string, a: Row): unknown {
     }
     case 'request_withdrawal': { const id = requestWithdrawal(a); touched('withdrawals', ...RET_TABLES); return id; }
     case 'roi_request_options': return roiOptions(a.p_investor ? String(a.p_investor) : null);
-    case 'request_roi': { const ids = requestRoi(a); touched('roi_requests', 'payouts', 'notifications'); return ids; }
-    case 'admin_complete_roi_request': completeRoiRequest(a); touched('roi_requests', 'payouts', 'ledger_entries', 'notifications'); return null;
-    case 'cancel_roi_request': cancelRoiRequest(a); touched('roi_requests', 'payouts', 'notifications'); return null;
+    case 'request_roi': { const ids = requestRoi(a); touched('roi_requests', 'payouts', 'admin_bonuses', 'notifications'); return ids; }
+    case 'admin_complete_roi_request': completeRoiRequest(a); touched('roi_requests', 'payouts', 'admin_bonuses', 'ledger_entries', 'notifications'); return null;
+    case 'cancel_roi_request': cancelRoiRequest(a); touched('roi_requests', 'payouts', 'admin_bonuses', 'notifications'); return null;
     case 'admin_record_withdrawals': {
       // several withdrawals of one investor at once (past or offline ones), saved in date order; one error and nothing is saved
       requireAdmin();
@@ -877,7 +920,7 @@ export function rpcCall(fn: string, a: Row): unknown {
         if (by && (by === p.id || isUnder(by, p.id))) fail('That would put this person under someone who is under them.');
         p.introduced_by = by;
         // unpaid bonuses follow the admin who introduced the investor
-        T('admin_bonuses').forEach(b => { if (b.investor_id === p.id && b.status === 'accrued') { b.admin_id = by; b.updated_at = nowIso(); } });
+        T('admin_bonuses').forEach(b => { if (b.investor_id === p.id && b.status === 'accrued' && !b.roi_request_id) { b.admin_id = by; b.updated_at = nowIso(); } });
       }
       p.updated_at = nowIso(); audit('investor.update', 'profile', p.id, p.code, str(a.p_reason, 'Details edited'), before, { ...p }); touched('profiles', 'admin_bonuses'); return null;
     }
@@ -970,6 +1013,8 @@ export function rpcCall(fn: string, a: Row): unknown {
       if (!rows.length) fail('Select at least one bonus.');
       if (rows.some(b => b.status !== 'accrued')) fail('Only unpaid bonuses can be marked as paid. Refresh and try again.');
       if (rows.some(b => !b.admin_id)) fail('Some selected bonuses have no admin. Set "Introduced by" on the investor first.');
+      const inReq = rows.find(b => b.roi_request_id && T('roi_requests').some(x => x.id === b.roi_request_id && x.status === 'pending'));
+      if (inReq) fail(`${inReq.code} is in the IB's bonus request ${T('roi_requests').find(x => x.id === inReq.roi_request_id)?.code}. Pay it from ROI requests (Mark fulfilled).`);
       rows.forEach(b => Object.assign(b, { status: 'paid', payment_ref: r, paid_on: today(), paid_by: currentUid, updated_at: nowIso() }));
       audit('bonus.paid', 'admin_bonus', null, rows.length + ' admin bonuses', r, { ids: a.p_ids }, { status: 'paid', reference: r, total: round2(rows.reduce((x, b) => x + Number(b.amount), 0)) });
       touched('admin_bonuses'); return rows.length;
