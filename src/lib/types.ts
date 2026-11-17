@@ -52,8 +52,10 @@ export interface PlanVersion {
   bonus_rate?: number;
 }
 
+export interface RateChange { from: string; investor_rate: number; monthly_rate: number; before_investor_rate: number; before_monthly_rate: number; applied: boolean; by: string | null; at: string; note: string | null }
 export interface Investment {
   id: string; code: string; investor_id: string; plan_id: string; plan_version_id: string; plan_name: string; plan_version: number;
+  rate_changes?: RateChange[];
   monthly_rate: number; lockin_months: number; early_redemption: EarlyRedemption; early_fee_pct: number; payout_lag_days: number;
   terms: string; risk_disclosure: string; principal: number; monthly_return: number; status: InvestmentStatus;
   expected_start: string | null; start_date: string | null; lockin_end_date: string | null; maturity_date: string | null;

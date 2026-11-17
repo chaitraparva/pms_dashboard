@@ -641,7 +641,7 @@ async function loadInvestment(code: string): Promise<DetailData | null> {
   return { i, investor: names[i.investor_id], bal: must(bal) as Balance | null, accruals, payouts, ledger, amendments, plan: must(plan) as Plan | null, names, introducedBy, aed: ip?.currency === 'AED' };
 }
 
-type Dialog = null | 'fund' | 'cancel' | 'amend' | 'edit' | 'delete';
+type Dialog = null | 'fund' | 'cancel' | 'amend' | 'edit' | 'delete' | 'revise';
 
 export function InvestmentDetail() {
   const { code = '' } = useParams();
@@ -701,6 +701,7 @@ export function InvestmentDetail() {
       <PageHead crumbs={['Investments', i.code]} title={i.code}
         actions={<>
           {!closed && <button className="btn" onClick={() => setDlg('edit')}>Edit</button>}
+          {!closed && !pending && <button className="btn" onClick={() => setDlg('revise')}>Revise ROI</button>}
           <button className="btn danger" onClick={() => setDlg('delete')}>Delete</button>
           {pending ? <>
             <button className="btn danger" onClick={() => setDlg('cancel')}>Cancel</button>
@@ -801,6 +802,7 @@ export function InvestmentDetail() {
                 {Number(i.admin_bonus || 0) > 0 && <><dt>Investor ROI</dt><dd>{rate(i.investor_rate ?? i.monthly_rate)} <span className="muted">(shown to the investor)</span></dd>
                   <dt>Bonus</dt><dd>{rate(i.admin_bonus_rate || 0)} · {money(i.admin_bonus)} / month <span className="muted">({i.bonus_on_top ? 'paid on top of the ROI' : 'taken from the plan rate'})</span></dd>
                   <dt>Bonus goes to</dt><dd>{introducedBy ? <b>{nm(introducedBy)}</b> : <span className="muted">Individual: no bonus.</span>}</dd></>}
+                {(i.rate_changes || []).length > 0 && <><dt>ROI history</dt><dd><RateHistory i={i} onCancel={() => q.reload()} /></dd></>}
                 <dt>Method</dt><dd>Simple interest</dd>
                 <dt>Plan</dt><dd>{plan ? <><Link to={'/admin/plans/' + plan.code}>{i.plan_name}</Link> · v{i.plan_version}</> : i.plan_name}</dd>
                 <dt>Lock-in</dt><dd>{lockinText(i.lockin_months)}</dd>
@@ -850,6 +852,7 @@ export function InvestmentDetail() {
       {dlg === 'fund' && <FundDialog i={i} meId={me?.id} onClose={() => setDlg(null)} />}
       {dlg === 'cancel' && <CancelDialog i={i} onClose={() => setDlg(null)} />}
       {dlg === 'amend' && <AmendDialog i={i} onClose={() => setDlg(null)} />}
+      {dlg === 'revise' && <ReviseRoi i={i} onClose={() => { setDlg(null); q.reload(); }} />}
       {dlg === 'edit' && <EditInvestment i={i} underIb={!!introducedBy} ibName={introducedBy ? nm(introducedBy) : ''} onClose={() => setDlg(null)} />}
       {dlg === 'delete' && <DeleteInvestment i={i} onClose={() => setDlg(null)} />}
     </>
@@ -1014,6 +1017,60 @@ function AmendDialog({ i, onClose }: { i: Investment; onClose: () => void }) {
       <Field label="Effective date *" err={tried ? errs.eff : null}><DateInput className="input" value={eff} onChange={e => setEff(e.target.value)} /></Field>
       <Field label="Signed amendment (optional)" hint="Stored privately and shown to the investor in their documents."><input className="input" type="file" onChange={e => setFile(e.target.files?.[0] || null)} /></Field>
       <div className="note">The investment’s recorded terms stay unchanged in the system; the amendment is the legal record of the change.{s.four_eyes ? ' A second Super Admin must approve it.' : ''}</div>
+    </Modal>
+  );
+}
+
+/** The investor's ROI over time: the first ROI, then each revised ROI from its date. A revision that has not started can be cancelled. */
+function RateHistory({ i, onCancel }: { i: Investment; onCancel: () => void }) {
+  const act = useAction();
+  const ch = [...(i.rate_changes || [])].sort((a, b) => a.from.localeCompare(b.from));
+  const t = today();
+  const cancel = async (from: string) => {
+    const r = await act.run(() => rpc('admin_cancel_roi_revision', { p_id: i.id, p_from: from }), ['Revision cancelled', `${i.code} · ${date(from)}`]);
+    if (r !== undefined) { refreshAll(); onCancel(); }
+  };
+  return (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <div>{rate(ch[0].before_investor_rate)} from {date(i.start_date)}</div>
+      {ch.map(c => <div key={c.from}>{rate(c.investor_rate)} from <b>{date(c.from)}</b>{c.from > t && <> <span className="muted">(starts later)</span> <button className="btn sm" disabled={act.busy} onClick={() => cancel(c.from)}>Cancel</button></>}{c.note && <span className="sub">{c.note}</span>}</div>)}
+      <span className="muted">The IB bonus stays the same.</span>
+    </div>
+  );
+}
+
+/** Revise ROI: from a date (today or later) the investor's monthly ROI changes, e.g. 6% until April, then 4%.
+ *  Everything before that date stays at the old ROI. The IB bonus stays the same. */
+function ReviseRoi({ i, onClose }: { i: Investment; onClose: () => void }) {
+  const act = useAction();
+  const t = today();
+  const cur = Number(i.investor_rate ?? i.monthly_rate);
+  const [r, setR] = useState('');
+  const [from, setFrom] = useState(t);
+  const [note, setNote] = useState('');
+  const [tried, setTried] = useState(false);
+  const n = Number(r);
+  const p = Number(i.principal);
+  const err = {
+    rate: !(n > 0 && n <= 100) || !/^\d+(\.\d{1,4})?$/.test(r.trim()) ? 'Enter the new monthly ROI, e.g. 4.' : n === cur ? `The ROI is already ${cur}%.` : null,
+    from: !from ? 'Choose the date.' : from < t ? 'Today or a later date.' : i.start_date && from <= i.start_date ? 'After the start date.' : null
+  };
+  const go = async () => {
+    setTried(true); if (err.rate || err.from) return;
+    const x = await act.run(() => rpc('admin_revise_roi', { p_id: i.id, p_rate: n, p_from: from, p_note: note.trim() }), ['ROI revised', `${i.code} · ${n}% from ${date(from)}`]);
+    if (x !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`Revise ROI · ${i.code}`} sub={`Now ${rate(cur)} a month (${money(Math.round(p * cur) / 100)}). Everything before the date stays at ${rate(cur)}: the ROI and IB bonus already earned or paid do not change.`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{act.busy ? 'Saving…' : 'Revise ROI'}</button></>}>
+      <div className="form">
+        <div className="f-row">
+          <Field label="New monthly ROI (%) *" err={tried ? err.rate : null}><input className={'input num ' + (tried && err.rate ? 'bad' : '')} inputMode="decimal" value={r} onChange={e => setR(e.target.value)} placeholder="e.g. 4" /></Field>
+          <Field label="From date *" err={tried ? err.from : null} hint="Today or a later date. The past is not allowed."><DateInput className="input" min={t} value={from} onChange={e => setFrom(e.target.value)} /></Field>
+        </div>
+        {n > 0 && !err.rate && <div className="note info">From <b>{from ? date(from) : '…'}</b>: {rate(n)} a month = <b>{money(Math.round(p * n) / 100)}</b> (was {money(Math.round(p * cur) / 100)}). {Number(i.admin_bonus_rate || 0) > 0 ? `The IB bonus stays ${rate(Number(i.admin_bonus_rate))}.` : ''} A month that has both is split by days.</div>}
+        <Field label="Note (optional)"><input className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. As per agreement: 6% until April" /></Field>
+      </div>
     </Modal>
   );
 }

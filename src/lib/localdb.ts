@@ -69,6 +69,87 @@ function periodReturn(i: Row, p: CalPeriod, rate: number): number {
   for (let d = p.start; d <= p.end; d = addDays(d, 1)) amt += principalOn(i, d) * rate / 100 / p.daysInMonth;
   return round2(amt);
 }
+/* ---------- Revised ROI: from a date on, the investor's monthly ROI changes (e.g. 6% until April, then 4%). The IB bonus
+   stays the same. Days before that date keep the old ROI; i.rate_changes = [{ from, investor_rate, monthly_rate,
+   before_investor_rate, before_monthly_rate, applied, by, at }]. ---------- */
+const rateChanges = (i: Row): Row[] => [...(i.rate_changes || [])].sort((x: Row, y: Row) => String(x.from).localeCompare(String(y.from)));
+/** The investor's monthly ROI % and the full rate (ROI + bonus taken from it) on a date. */
+function ratesOn(i: Row, d: string): { investor: number; total: number } {
+  const ch = rateChanges(i);
+  const last = ch.filter(c => String(c.from) <= d).pop();
+  if (last) return { investor: Number(last.investor_rate), total: Number(last.monthly_rate) };
+  if (ch.length) return { investor: Number(ch[0].before_investor_rate), total: Number(ch[0].before_monthly_rate) };
+  return { investor: investorRate(i), total: Number(i.monthly_rate) };
+}
+/** The return of a period at the rate of each day (only used for investments whose ROI was revised). */
+function periodReturnBy(i: Row, p: CalPeriod, rateOf: (d: string) => number): number {
+  const r0 = rateOf(p.start);
+  const same = !rateChanges(i).some(c => String(c.from) > p.start && String(c.from) <= p.end);
+  if (same) return periodReturn(i, p, r0);
+  let amt = 0;
+  for (let d = p.start; d <= p.end; d = addDays(d, 1)) amt += principalOn(i, d) * rateOf(d) / 100 / p.daysInMonth;
+  return round2(amt);
+}
+/** The investor's return and the IB bonus of a period. Unchanged for investments whose ROI was never revised. */
+function periodAmounts(i: Row, p: CalPeriod): { mine: number; bonus: number } {
+  if (!(i.rate_changes || []).length) {
+    const mine = periodReturn(i, p, investorRate(i));
+    return { mine, bonus: i.bonus_on_top ? periodReturn(i, p, Number(i.admin_bonus_rate || 0)) : round2(periodReturn(i, p, Number(i.monthly_rate)) - mine) };
+  }
+  const mine = periodReturnBy(i, p, d => ratesOn(i, d).investor);
+  return { mine, bonus: i.bonus_on_top ? periodReturn(i, p, Number(i.admin_bonus_rate || 0)) : round2(periodReturnBy(i, p, d => ratesOn(i, d).total) - mine) };
+}
+/** Revised ROIs whose date has come: the investment's current rates and monthly amounts switch to them. */
+function applyRateChanges(asOf = today()) {
+  let n = 0;
+  T('investments').forEach(i => {
+    rateChanges(i).forEach(c => {
+      if (c.applied || String(c.from) > asOf) return;
+      i.monthly_rate = Number(c.monthly_rate); applySplit(i); i.investor_rate = Number(c.investor_rate);
+      if (!i.plan_id) i.plan_name = Number(c.monthly_rate) + '% Monthly';
+      c.applied = true; i.updated_at = nowIso(); n++;
+      notify(i.investor_id, 'investment', 'ROI revised on ' + i.code, 'From ' + fmtDate(c.from) + ' your monthly ROI is ' + Number(c.investor_rate) + '% (was ' + Number(c.before_investor_rate) + '%).', '/portal/investments/' + i.code, 'investments', i.id + ':rate:' + c.from);
+    });
+  });
+  if (n) persist('investments', 'notifications');
+}
+/** Super Admin: revise the investor's monthly ROI from a date (today or later). The IB bonus stays the same. */
+function reviseRoi(a: Row) {
+  requireAdmin();
+  const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
+  if (!LIVE.includes(i.status) || !i.start_date) fail(`${i.code} is not running, so its ROI cannot be revised.`);
+  const rate = Number(a.p_rate);
+  if (!(rate > 0 && rate <= 100) || Math.round(rate * 10000) / 10000 !== rate) fail('Enter the new monthly ROI, e.g. 4 or 3.5.');
+  const from = str(a.p_from);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) fail('Enter the date the new ROI starts from.');
+  if (from < today()) fail('The new ROI can start today or on a later date, not in the past.');
+  if (from <= i.start_date) fail(`The new ROI must start after the investment start date (${fmtDate(i.start_date)}).`);
+  // a revision not in effect yet that starts on or after this date is replaced by this one
+  const kept = rateChanges(i).filter(c => c.applied || String(c.from) < from);
+  const prev = kept.length ? kept[kept.length - 1] : null;
+  const beforeInv = prev ? Number(prev.investor_rate) : investorRate(i), beforeTot = prev ? Number(prev.monthly_rate) : Number(i.monthly_rate);
+  if (rate === beforeInv) fail(`The ROI is already ${rate}% from that date.`);
+  const bonus = Number(i.admin_bonus_rate || 0);
+  // with the bonus taken from the ROI, the full rate is the new ROI plus the same bonus
+  const total = i.bonus_on_top ? rate : round2((rate + bonus) * 10000) / 10000;
+  const replaced = rateChanges(i).filter(c => !kept.includes(c));
+  i.rate_changes = [...kept, { from, investor_rate: rate, monthly_rate: total, before_investor_rate: beforeInv, before_monthly_rate: beforeTot, applied: false, by: currentUid, at: nowIso(), note: str(a.p_note).trim() || null }];
+  i.updated_at = nowIso();
+  applyRateChanges();
+  audit('investment.revise_roi', 'investment', i.id, i.code, str(a.p_note, 'ROI revised'), { investor_rate: beforeInv, replaced: replaced.map(c => ({ from: c.from, rate: c.investor_rate })) }, { investor_rate: rate, from });
+  if (from > today()) notify(i.investor_id, 'investment', 'ROI revision on ' + i.code, 'From ' + fmtDate(from) + ' your monthly ROI will be ' + rate + '% (now ' + beforeInv + '%).', '/portal/investments/' + i.code, 'investments', i.id + ':rate-plan:' + from + ':' + nowIso());
+}
+/** Super Admin: cancel a revised ROI that has not started yet. */
+function cancelRoiRevision(a: Row) {
+  requireAdmin();
+  const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
+  const c = (i.rate_changes || []).find((x: Row) => x.from === a.p_from) || fail('Revision not found.');
+  if (c.applied || String(c.from) <= today()) fail('This revised ROI has already started, so it cannot be cancelled.');
+  i.rate_changes = (i.rate_changes || []).filter((x: Row) => x !== c);
+  if (!i.rate_changes.length) delete i.rate_changes;
+  i.updated_at = nowIso();
+  audit('investment.revise_roi_cancel', 'investment', i.id, i.code, 'ROI revision cancelled', { from: c.from, investor_rate: c.investor_rate }, null);
+}
 /** The calendar-month periods of an investment (to maturity, or with no lock-in up to `upTo`). */
 // returns continue every month after the lock-in ends, for as long as the money stays invested (the lock-in only says when it may be taken out)
 const periodsOf = (i: Row, upTo: string) => calendarPeriods(i.start_date, null, upTo);
@@ -79,8 +160,7 @@ export function runningMonth(i: Row, asOf = today()): { from: string; to: string
   const p = periodsOf(i, asOf).find(x => x.start <= asOf && x.end >= asOf);
   if (!p) return null;
   const sub: CalPeriod = { ...p, end: asOf, days: diffDays(p.start, asOf) + 1, full: false };
-  const roi = periodReturn(i, sub, investorRate(i));
-  const bonus = i.bonus_on_top ? periodReturn(i, sub, Number(i.admin_bonus_rate || 0)) : round2(periodReturn(i, sub, Number(i.monthly_rate)) - roi);
+  const { mine: roi, bonus } = periodAmounts(i, sub);
   return { from: p.start, to: asOf, days: sub.days, days_in_month: p.daysInMonth, roi, bonus: Math.max(0, bonus) };
 }
 const nextSeq = (k: string, start: number) => { S.seq[k] = (S.seq[k] ?? start - 1) + 1; return S.seq[k]; };
@@ -248,8 +328,7 @@ function runAccrualsFor(i: Row, asOf: string, idx?: Map<string, Row[]>): number 
     const p: CalPeriod = covered ? { ...full, start: addDays(covered, 1), days: diffDays(addDays(covered, 1), end) + 1, full: false } : full;
     const kind = covered ? 'stub' : 'regular';
     // the investor's share and the bonus for this period, on the principal of each day (withdrawals lower it from their date)
-    const mineAmt = periodReturn(i, p, investorRate(i));
-    const bonusAmt = i.bonus_on_top ? periodReturn(i, p, Number(i.admin_bonus_rate || 0)) : round2(periodReturn(i, p, Number(i.monthly_rate)) - mineAmt);
+    const { mine: mineAmt, bonus: bonusAmt } = periodAmounts(i, p);
     if (mineAmt <= 0 && principalOn(i, p.start) <= 0) { closeIfEmpty(i); break; }
     const acc = { id: uuid(), investment_id: i.id, period_no: k, kind, period_start: p.start, period_end: end, accrual_date: end, days: p.days, days_in_period: p.daysInMonth, amount: mineAmt, reverses_id: null, reason: null, created_by: null, created_at: nowIso() };
     T('accruals').push(acc); mine.push(acc); if (idx && !idx.has(i.id)) idx.set(i.id, mine); n++;
@@ -280,7 +359,7 @@ function runAccrualsFor(i: Row, asOf: string, idx?: Map<string, Row[]>): number 
     if (closed) ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_payout', amount: mineAmt, status: 'confirmed', occurred_on: cl!.on, reference: cl!.ref, note: pay.code, source_table: 'payouts', source_id: pay.id });
     const span = fmtDate(p.start) + ' – ' + fmtDate(end) + (p.full ? '' : ' (' + p.days + ' of ' + p.daysInMonth + ' days)');
     ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_accrual', amount: mineAmt, status: 'posted', occurred_on: end, reference: i.code + ' · ' + MONTH_NAMES[+end.slice(5, 7) - 1] + ' ' + end.slice(0, 4),
-      note: 'Monthly return ' + investorRate(i).toFixed(2) + '% on ' + fmtMoney(principalOn(i, p.start)) + ' · ' + span, source_table: 'accruals', source_id: acc.id, created_by: null });
+      note: 'Monthly return ' + (ratesOn(i, p.start).investor === ratesOn(i, end).investor ? ratesOn(i, end).investor.toFixed(2) + '%' : ratesOn(i, p.start).investor.toFixed(2) + '% then ' + ratesOn(i, end).investor.toFixed(2) + '%') + ' on ' + fmtMoney(principalOn(i, p.start)) + ' · ' + span, source_table: 'accruals', source_id: acc.id, created_by: null });
     if (!closed) notify(i.investor_id, 'accrual', 'Return earned on ' + i.code + ': ' + fmtMoney(mineAmt), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
     if (bonusAmt > 0) {
       const bon: Row = { id: uuid(), code: 'BON-' + pad(nextSeq('bonus', 1), 6), investment_id: i.id, investor_id: i.investor_id,
@@ -831,6 +910,8 @@ export function rpcCall(fn: string, a: Row): unknown {
     case 'update_withdrawal': if (isAdmin()) adminEditWithdrawal(a); else updateWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
     case 'delete_withdrawal': if (isAdmin()) adminDeleteWithdrawal(T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.')); else deleteWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
     case 'admin_update_investment': updateInvestment(a); touched(...RET_TABLES); return null;
+    case 'admin_revise_roi': reviseRoi(a); touched('investments', 'notifications'); return null;
+    case 'admin_cancel_roi_revision': cancelRoiRevision(a); touched('investments'); return null;
     case 'admin_delete_investment': {
       requireAdmin(); const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
       removeInvestment(i, str(a.p_reason, 'Deleted by Super Admin')); touched(...RET_TABLES, 'documents', 'contract_amendments', 'investment_requests'); return null;
@@ -1846,6 +1927,7 @@ function updateInvestment(a: Row) {
   const who = T('profiles').find(p => p.id === i.investor_id);
   if (bonus > 0 && !who?.introduced_by) fail(`${who?.full_name || 'This investor'} is not under an IB, so the bonus must be 0.`);
   const oldPrincipal = Number(i.original_principal ?? i.principal), oldStart = i.start_date || i.expected_start;
+  if ((i.rate_changes || []).length && (rate !== Number(i.monthly_rate) || bonus !== Number(i.admin_bonus_rate || 0))) fail(`${i.code}'s ROI was revised, so its ROI and bonus cannot be edited here. Use Revise ROI for a new ROI from a date.`);
   const financial = rate !== Number(i.monthly_rate) || bonus !== Number(i.admin_bonus_rate || 0) || lock !== Number(i.lockin_months) || principal !== oldPrincipal || start !== oldStart;
   if (financial) {
     const wd = (i.principal_changes || []).length > 0;
@@ -2246,7 +2328,7 @@ function dailyAccruals() {
   runAllAccruals();
   S.seq.accruals_day = d;
 }
-export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); dailyAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
+export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); applyRateChanges(); dailyAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
 /** IB bonuses recorded while the person was not yet placed under their IB (or before the IB was known) belong to the IB the
  *  person is under now: they are given to that IB, so every IB sees all the bonus on the people under them. */
 function bonusOwners() {
