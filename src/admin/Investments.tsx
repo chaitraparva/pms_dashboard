@@ -1039,8 +1039,8 @@ function RateHistory({ i, onCancel }: { i: Investment; onCancel: () => void }) {
   );
 }
 
-/** Revise ROI: from a date (today or later) the investor's monthly ROI changes, e.g. 6% until April, then 4%.
- *  Everything before that date stays at the old ROI. The IB bonus stays the same. */
+/** Revise ROI: from a date the investor's monthly ROI changes, e.g. 6% until August, then 4%. Everything before that date
+ *  stays at the old ROI; a past date recalculates the returns from that date. The IB bonus stays the same. */
 function ReviseRoi({ i, onClose }: { i: Investment; onClose: () => void }) {
   const act = useAction();
   const t = today();
@@ -1053,7 +1053,7 @@ function ReviseRoi({ i, onClose }: { i: Investment; onClose: () => void }) {
   const p = Number(i.principal);
   const err = {
     rate: !(n > 0 && n <= 100) || !/^\d+(\.\d{1,4})?$/.test(r.trim()) ? 'Enter the new monthly ROI, e.g. 4.' : n === cur ? `The ROI is already ${cur}%.` : null,
-    from: !from ? 'Choose the date.' : from < t ? 'Today or a later date.' : i.start_date && from <= i.start_date ? 'After the start date.' : null
+    from: !from ? 'Choose the date.' : i.start_date && from <= i.start_date ? 'After the start date.' : null
   };
   const go = async () => {
     setTried(true); if (err.rate || err.from) return;
@@ -1061,15 +1061,16 @@ function ReviseRoi({ i, onClose }: { i: Investment; onClose: () => void }) {
     if (x !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title={`Revise ROI · ${i.code}`} sub={`Now ${rate(cur)} a month (${money(Math.round(p * cur) / 100)}). Everything before the date stays at ${rate(cur)}: the ROI and IB bonus already earned or paid do not change.`} onClose={onClose}
+    <Modal title={`Revise ROI · ${i.code}`} sub={`Now ${rate(cur)} a month (${money(Math.round(p * cur) / 100)}). Months before the date keep their ROI. The IB bonus stays the same.`} onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{act.busy ? 'Saving…' : 'Revise ROI'}</button></>}>
       <div className="form">
         <div className="f-row">
           <Field label="New monthly ROI (%) *" err={tried ? err.rate : null}><input className={'input num ' + (tried && err.rate ? 'bad' : '')} inputMode="decimal" value={r} onChange={e => setR(e.target.value)} placeholder="e.g. 4" /></Field>
-          <Field label="From date *" err={tried ? err.from : null} hint="Today or a later date. The past is not allowed."><DateInput className="input" min={t} value={from} onChange={e => setFrom(e.target.value)} /></Field>
+          <Field label="From date *" err={tried ? err.from : null} hint="A past date is allowed (an ROI that already changed)."><DateInput className="input" value={from} onChange={e => setFrom(e.target.value)} /></Field>
         </div>
         {n > 0 && !err.rate && <div className="note info">From <b>{from ? date(from) : '…'}</b>: {rate(n)} a month = <b>{money(Math.round(p * n) / 100)}</b> (was {money(Math.round(p * cur) / 100)}). {Number(i.admin_bonus_rate || 0) > 0 ? `The IB bonus stays ${rate(Number(i.admin_bonus_rate))}.` : ''} A month that has both is split by days.</div>}
-        <Field label="Note (optional)"><input className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. As per agreement: 6% until April" /></Field>
+        {from && from < t && !err.from && <div className="note">The returns from <b>{date(from)}</b> are recalculated at the new ROI: earned, pending and paid amounts change to match (months marked paid stay paid). Months before {date(from)} do not change. If a month from that date was already paid through a ROI request, this is refused.</div>}
+        <Field label="Note (optional)"><input className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. As per agreement: 6% until August" /></Field>
       </div>
     </Modal>
   );

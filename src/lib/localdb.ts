@@ -113,7 +113,14 @@ function applyRateChanges(asOf = today()) {
   });
   if (n) persist('investments', 'notifications');
 }
-/** Super Admin: revise the investor's monthly ROI from a date (today or later). The IB bonus stays the same. */
+/** The investment's current rates follow its ROI history (used after a revision is added or replaced). */
+function syncRates(i: Row) {
+  const t = today(), r = ratesOn(i, t);
+  i.monthly_rate = r.total; applySplit(i); i.investor_rate = r.investor;
+  (i.rate_changes || []).forEach((c: Row) => { c.applied = String(c.from) <= t; });
+}
+/** Super Admin: revise the investor's monthly ROI from a date. The IB bonus stays the same. A date in the past (an ROI
+ *  that already changed before the dashboard was used) recalculates the returns from that date; months before it stay. */
 function reviseRoi(a: Row) {
   requireAdmin();
   const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
@@ -122,12 +129,14 @@ function reviseRoi(a: Row) {
   if (!(rate > 0 && rate <= 100) || Math.round(rate * 10000) / 10000 !== rate) fail('Enter the new monthly ROI, e.g. 4 or 3.5.');
   const from = str(a.p_from);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) fail('Enter the date the new ROI starts from.');
-  if (from < today()) fail('The new ROI can start today or on a later date, not in the past.');
   if (from <= i.start_date) fail(`The new ROI must start after the investment start date (${fmtDate(i.start_date)}).`);
-  // a revision not in effect yet that starts on or after this date is replaced by this one
-  const kept = rateChanges(i).filter(c => c.applied || String(c.from) < from);
+  // any revision that starts on or after this date is replaced by this one
+  const kept = rateChanges(i).filter(c => String(c.from) < from);
   const prev = kept.length ? kept[kept.length - 1] : null;
-  const beforeInv = prev ? Number(prev.investor_rate) : investorRate(i), beforeTot = prev ? Number(prev.monthly_rate) : Number(i.monthly_rate);
+  // the ROI just before this date: the previous revision, or the investment's first ROI
+  const first = rateChanges(i)[0];
+  const beforeInv = prev ? Number(prev.investor_rate) : first ? Number(first.before_investor_rate) : investorRate(i);
+  const beforeTot = prev ? Number(prev.monthly_rate) : first ? Number(first.before_monthly_rate) : Number(i.monthly_rate);
   if (rate === beforeInv) fail(`The ROI is already ${rate}% from that date.`);
   const bonus = Number(i.admin_bonus_rate || 0);
   // with the bonus taken from the ROI, the full rate is the new ROI plus the same bonus
@@ -135,7 +144,14 @@ function reviseRoi(a: Row) {
   const replaced = rateChanges(i).filter(c => !kept.includes(c));
   i.rate_changes = [...kept, { from, investor_rate: rate, monthly_rate: total, before_investor_rate: beforeInv, before_monthly_rate: beforeTot, applied: false, by: currentUid, at: nowIso(), note: str(a.p_note).trim() || null }];
   i.updated_at = nowIso();
-  applyRateChanges();
+  if (from <= today()) {
+    // the returns from that date are recalculated at the revised ROI (months closed as paid are recorded as paid again)
+    resetReturnsFrom(i, from);
+    syncRates(i);
+    if (!i.plan_id) i.plan_name = Number(i.monthly_rate) + '% Monthly';
+    runAccrualsFor(i, today());
+    notify(i.investor_id, 'investment', 'ROI revised on ' + i.code, 'From ' + fmtDate(from) + ' your monthly ROI is ' + rate + '% (was ' + beforeInv + '%).', '/portal/investments/' + i.code, 'investments', i.id + ':rate:' + from + ':' + nowIso());
+  }
   audit('investment.revise_roi', 'investment', i.id, i.code, str(a.p_note, 'ROI revised'), { investor_rate: beforeInv, replaced: replaced.map(c => ({ from: c.from, rate: c.investor_rate })) }, { investor_rate: rate, from });
   if (from > today()) notify(i.investor_id, 'investment', 'ROI revision on ' + i.code, 'From ' + fmtDate(from) + ' your monthly ROI will be ' + rate + '% (now ' + beforeInv + '%).', '/portal/investments/' + i.code, 'investments', i.id + ':rate-plan:' + from + ':' + nowIso());
 }
@@ -910,7 +926,7 @@ export function rpcCall(fn: string, a: Row): unknown {
     case 'update_withdrawal': if (isAdmin()) adminEditWithdrawal(a); else updateWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
     case 'delete_withdrawal': if (isAdmin()) adminDeleteWithdrawal(T('withdrawals').find(x => x.id === a.p_id) || fail('Withdrawal not found.')); else deleteWithdrawal(a); touched('withdrawals', ...RET_TABLES); return null;
     case 'admin_update_investment': updateInvestment(a); touched(...RET_TABLES); return null;
-    case 'admin_revise_roi': reviseRoi(a); touched('investments', 'notifications'); return null;
+    case 'admin_revise_roi': reviseRoi(a); touched(...RET_TABLES, 'roi_requests'); return null;
     case 'admin_cancel_roi_revision': cancelRoiRevision(a); touched('investments'); return null;
     case 'admin_delete_investment': {
       requireAdmin(); const i = T('investments').find(x => x.id === a.p_id) || fail('Investment not found.');
