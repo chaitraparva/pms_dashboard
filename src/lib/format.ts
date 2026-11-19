@@ -51,6 +51,46 @@ export function moneyShort(v: number | string | null | undefined): string {
   return money(n);
 }
 
+/* AED investors: every amount of an investor set to AED is shown in AED (saved amounts are AED × the fixed rate), never in
+   INR; amounts of INR investors in INR. Totals keep the two apart ("₹X + AED Y"), never added together. */
+const AED_SET = new Set<string>();
+let AED_K = 25;
+export function setAedInvestors(ids: string[], rate: number) { AED_SET.clear(); ids.forEach(i => AED_SET.add(i)); if (rate > 0) AED_K = rate; }
+export const isAedInvestor = (id: string | null | undefined) => !!id && AED_SET.has(id);
+export const aedRate = () => AED_K;
+const aedFmt = (a: number) => (a < 0 ? '−' : '') + 'AED ' + new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(a));
+/** An amount in the given currency, whatever the page shows. */
+export function moneyIn(v: number | string | null | undefined, cur: 'INR' | 'AED'): string {
+  if (cur === 'AED') return aedFmt(Number(v ?? 0) / AED_K);
+  const keep = VIEW_AED; VIEW_AED = 0; try { return money(v); } finally { VIEW_AED = keep; }
+}
+export function moneyShortIn(v: number | string | null | undefined, cur: 'INR' | 'AED'): string {
+  if (cur === 'AED') {
+    const x = Number(v ?? 0) / AED_K, ax = Math.abs(x), sg = x < 0 ? '−' : '';
+    if (ax >= 1e6) return sg + 'AED ' + (ax / 1e6).toFixed(2) + 'M';
+    if (ax >= 1e4) return sg + 'AED ' + (ax / 1e3).toFixed(1) + 'K';
+    return aedFmt(x);
+  }
+  const keep = VIEW_AED; VIEW_AED = 0; try { return moneyShort(v); } finally { VIEW_AED = keep; }
+}
+/** An amount of one investor: in AED for an AED investor, in INR otherwise. */
+export const moneyOf = (v: number | string | null | undefined, investorId: string | null | undefined) => moneyIn(v, isAedInvestor(investorId) ? 'AED' : 'INR');
+export const moneyShortOf = (v: number | string | null | undefined, investorId: string | null | undefined) => moneyShortIn(v, isAedInvestor(investorId) ? 'AED' : 'INR');
+/** A total split in two: the INR part and the AED part (both as saved, i.e. the AED part is AED × rate), e.g. "₹1.20Cr + AED 50,000.00". */
+export function moneyBoth(inr: number | string | null | undefined, aedSaved: number | string | null | undefined, short = false): string {
+  const i = Number(inr || 0), a = Number(aedSaved || 0);
+  const fi = short ? moneyShortIn(i, 'INR') : moneyIn(i, 'INR'), fa = short ? moneyShortIn(a, 'AED') : moneyIn(a, 'AED');
+  if (a && !i) return fa;
+  if (!a) return fi;
+  return fi + ' + ' + fa;
+}
+/** Adds up rows per currency: [INR part, AED part as saved]. */
+export function sumBoth<T>(rows: T[], amount: (r: T) => number, investorId: (r: T) => string | null | undefined): [number, number] {
+  let i = 0, a = 0;
+  rows.forEach(r => { const v = Number(amount(r) || 0); if (isAedInvestor(investorId(r))) a += v; else i += v; });
+  return [Math.round(i * 100) / 100, Math.round(a * 100) / 100];
+}
+
 export function currencySymbol(): string {
   try {
     const p = new Intl.NumberFormat(LOC, { style: 'currency', currency: CUR }).formatToParts(0).find(x => x.type === 'currency');
@@ -208,3 +248,7 @@ export function investorPlanName(name: string, planRate: number | string, bonusR
   const esc = String(Number(planRate)).replace('.', '\\.');
   return name.replace(new RegExp('(^|[^\\d.])' + esc + '(?:\\.0+)?\\s*%', 'g'), '$1' + investor + '%');
 }
+
+/** For Excel: an investor's amount in their own currency (AED investors in AED), and that currency. */
+export const csvAmount = (v: number | string | null | undefined, investorId: string | null | undefined) => (Number(v || 0) / (isAedInvestor(investorId) ? AED_K : 1)).toFixed(2);
+export const curCode = (investorId: string | null | undefined) => (isAedInvestor(investorId) ? 'AED' : 'INR');

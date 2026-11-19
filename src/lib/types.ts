@@ -127,14 +127,18 @@ export interface Property {
   status: 'draft' | 'published' | 'archived'; sort_order: number; created_at: string; updated_at: string;
 }
 
-export interface RateSplit { rate: number; investors: number; principal: number; count: number; unlocked?: number }
+export interface RateSplit { rate: number; investors: number; principal: number; count: number; unlocked?: number; aed_principal?: number; aed_unlocked?: number }
 export interface BranchStats {
   id: string; code: string; name: string; status: string; investors: number; principal: number; unlocked: number; locked: number;
   accrued: number; paid: number; by_rate: RateSplit[];
+  /** the same money for AED investors (as saved); the fields above are then INR investors only */
+  aed?: BranchStats;
 }
 
 export interface Dashboard {
   today: string; from: string; to: string; branch_id: string | null;
+  /** the same figures for INR investors only and for AED investors only (AED amounts as saved) */
+  inr?: Dashboard; aed?: Dashboard;
   by_currency?: Record<'inr' | 'aed', { investors: number; investments: number; principal: number; unlocked: number; locked: number; accrued: number; paid: number; outstanding: number }>;
   registered_investors: number; total_investors: number; new_investors_month: number; investors_with_investments: number; live_investments: number;
   principal_invested: number; unlocked_principal: number; unlocked_count: number; locked_principal: number; locked_count: number;

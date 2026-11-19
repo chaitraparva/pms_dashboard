@@ -7,7 +7,7 @@ import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useSettings } from '../lib/auth';
 import { downloadCsv } from '../lib/csv';
-import { date, isUnlocked, lockinText, money, moneyShort, rateShort, today } from '../lib/format';
+import { date, isUnlocked, lockinText, money, moneyShort, rateShort, today, moneyBoth, moneyOf, isAedInvestor, aedRate } from '../lib/format';
 import type { Balance, Branch, BranchStats, Dashboard, Investment, Profile, RateSplit } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Badge, Empty, ErrorNote, Field, InvBadge, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -17,6 +17,33 @@ import { Icon } from '../ui/Icon';
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 export const RATE_COLORS: Record<string, string> = { '2': 'var(--chart-3)', '3.3': 'var(--chart-2)', '4': '#0EA5A4', '5': '#6366F1', '6': 'var(--chart-1)' };
 export const rateColor = (r: number | string, i: number) => RATE_COLORS[String(Number(r))] || CHART_COLORS[(i + 3) % CHART_COLORS.length];
+
+/* AED and INR are never added together: money is shown as "₹X + AED Y" (INR investors, AED investors). */
+const MONEY_KEYS = ['principal_invested', 'unlocked_principal', 'locked_principal', 'accrued_total', 'reversed_total', 'paid_total', 'outstanding_total', 'maturing_principal', 'unassigned_principal'] as const;
+/** A money figure of the dashboard as "₹X + AED Y". */
+export const both = (d: Dashboard, k: typeof MONEY_KEYS[number], short = true) => d.inr ? moneyBoth(d.inr[k], d.aed?.[k], short) : (short ? moneyShort(d[k]) : money(d[k]));
+/** ROI rate rows with the INR principal and, apart, the AED principal. */
+export function mergeRates(d: Dashboard, rows: RateSplit[], pick: (x: Dashboard) => RateSplit[] = x => x.by_rate || []): RateSplit[] {
+  if (!d.inr) return rows;
+  const i = pick(d.inr), a = d.aed ? pick(d.aed) : [];
+  return rows.map(r => {
+    const ri = i.find(x => Number(x.rate) === Number(r.rate)), ra = a.find(x => Number(x.rate) === Number(r.rate));
+    return { ...r, principal: Number(ri?.principal || 0), unlocked: Number(ri?.unlocked || 0), aed_principal: Number(ra?.principal || 0), aed_unlocked: Number(ra?.unlocked || 0) };
+  });
+}
+/** Branch figures: the money of INR investors, and `aed` the same for AED investors. */
+export function splitBranches(d: Dashboard): BranchStats[] {
+  return (d.by_branch || []).map(b => {
+    if (!d.inr) return b;
+    const i = d.inr.by_branch.find(x => x.id === b.id), a = d.aed?.by_branch.find(x => x.id === b.id);
+    const z = { principal: 0, unlocked: 0, locked: 0, accrued: 0, paid: 0 };
+    const rates = (b.by_rate || []).map(r => {
+      const ri = i?.by_rate.find(x => Number(x.rate) === Number(r.rate)), ra = a?.by_rate.find(x => Number(x.rate) === Number(r.rate));
+      return { ...r, principal: Number(ri?.principal || 0), aed_principal: Number(ra?.principal || 0) };
+    });
+    return { ...b, ...(i ? { principal: i.principal, unlocked: i.unlocked, locked: i.locked, accrued: i.accrued, paid: i.paid } : z), by_rate: rates, aed: a ? { ...a } : { ...b, ...z, by_rate: [] } };
+  });
+}
 
 /** The monthly ROI rates in use, lowest first (any rate can be typed per investment). */
 export function withStandardRates(list: RateSplit[]): RateSplit[] {
@@ -31,8 +58,8 @@ export function RateRows({ rates, by = 'investors' }: { rates: RateSplit[]; by?:
       {rows.map((r, i) => (
         <div key={r.rate}>
           <b>{rateShort(r.rate)}</b>
-          <div className="hbar" title={money(r.principal)}><div style={{ width: `${(Number(r[by]) / max) * 100}%`, background: rateColor(r.rate, i) }} /></div>
-          <span className="num">{r.investors} investor{Number(r.investors) === 1 ? '' : 's'} · {moneyShort(r.principal)}</span>
+          <div className="hbar" title={moneyBoth(r.principal, r.aed_principal)}><div style={{ width: `${(Number(r[by]) / max) * 100}%`, background: rateColor(r.rate, i) }} /></div>
+          <span className="num">{r.investors} investor{Number(r.investors) === 1 ? '' : 's'} · {moneyBoth(r.principal, r.aed_principal, true)}</span>
         </div>
       ))}
     </div>
@@ -43,7 +70,7 @@ export function SplitBar({ locked, unlocked }: { locked: number; unlocked: numbe
   const t = locked + unlocked;
   return (
     <div>
-      <div className="split-bar" role="img" aria-label={`Locked ${money(locked)}, unlocked ${money(unlocked)}`}>
+      <div className="split-bar" role="img" aria-label={`Locked ${Math.round(t ? (locked / t) * 100 : 0)}%, unlocked ${Math.round(t ? (unlocked / t) * 100 : 0)}%`}>
         {t > 0 && <><i style={{ width: `${(locked / t) * 100}%`, background: 'var(--violet)' }} /><i style={{ width: `${(unlocked / t) * 100}%`, background: 'var(--green)' }} /></>}
       </div>
       <div className="legend" style={{ marginTop: 6, fontSize: 12 }}>
@@ -64,13 +91,13 @@ export function BranchCard({ b }: { b: BranchStats }) {
       <div className="card-b" style={{ display: 'grid', gap: 16 }}>
         <div className="bk">
           <div><span>Investors</span><b>{b.investors}</b></div>
-          <div><span>Total principal invested</span><b>{moneyShort(b.principal)}</b></div>
-          <div><span>Locked principal</span><b>{moneyShort(b.locked)}</b></div>
-          <div><span>Unlocked principal</span><b className={Number(b.unlocked) ? 'pos' : ''}>{moneyShort(b.unlocked)}</b></div>
-          <div><span>Total returns accrued</span><b>{moneyShort(b.accrued)}</b></div>
-          <div><span>Returns paid</span><b>{moneyShort(b.paid)}</b></div>
+          <div><span>Total principal invested</span><b>{moneyBoth(b.principal, b.aed?.principal, true)}</b></div>
+          <div><span>Locked principal</span><b>{moneyBoth(b.locked, b.aed?.locked, true)}</b></div>
+          <div><span>Unlocked principal</span><b className={Number(b.unlocked) || Number(b.aed?.unlocked) ? 'pos' : ''}>{moneyBoth(b.unlocked, b.aed?.unlocked, true)}</b></div>
+          <div><span>Total returns accrued</span><b>{moneyBoth(b.accrued, b.aed?.accrued, true)}</b></div>
+          <div><span>Returns paid</span><b>{moneyBoth(b.paid, b.aed?.paid, true)}</b></div>
         </div>
-        <SplitBar locked={Number(b.locked)} unlocked={Number(b.unlocked)} />
+        <SplitBar locked={Number(b.locked) + Number(b.aed?.locked || 0)} unlocked={Number(b.unlocked) + Number(b.aed?.unlocked || 0)} />
         <div><div className="hint" style={{ marginBottom: 8 }}>ROI plan distribution (investors)</div><RateRows rates={b.by_rate || []} /></div>
       </div>
     </div>
@@ -91,9 +118,9 @@ export function Branches() {
         actions={<button className="btn" onClick={() => setEdit('new')}><Icon name="plus" />Add branch</button>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : (
         <>
-          <div className="branch-cards">{q.data.d.by_branch.map(b => <BranchCard key={b.id} b={b} />)}</div>
+          <div className="branch-cards">{splitBranches(q.data.d).map(b => <BranchCard key={b.id} b={b} />)}</div>
           {q.data.d.unassigned_investors > 0 && (
-            <div className="note">{q.data.d.unassigned_investors} investor{q.data.d.unassigned_investors === 1 ? ' has' : 's have'} no branch yet ({money(q.data.d.unassigned_principal)} principal), so {q.data.d.unassigned_investors === 1 ? 'it is' : 'they are'} not counted in either branch. <Link to="/admin/investors?branch=none">Assign branches</Link></div>
+            <div className="note">{q.data.d.unassigned_investors} investor{q.data.d.unassigned_investors === 1 ? ' has' : 's have'} no branch yet ({both(q.data.d, 'unassigned_principal', false)} principal), so {q.data.d.unassigned_investors === 1 ? 'it is' : 'they are'} not counted in either branch. <Link to="/admin/investors?branch=none">Assign branches</Link></div>
           )}
           <div className="card">
             <div className="card-h"><h3>Manage branches</h3></div>
@@ -213,37 +240,40 @@ export function BranchDetail() {
   const { rows, lines } = data;
   const sum = (k: 'principal' | 'unlocked' | 'locked' | 'accrued' | 'paid') => rows.reduce((x, r) => x + r[k], 0);
   const reconciles = Math.abs(sum('principal') - Number(d.principal_invested)) < 0.005 && Math.abs(sum('unlocked') - Number(d.unlocked_principal)) < 0.005;
-  const rates = withStandardRates(d.by_rate || []);
+  const rates = mergeRates(d, withStandardRates(d.by_rate || []));
+  // each investor's own currency: AED investors in AED, the others in INR
+  const mo = (v: number | string, id: string) => moneyOf(v, id);
 
   const investorCols: Col<InvRow>[] = [
     { h: 'Investor', v: r => r.p.full_name || r.p.email, r: r => <><b>{r.p.full_name || '—'}</b><span className="sub">{r.p.email}</span></> },
-    { h: 'Total principal', n: true, v: r => r.principal, r: r => money(r.principal) },
+    { h: 'Total principal', n: true, v: r => r.principal, r: r => mo(r.principal, r.p.id) },
     { h: 'ROI', v: r => r.rates[0] ?? -1, r: r => r.rates.length ? r.rates.map(rateShort).join(', ') : '—' },
     { h: 'Lock-in', v: r => r.lockins[0] ?? -1, r: r => r.lockins.length ? r.lockins.map(m => m === 12 ? '1 year' : m + ' mo').join(', ') : '—' },
     { h: 'Invested on', v: r => r.first || '9999', r: r => date(r.first) },
     { h: 'Lock-in end', v: r => r.lastMaturity || '9999', r: r => <>{date(r.lastMaturity)}{r.nextUnlock && r.nextUnlock !== r.lastMaturity && <span className="sub">next unlock {date(r.nextUnlock)}</span>}</> },
-    { h: 'Locked', n: true, v: r => r.locked, r: r => money(r.locked) },
-    { h: 'Unlocked', n: true, v: r => r.unlocked, r: r => <span className={r.unlocked ? 'pos' : ''}>{money(r.unlocked)}</span> },
-    { h: 'Returns accrued', n: true, v: r => r.accrued, r: r => money(r.accrued) },
-    { h: 'Returns paid', n: true, v: r => r.paid, r: r => <span className="pos">{money(r.paid)}</span> },
+    { h: 'Locked', n: true, v: r => r.locked, r: r => mo(r.locked, r.p.id) },
+    { h: 'Unlocked', n: true, v: r => r.unlocked, r: r => <span className={r.unlocked ? 'pos' : ''}>{mo(r.unlocked, r.p.id)}</span> },
+    { h: 'Returns accrued', n: true, v: r => r.accrued, r: r => mo(r.accrued, r.p.id) },
+    { h: 'Returns paid', n: true, v: r => r.paid, r: r => <span className="pos">{mo(r.paid, r.p.id)}</span> },
     { h: 'Status', v: r => r.p.kyc_status + r.p.account_status, r: r => r.p.account_status !== 'active' ? <Badge cls="b-red">Suspended</Badge> : r.p.kyc_status !== 'verified' ? <Badge cls="b-amber">KYC {r.p.kyc_status}</Badge> : r.invs.length ? <Badge cls="b-green">{r.invs.filter(i => LIVE.includes(i.status)).length} live</Badge> : <Badge cls="b-grey">No investments</Badge> }
   ];
   const lineCols: Col<Line>[] = [
     { h: 'Investment', v: r => r.code, m: true },
     { h: 'Investor', v: r => r.who?.full_name || '', r: r => <>{r.who?.full_name || '—'}<span className="sub">{r.who?.email}</span></> },
     { h: 'Investment date', v: r => r.start_date || r.expected_start || '', r: r => date(r.start_date || r.expected_start) },
-    { h: 'Principal', n: true, v: r => Number(r.principal), r: r => money(r.principal) },
+    { h: 'Principal', n: true, v: r => Number(r.principal), r: r => mo(r.principal, r.investor_id) },
     { h: 'ROI', v: r => Number(r.monthly_rate), r: r => rateShort(r.monthly_rate) },
     { h: 'Lock-in', v: r => r.lockin_months, r: r => r.lockin_months === 12 ? '1 year' : r.lockin_months + ' months' },
     { h: 'Lock-in end', v: r => r.maturity_date || '', r: r => date(r.maturity_date) },
-    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => money(r.bal?.accrued || 0) },
-    { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{money(r.bal?.paid || 0)}</span> },
+    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => mo(r.bal?.accrued || 0, r.investor_id) },
+    { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{mo(r.bal?.paid || 0, r.investor_id)}</span> },
     { h: 'Status', v: r => r.status, r: r => <InvBadge i={r} approachingDays={s.approaching_days} /> }
   ];
   const exportCsv = () => downloadCsv(`${branch.code.toLowerCase()}-branch-${t}`,
-    ['Investment', 'Investor', 'Email', 'Investment date', 'Principal', 'Monthly ROI %', 'Lock-in months', 'Lock-in end', 'Locked / unlocked', 'Earned', 'Paid', 'Status'],
-    lines.map(l => [l.code, l.who?.full_name, l.who?.email, l.start_date || l.expected_start, Number(l.principal).toFixed(2), l.monthly_rate, l.lockin_months, l.maturity_date,
-      LIVE.includes(l.status) ? (isUnlocked(l, t) ? 'Unlocked' : 'Locked') : '', Number(l.bal?.accrued || 0).toFixed(2), Number(l.bal?.paid || 0).toFixed(2), l.status]));
+    ['Investment', 'Investor', 'Email', 'Investment date', 'Currency', 'Principal', 'Monthly ROI %', 'Lock-in months', 'Lock-in end', 'Locked / unlocked', 'Earned', 'Paid', 'Status'],
+    lines.map(l => { const k = isAedInvestor(l.investor_id) ? aedRate() : 1, f = (v: unknown) => (Number(v || 0) / k).toFixed(2);
+      return [l.code, l.who?.full_name, l.who?.email, l.start_date || l.expected_start, k === 1 ? 'INR' : 'AED', f(l.principal), l.monthly_rate, l.lockin_months, l.maturity_date,
+        LIVE.includes(l.status) ? (isUnlocked(l, t) ? 'Unlocked' : 'Locked') : '', f(l.bal?.accrued), f(l.bal?.paid), l.status]; }));
 
   return (
     <>
@@ -256,16 +286,16 @@ export function BranchDetail() {
         </>} />
       <div className="kpis">
         <Kpi label="Investors" value={rows.length} sub={`${d.investors_with_investments} with live investments`} />
-        <Kpi label="Total principal invested" value={moneyShort(d.principal_invested)} sub={`${d.live_investments} live investments`} />
-        <Kpi label="Locked principal" value={moneyShort(d.locked_principal)} sub={`${d.locked_count} in lock-in`} onClick={() => nav(`/admin/investments?branch=${branch.code}&f=locked`)} />
-        <Kpi label="Unlocked principal" value={moneyShort(d.unlocked_principal)} cls={Number(d.unlocked_principal) ? 'pos' : ''} sub={`${d.unlocked_count} past lock-in`} onClick={() => nav(`/admin/investments?branch=${branch.code}&f=unlocked`)} />
-        <Kpi label="Total returns" value={moneyShort(d.accrued_total)} sub={`${moneyShort(d.paid_total)} paid`} />
+        <Kpi label="Total principal invested" value={both(d, 'principal_invested')} sub={`${d.live_investments} live investments`} />
+        <Kpi label="Locked principal" value={both(d, 'locked_principal')} sub={`${d.locked_count} in lock-in`} onClick={() => nav(`/admin/investments?branch=${branch.code}&f=locked`)} />
+        <Kpi label="Unlocked principal" value={both(d, 'unlocked_principal')} cls={Number(d.unlocked_principal) ? 'pos' : ''} sub={`${d.unlocked_count} past lock-in`} onClick={() => nav(`/admin/investments?branch=${branch.code}&f=unlocked`)} />
+        <Kpi label="Total returns" value={both(d, 'accrued_total')} sub={`${both(d, 'paid_total')} paid`} />
       </div>
       {!reconciles && <div className="note">Branch totals and the investor rows below differ. Refresh the page; if it persists, check the investments of this branch.</div>}
       <div className="grid g-1-1">
         <div className="card"><div className="card-h"><h3>ROI plan distribution</h3><div className="r">investors per monthly rate</div></div><div className="card-b">
           {rates.some(r => Number(r.investors) > 0)
-            ? <Donut parts={rates.filter(r => Number(r.investors) > 0).map((r, i) => ({ name: `${rateShort(r.rate)} monthly`, value: Number(r.investors), color: rateColor(r.rate, i), sub: moneyShort(r.principal) }))}
+            ? <Donut parts={rates.filter(r => Number(r.investors) > 0).map((r, i) => ({ name: `${rateShort(r.rate)} monthly`, value: Number(r.investors), color: rateColor(r.rate, i), sub: moneyBoth(r.principal, r.aed_principal, true) }))}
                 fmt={v => `${v} investor${v === 1 ? '' : 's'}`} center1="Investors" center2={String(d.investors_with_investments)} label={`${branch.name} investors by ROI plan`}
                 onPart={ix => nav(`/admin/investments?branch=${branch.code}&rate=${rates.filter(r => Number(r.investors) > 0)[ix].rate}`)} />
             : <Empty title="No live investments">The split appears once investments in this branch are active.</Empty>}
@@ -273,7 +303,9 @@ export function BranchDetail() {
         <div className="card"><div className="card-h"><h3>Locked and unlocked principal</h3></div><div className="card-b" style={{ display: 'grid', gap: 16 }}>
           <SplitBar locked={Number(d.locked_principal)} unlocked={Number(d.unlocked_principal)} />
           <dl className="kv">
-            {(d.by_lockin || []).map(l => <Fragment key={l.months}><dt>{lockinText(l.months)} lock-in</dt><dd>{l.count} investment{Number(l.count) === 1 ? '' : 's'} · {money(l.principal)} · {money(l.unlocked)} unlocked</dd></Fragment>)}
+            {(d.by_lockin || []).map(l => { const li = d.inr?.by_lockin.find(x => x.months === l.months), la = d.aed?.by_lockin.find(x => x.months === l.months);
+              const pr = d.inr ? moneyBoth(li?.principal, la?.principal) : money(l.principal), un = d.inr ? moneyBoth(li?.unlocked, la?.unlocked) : money(l.unlocked);
+              return <Fragment key={l.months}><dt>{lockinText(l.months)} lock-in</dt><dd>{l.count} investment{Number(l.count) === 1 ? '' : 's'} · {pr} · {un} unlocked</dd></Fragment>; })}
           </dl>
           {!d.by_lockin?.length && <p className="hint">No live investments yet.</p>}
         </div></div>

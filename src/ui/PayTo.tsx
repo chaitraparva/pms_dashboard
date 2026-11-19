@@ -44,7 +44,7 @@ export function PayChips({ ways, value, onChange }: { ways: [PayMethod, string][
 }
 
 /** The boxes for the chosen method. */
-export function PayFields({ method, d, onChange, tried, required, amount }: { method: string; d: PayDetails; onChange: (d: PayDetails) => void; tried: boolean; required: boolean; amount?: number }) {
+export function PayFields({ method, d, onChange, tried, required, amount }: { method: string; d: PayDetails; onChange: (d: PayDetails) => void; tried: boolean; required: boolean; amount?: number | string }) {
   const e = tried ? payErrors(method, d, required) : {};
   const star = required ? ' *' : '';
   const setB = (k: keyof BankDetails, v: string) => onChange({ ...d, bank: { ...d.bank, [k]: v } });
@@ -64,7 +64,7 @@ export function PayFields({ method, d, onChange, tried, required, amount }: { me
     <Field label={'UPI ID or UPI phone number' + star} err={e.upi}><input className={'input mono ' + (e.upi ? 'bad' : '')} value={d.upi} onChange={ev => onChange({ ...d, upi: ev.target.value })} placeholder="e.g. name@okaxis or 9876543210" /></Field>
   );
   if (method === 'mt5') return (
-    <Field label={'MT5 ID' + star} err={e.mt5} hint={amount != null && amount > 0 ? `${money(amount)} goes to this MT5 ID.` : 'The whole amount goes to this MT5 ID.'}>
+    <Field label={'MT5 ID' + star} err={e.mt5} hint={typeof amount === 'string' ? `${amount} goes to this MT5 ID.` : amount != null && amount > 0 ? `${money(amount)} goes to this MT5 ID.` : 'The whole amount goes to this MT5 ID.'}>
       <input className={'input mono ' + (e.mt5 ? 'bad' : '')} value={d.mt5} onChange={ev => onChange({ ...d, mt5: ev.target.value })} placeholder="e.g. 51234567" />
     </Field>
   );
@@ -84,7 +84,7 @@ export function payText(r: PayRow): string {
 }
 
 /** What the person filled in, for the Super Admin's tables. */
-export function PayView({ r, amount }: { r: PayRow; amount?: number }) {
+export function PayView({ r, amount }: { r: PayRow; amount?: number | string }) {
   const b = r.bank_details;
   if (r.method === 'bank') return <>Bank{b ? <>
     <span className="sub" style={{ display: 'block' }}>{b.name}</span>
@@ -92,7 +92,7 @@ export function PayView({ r, amount }: { r: PayRow; amount?: number }) {
     <span className="sub mono" style={{ display: 'block' }}>IFSC {b.ifsc}</span>
     <span className="sub" style={{ display: 'block' }}>{b.branch}</span></> : <span className="sub">no details given</span>}</>;
   if (r.method === 'upi') return <>UPI{r.upi_id && <span className="sub mono" style={{ display: 'block' }}>{r.upi_id}</span>}</>;
-  if (r.method === 'mt5') return <>MT5{r.mt5_account && <span className="sub mono" style={{ display: 'block' }}>ID {r.mt5_account}</span>}{amount != null && <span className="sub" style={{ display: 'block' }}>{money(amount)} to this ID</span>}</>;
+  if (r.method === 'mt5') return <>MT5{r.mt5_account && <span className="sub mono" style={{ display: 'block' }}>ID {r.mt5_account}</span>}{amount != null && <span className="sub" style={{ display: 'block' }}>{typeof amount === 'string' ? amount : money(amount)} to this ID</span>}</>;
   if (r.method === 'cash') return <>Cash</>;
   return null;
 }

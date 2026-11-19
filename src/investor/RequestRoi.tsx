@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { money, date, MONTHS, rateShort } from '../lib/format';
+import { date, MONTHS, rateShort, moneyOf, moneyIn, moneyBoth, isAedInvestor } from '../lib/format';
 import { Badge, Empty, ErrorNote, Field, Loading, PageHead, useAction } from '../ui/kit';
 import { PayChips, PayFields, PayView, emptyPay, payArgs, payErrors, type PayDetails, type PayMethod } from '../ui/PayTo';
 import type { BankDetails } from '../lib/types';
@@ -12,11 +12,11 @@ import type { BankDetails } from '../lib/types';
    An IB also requests their total IB bonus of a month (from everyone under them) the same way.
    They choose how it is paid: Bank (name, account no., IFSC, branch), UPI (ID or phone), Cash or MT5 (MT5 ID). */
 
-interface Item { payout_id: string | null; bonus_id?: string; investment_id?: string; code: string; investor?: string; rate: number; amount: number; month?: string }
-interface MonthOpt { month: string; amount: number; items: Item[] }
+interface Item { payout_id: string | null; bonus_id?: string; investment_id?: string; investor_id?: string; currency?: 'INR' | 'AED'; code: string; investor?: string; rate: number; amount: number; month?: string }
+interface MonthOpt { month: string; amount: number; amount_inr?: number; amount_aed?: number; items: Item[] }
 interface Person { id: string; code: string; name: string; self: boolean; months: MonthOpt[]; kind?: 'bonus' }
 interface Options { people: Person[]; bonus?: { id: string; code: string; name: string; months: MonthOpt[] } | null }
-export interface RoiRequest { id: string; code: string; kind?: 'roi' | 'bonus'; investor_id: string; requested_by: string; months: string[]; items: Item[]; amount: number; status: 'pending' | 'completed' | 'cancelled'; requested_on: string; completed_on: string | null; payment_ref: string | null; cancelled_reason: string | null;
+export interface RoiRequest { id: string; code: string; kind?: 'roi' | 'bonus'; currency?: 'INR' | 'AED'; investor_id: string; requested_by: string; months: string[]; items: Item[]; amount: number; status: 'pending' | 'completed' | 'cancelled'; requested_on: string; completed_on: string | null; payment_ref: string | null; cancelled_reason: string | null;
   method?: string | null; mt5_account?: string | null; upi_id?: string | null; bank_details?: BankDetails | null }
 
 const WAYS: [PayMethod, string][] = [['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5']];
@@ -70,25 +70,31 @@ export function RequestRoi() {
   // an IB with no ROI of their own starts on their sub-investors
   const mode = !me ? 'subs' : !isIb ? 'me' : forWho ?? (me.months.length ? 'me' : subs.length ? 'subs' : 'bonus');
   const total = (p: Person) => p.months.filter(m => chosen(p).includes(m.month)).reduce((x, m) => x + m.amount, 0);
+  // each person's ROI in their own currency (AED investors in AED); an IB bonus keeps INR and AED apart
+  const ownId = (p: Person) => (p.kind === 'bonus' ? p.id.slice(6) : p.id);
+  const fmtMonth = (p: Person, m: MonthOpt) => (p.kind === 'bonus' ? moneyBoth(m.amount_inr ?? m.amount, m.amount_aed) : moneyOf(m.amount, ownId(p)));
+  const fmtTotal = (p: Person, list?: MonthOpt[]) => { const ms = list || p.months.filter(m => chosen(p).includes(m.month));
+    return p.kind === 'bonus' ? moneyBoth(ms.reduce((x, m) => x + Number(m.amount_inr ?? m.amount), 0), ms.reduce((x, m) => x + Number(m.amount_aed || 0), 0)) : moneyOf(ms.reduce((x, m) => x + m.amount, 0), ownId(p)); };
+  const fmtMany = (ps: Person[]) => { let i = 0, a = 0; ps.forEach(p => { const v = total(p); if (isAedInvestor(p.id)) a += v; else i += v; }); return moneyBoth(i, a); };
 
   const card = (p: Person, title: string) => { const b = p.kind === 'bonus', w = b ? 'IB bonus' : 'ROI'; return (
     <div className="card" key={p.id}>
-      <div className="card-h"><h3>{title}</h3><div className="r">{p.months.length ? <b>{money(total(p))}</b> : null}</div></div>
+      <div className="card-h"><h3>{title}</h3><div className="r">{p.months.length ? <b>{fmtTotal(p)}</b> : null}</div></div>
       <div className="card-b form">
         {!p.months.length ? <p className="hint">No {w} to request right now. Months that have ended and are not requested yet appear here.</p> : <>
           <div className="chips" role="group" aria-label="Months">
-            {p.months.map(m => <button key={m.month} type="button" className={'chip ' + (chosen(p).includes(m.month) ? 'on' : '')} onClick={() => toggle(p, m.month)}>{monthText(m.month)} · {money(m.amount)}</button>)}
+            {p.months.map(m => <button key={m.month} type="button" className={'chip ' + (chosen(p).includes(m.month) ? 'on' : '')} onClick={() => toggle(p, m.month)}>{monthText(m.month)} · {fmtMonth(p, m)}</button>)}
           </div>
           <div className="tbl"><table>
             <thead><tr><th>Month</th>{b && <th>Investor</th>}<th>Investment</th><th>{b ? 'Bonus' : 'ROI'}</th><th className="n">Amount</th></tr></thead>
             <tbody>{p.months.filter(m => chosen(p).includes(m.month)).flatMap(m => m.items.map(it => (
-              <tr key={(it.bonus_id || it.payout_id || it.investment_id || it.code) + m.month}><td>{monthText(m.month)}</td>{b && <td>{it.investor}</td>}<td className="mono">{it.code}</td><td>{rateShort(it.rate)}</td><td className="n">{money(it.amount)}</td></tr>)))}</tbody>
+              <tr key={(it.bonus_id || it.payout_id || it.investment_id || it.code) + m.month}><td>{monthText(m.month)}</td>{b && <td>{it.investor}</td>}<td className="mono">{it.code}</td><td>{rateShort(it.rate)}</td><td className="n">{it.currency ? moneyIn(it.amount, it.currency) : moneyOf(it.amount, ownId(p))}</td></tr>)))}</tbody>
           </table></div>
           <p className="hint">{b ? 'Your total IB bonus for the chosen month(s), from everyone under you.' : 'Released highest ROI first.'}</p>
           <Field label={`How should the ${w} be paid? *`} err={tried[p.id] && !how[p.id] ? 'Choose bank, UPI, cash or MT5.' : null}>
             <PayChips ways={WAYS} value={how[p.id] || ''} onChange={m => setHow({ ...how, [p.id]: m })} />
           </Field>
-          {how[p.id] && <PayFields method={how[p.id]} d={pays[p.id] || emptyPay()} onChange={d => setPays({ ...pays, [p.id]: d })} tried={!!tried[p.id]} required amount={total(p)} />}
+          {how[p.id] && <PayFields method={how[p.id]} d={pays[p.id] || emptyPay()} onChange={d => setPays({ ...pays, [p.id]: d })} tried={!!tried[p.id]} required amount={fmtTotal(p)} />}
         </>}
       </div>
     </div>
@@ -103,14 +109,14 @@ export function RequestRoi() {
             <div className="chips" role="radiogroup">
               <button type="button" role="radio" aria-checked={mode === 'me'} className={'chip ' + (mode === 'me' ? 'on' : '')} onClick={() => setForWho('me')}>Myself</button>
               {subs.length > 0 && <button type="button" role="radio" aria-checked={mode === 'subs'} className={'chip ' + (mode === 'subs' ? 'on' : '')} onClick={() => setForWho('subs')}>My sub-investors</button>}
-              {bonus && <button type="button" role="radio" aria-checked={mode === 'bonus'} className={'chip ' + (mode === 'bonus' ? 'on' : '')} onClick={() => setForWho('bonus')}>My IB bonus{bonus.months.length ? ' · ' + money(bonus.months.reduce((x, m) => x + m.amount, 0)) : ''}</button>}
+              {bonus && <button type="button" role="radio" aria-checked={mode === 'bonus'} className={'chip ' + (mode === 'bonus' ? 'on' : '')} onClick={() => setForWho('bonus')}>My IB bonus{bonus.months.length ? ' · ' + fmtTotal(bonus, bonus.months) : ''}</button>}
             </div>
           </Field>
         </div></div>
       )}
       {mode === 'me' && me && <>
         {card(me, 'My ROI')}
-        {me.months.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy || !chosen(me).length} onClick={() => send([me])}>{act.busy ? 'Sending…' : `Request ${money(total(me))}`}</button>}
+        {me.months.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy || !chosen(me).length} onClick={() => send([me])}>{act.busy ? 'Sending…' : `Request ${fmtTotal(me)}`}</button>}
       </>}
       {mode === 'subs' && <>
         <div className="card">
@@ -127,18 +133,18 @@ export function RequestRoi() {
                   <input type="checkbox" disabled={!p.months.length} checked={sel.includes(p.id) && p.months.length > 0}
                     onChange={e => setSel(e.target.checked ? [...sel, p.id] : sel.filter(x => x !== p.id))} />
                   <span>{p.name} <span className="muted mono">{p.code}</span></span>
-                  <span className="muted" style={{ marginLeft: 'auto' }}>{p.months.length ? money(p.months.reduce((x, m) => x + m.amount, 0)) : 'nothing to request'}</span>
+                  <span className="muted" style={{ marginLeft: 'auto' }}>{p.months.length ? fmtTotal(p, p.months) : 'nothing to request'}</span>
                 </label>
               ))}
             </div>}
           </div>
         </div>
         {picked.map(p => card(p, p.name + ' · ' + p.code))}
-        {picked.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy} onClick={() => send(picked)}>{act.busy ? 'Sending…' : `Request for ${picked.length === 1 ? picked[0].name : picked.length + ' people'} · ${money(picked.reduce((x, p) => x + total(p), 0))}`}</button>}
+        {picked.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy} onClick={() => send(picked)}>{act.busy ? 'Sending…' : `Request for ${picked.length === 1 ? picked[0].name : picked.length + ' people'} · ${fmtMany(picked)}`}</button>}
       </>}
       {mode === 'bonus' && bonus && <>
         {card(bonus, 'My IB bonus')}
-        {bonus.months.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy || !chosen(bonus).length} onClick={() => send([bonus])}>{act.busy ? 'Sending…' : `Request IB bonus ${money(total(bonus))}`}</button>}
+        {bonus.months.length > 0 && <button className="btn primary" style={{ alignSelf: 'flex-start' }} disabled={act.busy || !chosen(bonus).length} onClick={() => send([bonus])}>{act.busy ? 'Sending…' : `Request IB bonus ${fmtTotal(bonus)}`}</button>}
       </>}
       <div className="card" style={{ marginTop: 18 }}>
         <div className="card-h"><h3>My requests</h3></div>
@@ -150,7 +156,7 @@ export function RequestRoi() {
                 <td className="mono">{r.code} <KindTag r={r} /><span className="sub">{date(r.requested_on)}</span></td>
                 <td>{r.investor_id === profile?.id ? 'Me' : names.get(r.investor_id) || '—'}</td>
                 <td>{r.months.map(monthText).join(', ')}</td>
-                <td className="n"><b>{money(r.amount)}</b></td>
+                <td className="n"><b>{moneyIn(r.amount, (r.currency || (isAedInvestor(r.investor_id) ? 'AED' : 'INR')) as 'INR' | 'AED')}</b></td>
                 <td><PayView r={r} /></td>
                 <td><RoiBadge s={r.status} />{r.status === 'completed' && <span className="sub">{date(r.completed_on)}{r.payment_ref ? ' · ' + r.payment_ref : ''}</span>}</td>
                 <td>{r.status === 'pending' && <button className="btn sm" disabled={act.busy} onClick={async () => { const x = await act.run(() => rpc('cancel_roi_request', { p_id: r.id, p_reason: 'Cancelled by the requester' }), ['Request cancelled', r.code]); if (x !== undefined) { refreshAll(); q.reload(); } }}>Cancel</button>}</td>

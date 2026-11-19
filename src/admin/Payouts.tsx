@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useAuth } from '../lib/auth';
-import { money, date, today, roiWayText } from '../lib/format';
+import { money, date, today, roiWayText, moneyOf, moneyBoth, sumBoth, csvAmount, curCode } from '../lib/format';
 import { downloadCsv } from '../lib/csv';
 import type { Dashboard, Payout, PayoutStatus } from '../lib/types';
 import { PayBadge, Kpi, ErrorNote, Loading, PageHead, Modal, Field, IconBtn, useAction } from '../ui/kit';
@@ -58,7 +58,9 @@ export function Payouts() {
   const ops: Op[] = tab === 'accrued' || tab === 'failed' ? ['approved'] : tab === 'approved' ? ['processing'] : tab === 'processing' ? ['paid', 'failed'] : [];
   const selectable = (r: Row) => ops.some(o => OP_FROM[o].includes(r.status));
   const chosen = rows.filter(r => sel.has(r.id) && selectable(r));
-  const chosenSum = chosen.reduce((s, r) => s + Number(r.amount), 0);
+  // INR and AED kept apart (AED investors' payouts in AED)
+  const both = (rs: Row[]) => { const [i, a] = sumBoth(rs, r => Number(r.amount), r => r.investor_id); return moneyBoth(i, a); };
+  const chosenSum = both(chosen);
 
   const switchTab = (k: Tab) => { setTab(k); setSel(new Set()); };
   const openOp = (o: Op) => { setOp(o); setRef(''); setReason(''); setErr(null); };
@@ -69,10 +71,10 @@ export function Payouts() {
     if (!ids.length) { setErr('Select at least one payout.'); return; }
     if (op === 'paid' && !ref.trim()) { setErr('Enter the bank / UTR reference that confirms these payments.'); return; }
     if (op === 'failed' && !reason.trim()) { setErr('Enter why the payment failed.'); return; }
-    const sum = chosen.filter(r => ids.includes(r.id)).reduce((s, r) => s + Number(r.amount), 0);
+    const sum = both(chosen.filter(r => ids.includes(r.id)));
     const n = await run(() => rpc<number>('admin_payouts_transition', {
       p_ids: ids, p_to: op, p_ref: op === 'paid' || op === 'processing' ? ref.trim() || null : null, p_reason: op === 'failed' ? reason.trim() : null
-    }), [OP_DONE[op], `${ids.length} payout${ids.length === 1 ? '' : 's'} · ${money(sum)}${op === 'paid' || op === 'processing' ? ' · investors notified' : ''}`]);
+    }), [OP_DONE[op], `${ids.length} payout${ids.length === 1 ? '' : 's'} · ${sum}${op === 'paid' || op === 'processing' ? ' · investors notified' : ''}`]);
     if (n === undefined) return;
     setOp(null); setSel(new Set());
     switchTab(op === 'processing' ? 'processing' : op === 'paid' ? 'paid' : op === 'failed' ? 'failed' : 'approved');
@@ -80,9 +82,9 @@ export function Payouts() {
   };
 
   const exportCsv = () => downloadCsv(`payouts-${tab}-${t}`,
-    ['Payout', 'Investor ID', 'Investor', 'Investment', 'Plan', 'Period', 'Due date', 'Amount', 'Status', 'Bank', 'Account', 'IFSC', 'Batch reference', 'Payment reference', 'Paid on', 'Failure reason', 'ROI taken by'],
+    ['Payout', 'Investor ID', 'Investor', 'Investment', 'Plan', 'Period', 'Due date', 'Currency', 'Amount', 'Status', 'Bank', 'Account', 'IFSC', 'Batch reference', 'Payment reference', 'Paid on', 'Failure reason', 'ROI taken by'],
     rows.map(r => [r.code, r.investor?.code, nameOf(r.investor), r.inv?.code, r.inv?.plan_name, r.acc ? r.acc.period_no + (r.acc.kind === 'stub' ? ' (stub)' : '') : '', r.due_date,
-      Number(r.amount).toFixed(2), r.status, r.investor?.bank_name, r.investor?.bank_account_masked, r.investor?.bank_ifsc, r.batch_ref, r.payment_ref, r.paid_on, r.failure_reason, roiWayText(r.inv?.roi_method, r.inv?.roi_upi)]));
+      curCode(r.investor_id), csvAmount(r.amount, r.investor_id), r.status, r.investor?.bank_name, r.investor?.bank_account_masked, r.investor?.bank_ifsc, r.batch_ref, r.payment_ref, r.paid_on, r.failure_reason, roiWayText(r.inv?.roi_method, r.inv?.roi_upi)]));
 
   const cols: Col<Row>[] = [
     { h: 'Payout', m: true, v: r => r.code },
@@ -90,7 +92,7 @@ export function Payouts() {
     { h: 'Investment', v: r => r.inv?.code, r: r => r.inv ? <><Link className="mono" to={`/admin/investments/${r.inv.code}`}>{r.inv.code}</Link><span className="sub">{r.inv.plan_name}</span></> : '—' },
     { h: 'Period', v: r => r.acc?.period_no ?? 0, r: r => r.acc ? `#${r.acc.period_no}${r.acc.kind === 'stub' ? ' (stub)' : ''}` : '—' },
     { h: 'Due', v: r => r.due_date, r: r => <span style={r.due_date <= t && !['paid', 'cancelled'].includes(r.status) ? { color: 'var(--amber)' } : undefined}>{date(r.due_date)}</span> },
-    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => money(r.amount) },
+    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => moneyOf(r.amount, r.investor_id) },
     { h: 'Taken by', v: r => r.inv?.roi_method || '', r: r => r.inv?.roi_method ? <>{roiWayText(r.inv.roi_method)}{r.inv.roi_upi && <span className="sub mono">{r.inv.roi_upi}</span>}</> : <span className="muted">Not set</span> },
     { h: 'Bank', v: r => r.investor?.bank_name || '', r: r => r.investor?.bank_name || r.investor?.bank_account_masked ? <>{r.investor.bank_name || '—'}<span className="sub mono">{r.investor.bank_account_masked}</span></> : <span className="muted">Not on file</span> },
     {
@@ -106,7 +108,8 @@ export function Payouts() {
   const by = q.data?.dash.payouts_by_status || {};
   const tile = (k: PayoutStatus, l: string, cls?: string) => {
     const x = by[k] || { count: 0, amount: 0 };
-    return <Kpi label={l} value={money(x.amount)} cls={cls} sub={`${x.count} payout${Number(x.count) === 1 ? '' : 's'}`} />;
+    const d = q.data?.dash, v = d?.inr ? moneyBoth(d.inr.payouts_by_status?.[k]?.amount, d.aed?.payouts_by_status?.[k]?.amount) : money(x.amount);
+    return <Kpi label={l} value={v} cls={cls} sub={`${x.count} payout${Number(x.count) === 1 ? '' : 's'}`} />;
   };
   const sentBy = op === 'paid' ? Array.from(new Set(chosen.map(r => r.sent_by).filter(Boolean) as string[])) : [];
   const selfSent = !!profile && sentBy.includes(profile.id);
@@ -139,7 +142,7 @@ export function Payouts() {
               select={ops.length ? { selected: sel, onChange: setSel, can: selectable } : undefined}
               tools={<>
                 <label className="check"><input type="checkbox" checked={dueOnly} onChange={e => { setDueOnly(e.target.checked); setSel(new Set()); }} /> Due on or before today</label>
-                {ops.length > 0 && <span className="muted" style={{ alignSelf: 'center', fontSize: 13 }}>{chosen.length ? `${chosen.length} selected · ${money(chosenSum)}` : 'None selected'}</span>}
+                {ops.length > 0 && <span className="muted" style={{ alignSelf: 'center', fontSize: 13 }}>{chosen.length ? `${chosen.length} selected · ${chosenSum}` : 'None selected'}</span>}
                 {ops.includes('approved') && <button className="btn primary sm" disabled={!chosen.length} onClick={() => openOp('approved')}>{tab === 'failed' ? 'Approve for retry' : 'Approve selected'}</button>}
                 {ops.includes('processing') && <button className="btn primary sm" disabled={!chosen.length} onClick={() => openOp('processing')}>Mark payment processed</button>}
                 {ops.includes('failed') && <button className="btn danger sm" disabled={!chosen.length} onClick={() => openOp('failed')}>Mark failed</button>}
@@ -169,7 +172,7 @@ export function Payouts() {
             <dl className="kv">
               <dt>Payouts</dt><dd>{chosen.length}</dd>
               <dt>Investors</dt><dd>{new Set(chosen.map(r => r.investor_id)).size}</dd>
-              <dt>Total</dt><dd>{money(chosenSum)}</dd>
+              <dt>Total</dt><dd>{chosenSum}</dd>
               {op === 'paid' && <><dt>Batch</dt><dd className="mono">{Array.from(new Set(chosen.map(r => r.batch_ref).filter(Boolean))).join(', ') || '—'}</dd></>}
               {op === 'paid' && sentBy.length > 0 && <><dt>Sent to bank by</dt><dd>{sentBy.map(id => nameOf(q.data?.pplBy.get(id))).join(', ')}</dd></>}
             </dl>
@@ -210,11 +213,11 @@ function EditPayout({ p, onClose }: { p: Row; onClose: () => void }) {
   const [reason, setReason] = useState(p.failure_reason || '');
   const STATUSES: [PayoutStatus, string][] = [['accrued', 'Earned'], ['approved', 'Approved'], ['processing', 'Payment processed'], ['paid', 'Payment fulfilled'], ['failed', 'Failed']];
   const go = async () => {
-    const r = await act.run(() => rpc('admin_update_payout', { p_id: p.id, p_status: status, p_ref: ref.trim(), p_paid_on: paidOn, p_reason: reason.trim() }), ['Payout updated', `${p.code} · ${money(p.amount)}`]);
+    const r = await act.run(() => rpc('admin_update_payout', { p_id: p.id, p_status: status, p_ref: ref.trim(), p_paid_on: paidOn, p_reason: reason.trim() }), ['Payout updated', `${p.code} · ${moneyOf(p.amount, p.investor_id)}`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title={`Edit ${p.code}`} sub={`${money(p.amount)} · ${nameOf(p.investor)} · ${p.inv?.code || ''}`} onClose={onClose}
+    <Modal title={`Edit ${p.code}`} sub={`${moneyOf(p.amount, p.investor_id)} · ${nameOf(p.investor)} · ${p.inv?.code || ''}`} onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || (status === 'failed' && !reason.trim()) || (status === 'paid' && !ref.trim())}>Save</button></>}>
       <div className="form">
         <Field label="Status"><div className="chips">{STATUSES.map(([k, l]) => <button key={k} type="button" className={'chip ' + (status === k ? 'on' : '')} onClick={() => setStatus(k)}>{l}</button>)}</div></Field>

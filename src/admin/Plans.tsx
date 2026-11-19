@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useSettings } from '../lib/auth';
-import { money, moneyShort, date, dateShort, dateTime, lockinText, rate, rateShort, today, monthlyReturn, STANDARD_RATES } from '../lib/format';
+import { money, moneyShort, date, dateShort, dateTime, lockinText, rate, rateShort, today, monthlyReturn, STANDARD_RATES, moneyOf, moneyBoth, sumBoth } from '../lib/format';
 import type { Plan, PlanVersion, PlanStatus, Investment, Profile, EarlyRedemption, Settings } from '../lib/types';
 import { DataTable } from '../ui/DataTable';
 import { Empty, ErrorNote, Loading, PageHead, InvBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
@@ -18,14 +18,14 @@ const lockins = (v: PlanVersion) => v.lockin_options.slice().sort((a, b) => a - 
 
 interface Flag { investment_id: string; code: string; investor: string; reason: string }
 
-type InvLite = Pick<Investment, 'id' | 'plan_id' | 'principal' | 'status'>;
+type InvLite = Pick<Investment, 'id' | 'plan_id' | 'principal' | 'status' | 'investor_id'>;
 interface ListData { plans: Plan[]; versions: PlanVersion[]; invs: InvLite[] }
 
 async function loadPlans(): Promise<ListData> {
   const [plans, versions, invs] = await Promise.all([
     fetchAll<Plan>((a, b) => api.from('plans').select('*').order('created_at').range(a, b)),
     fetchAll<PlanVersion>((a, b) => api.from('plan_versions').select('*').order('version').range(a, b)),
-    fetchAll<InvLite>((a, b) => api.from('investments').select('id,plan_id,principal,status').range(a, b))
+    fetchAll<InvLite>((a, b) => api.from('investments').select('id,plan_id,principal,status,investor_id').range(a, b))
   ]);
   return { plans, versions, invs };
 }
@@ -46,7 +46,7 @@ export function Plans() {
     return q.data.plans.map(p => {
       const cur = q.data!.versions.find(v => v.plan_id === p.id && v.version === p.current_version);
       const live = q.data!.invs.filter(i => i.plan_id === p.id && LIVE.includes(i.status));
-      return { p, cur, live: live.length, principal: live.reduce((s, i) => s + Number(i.principal), 0), total: q.data!.invs.filter(i => i.plan_id === p.id).length };
+      return { p, cur, live: live.length, principal: sumBoth(live, i => Number(i.principal), i => i.investor_id), total: q.data!.invs.filter(i => i.plan_id === p.id).length };
     });
   }, [q.data]);
   const shown = cards.filter(c => filter === 'all' ? c.p.status !== 'archived' : c.p.status === filter);
@@ -89,7 +89,7 @@ export function Plans() {
                         <dt>Investment range</dt><dd>{moneyShort(cur.min_amount)} – {moneyShort(cur.max_amount)}</dd>
                         <dt>Lock-in</dt><dd>{lockins(cur)}</dd>
                         <dt>Eligible</dt><dd>{dateShort(cur.eligible_from)} – {cur.eligible_to ? date(cur.eligible_to) : 'open-ended'}</dd>
-                        <dt>Live investments</dt><dd>{live} · {moneyShort(principal)}</dd>
+                        <dt>Live investments</dt><dd>{live} · {moneyBoth(principal[0], principal[1], true)}</dd>
                       </dl>
                       {cur.effective_from > today() && <div className="note info">v{cur.version} takes effect {date(cur.effective_from)}.</div>}
                     </> : <p className="hint">No version found.</p>}
@@ -356,7 +356,7 @@ export function PlanDetail() {
                 <dt>Accrual schedule</dt><dd>Monthly on start-date anniversary</dd>
                 <dt>Payout schedule</dt><dd>Within {cur.payout_lag_days} day{cur.payout_lag_days === 1 ? '' : 's'} of accrual</dd>
                 <dt>Eligible to invest</dt><dd>{date(cur.eligible_from)} – {cur.eligible_to ? date(cur.eligible_to) : 'open-ended'}</dd>
-                <dt>Live principal</dt><dd>{money(live.reduce((x, i) => x + Number(i.principal), 0))} · {live.length} live</dd>
+                <dt>Live principal</dt><dd>{(() => { const [a, b] = sumBoth(live, i => Number(i.principal), i => i.investor_id); return moneyBoth(a, b); })()} · {live.length} live</dd>
                 <dt>Created by</dt><dd>{(pl.created_by && names[pl.created_by]) || '—'} · {date(plan.created_at)}</dd>
                 <dt>Last modified by</dt><dd>{(pl.updated_by && names[pl.updated_by]) || '—'} · {date(plan.updated_at)}</dd>
               </dl>
@@ -403,7 +403,7 @@ export function PlanDetail() {
               <tbody>{invs.map(i => (
                 <tr key={i.id} className="click" onClick={() => nav('/admin/investments/' + i.code)}>
                   <td className="m">{i.code}</td><td>{names[i.investor_id] || '—'}</td><td className="m">v{i.plan_version}</td><td>{rate(i.monthly_rate)}</td>
-                  <td className="n">{money(i.principal)}</td><td>{i.start_date ? date(i.start_date) : <span className="muted">Not funded</span>}</td><td>{date(i.maturity_date)}</td>
+                  <td className="n">{moneyOf(i.principal, i.investor_id)}</td><td>{i.start_date ? date(i.start_date) : <span className="muted">Not funded</span>}</td><td>{date(i.maturity_date)}</td>
                   <td><InvBadge i={i} approachingDays={s.approaching_days} /></td>
                 </tr>
               ))}</tbody>

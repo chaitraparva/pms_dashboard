@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api, must, rpc } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery } from '../lib/useQuery';
-import { date, dateShort, isUnlocked, lockinText, money, moneyShort, rate, today } from '../lib/format';
+import { date, dateShort, isUnlocked, lockinText, money, moneyShort, rate, today, moneyBoth, sumBoth } from '../lib/format';
 import { Empty, ErrorNote, Kpi, Loading, PageHead } from '../ui/kit';
 import { BarChart, Donut, LineChart, monthLabel } from '../ui/Charts';
 import { Icon } from '../ui/Icon';
@@ -28,14 +28,16 @@ export function Overview() {
     ]);
     // the running month so far: own returns, and (for an IB) the bonus on the people under them
     const run = await rpc<{ investor_id: string; roi: number; bonus: number; from: string; to: string }[]>('running_month').catch(() => []);
-    const running = { roi: run.reduce((x, r) => x + Number(r.roi), 0), bonus: run.reduce((x, r) => x + Number(r.bonus), 0), from: run[0]?.from || null, to: run[0]?.to || null };
+    // the IB bonus is in the currency of the person it comes from (AED investors in AED), never added to INR
+    const running = { roi: run.reduce((x, r) => x + Number(r.roi), 0), bonus: run.reduce((x, r) => x + Number(r.bonus), 0), bonusTwo: sumBoth(run, r => Number(r.bonus), r => r.investor_id), from: run[0]?.from || null, to: run[0]?.to || null };
     // an IB: the bonus they get every month from the people under them, and what has been paid to them so far
-    const net = await rpc<{ investors: { investments: { status: string; bonus_monthly: number }[] }[]; bonuses: { amount: number; status: string }[] } | null>('my_network').catch(() => null);
+    const net = await rpc<{ investors: { id: string; code: string; investments: { status: string; bonus_monthly: number }[] }[]; bonuses: { amount: number; status: string; investor_code: string }[] } | null>('my_network').catch(() => null);
+    const idOf = (code: string) => net?.investors.find(p => p.code === code)?.id;
     const LIVE_ST = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
     const ibBonus = net && net.investors.length ? {
-      monthly: net.investors.reduce((x, p) => x + p.investments.filter(i => LIVE_ST.includes(i.status)).reduce((y, i) => y + Number(i.bonus_monthly), 0), 0),
-      paid: net.bonuses.filter(b => b.status === 'paid').reduce((x, b) => x + Number(b.amount), 0),
-      pending: net.bonuses.filter(b => b.status === 'accrued').reduce((x, b) => x + Number(b.amount), 0),
+      monthly: sumBoth(net.investors, p => p.investments.filter(i => LIVE_ST.includes(i.status)).reduce((y, i) => y + Number(i.bonus_monthly), 0), p => p.id),
+      paid: sumBoth(net.bonuses.filter(b => b.status === 'paid'), b => Number(b.amount), b => idOf(b.investor_code)),
+      pending: sumBoth(net.bonuses.filter(b => b.status === 'accrued'), b => Number(b.amount), b => idOf(b.investor_code)),
       people: net.investors.length } : null;
     return { p, myRank, running, ibBonus, anns: must(ann) as Pick<Announcement, 'id' | 'code' | 'title' | 'category' | 'published_at'>[], bros, props };
   }, [id]);
@@ -107,8 +109,8 @@ export function Overview() {
             <Kpi label="This month so far" value={money(running.roi)} sub={`Pending${running.from ? ' · ' + dateShort(running.from) + ' – ' + dateShort(running.to!) : ''} · grows every day`} subCls="warn"
               tip="This month's return, calculated day by day up to today. It is added to your returns when the month ends and paid after that." />
             {ibBonus && <>
-              <Kpi label="IB bonus per month" cls="pos" value={money(ibBonus.monthly)} sub={`from ${ibBonus.people} ${ibBonus.people === 1 ? 'person' : 'people'} under you${running.bonus > 0 ? ` · this month so far ${money(running.bonus)}` : ''}`} onClick={() => nav('/portal/network')} />
-              <Kpi label="IB bonus received" value={money(ibBonus.paid)} sub={ibBonus.pending > 0.005 ? `${money(ibBonus.pending)} earned, not yet paid` : 'All earned bonus is paid'} onClick={() => nav('/portal/network')} />
+              <Kpi label="IB bonus per month" cls="pos" value={moneyBoth(...ibBonus.monthly)} sub={`from ${ibBonus.people} ${ibBonus.people === 1 ? 'person' : 'people'} under you${running.bonus > 0 ? ` · this month so far ${moneyBoth(...running.bonusTwo)}` : ''}`} onClick={() => nav('/portal/network')} />
+              <Kpi label="IB bonus received" value={moneyBoth(...ibBonus.paid)} sub={ibBonus.pending[0] + ibBonus.pending[1] > 0.005 ? `${moneyBoth(...ibBonus.pending)} earned, not yet paid` : 'All earned bonus is paid'} onClick={() => nav('/portal/network')} />
             </>}
           </div>
 

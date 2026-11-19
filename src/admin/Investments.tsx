@@ -7,7 +7,7 @@ import { AedNote, CurChips, toInr, type AmtCur } from '../ui/CurAmount';
 import { uploadDocument, openDocument, deleteDocument, uploadAttachment } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
 import { recordInvestmentFull } from '../lib/adminApi';
-import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText, roiWayText, setDisplayCurrency } from '../lib/format';
+import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText, roiWayText, setDisplayCurrency, moneyOf, moneyIn, moneyBoth, sumBoth, isAedInvestor, aedRate as aedK } from '../lib/format';
 import type { Investment, Balance, Branch, Profile, Plan, Accrual, Payout, LedgerEntry } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, InvBadge, PayBadge, LedgerBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
@@ -79,28 +79,29 @@ export function Investments() {
     { h: 'Investor', v: r => r.investor?.full_name || '', r: r => <>{r.investor?.full_name || '—'}<span className="sub">{r.investor?.code}{r.branch ? ' · ' + r.branch : ''}</span></> },
     { h: 'Plan', v: r => r.plan_name, r: r => <>{r.plan_name}{r.plan_id && <> <span className="muted mono">v{r.plan_version}</span></>}<span className="sub">{rate(r.monthly_rate)}</span></> },
     { h: 'Bonus to', v: r => r.bonusTo?.full_name || '', r: r => Number(r.admin_bonus || 0) > 0
-      ? (r.bonusTo ? <>{r.bonusTo.full_name || r.bonusTo.email}<span className="sub">{rate(r.admin_bonus_rate || 0)} · {money(r.admin_bonus)} / month</span></> : <span className="muted">Individual<span className="sub">{rate(r.admin_bonus_rate || 0)} unassigned</span></span>)
+      ? (r.bonusTo ? <>{r.bonusTo.full_name || r.bonusTo.email}<span className="sub">{rate(r.admin_bonus_rate || 0)} · {moneyOf(r.admin_bonus, r.investor_id)} / month</span></> : <span className="muted">Individual<span className="sub">{rate(r.admin_bonus_rate || 0)} unassigned</span></span>)
       : <span className="muted">—</span> },
-    { h: 'Principal', n: true, v: r => Number(r.principal), r: r => money(r.principal) },
+    { h: 'Principal', n: true, v: r => Number(r.principal), r: r => moneyOf(r.principal, r.investor_id) },
     { h: 'Lock-in', v: r => r.lockin_months, r: r => lockinText(r.lockin_months) },
     { h: 'Start', v: r => r.start_date || '9999', r: r => (r.start_date ? date(r.start_date) : <span className="muted">Not funded</span>) },
     { h: 'Lock-in end', v: r => r.maturity_date || '9999', r: r => (r.maturity_date ? <>{date(r.maturity_date)}{LIVE.includes(r.status) && <span className="sub">{Math.max(0, daysBetween(t, r.maturity_date))} days</span>}</> : '—') },
-    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => money(r.bal?.accrued || 0) },
-    { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{money(r.bal?.paid || 0)}</span> },
-    { h: 'Outstanding', n: true, v: r => r.outstanding, r: r => money(r.outstanding) },
+    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => moneyOf(r.bal?.accrued || 0, r.investor_id) },
+    { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{moneyOf(r.bal?.paid || 0, r.investor_id)}</span> },
+    { h: 'Outstanding', n: true, v: r => r.outstanding, r: r => moneyOf(r.outstanding, r.investor_id) },
     { h: 'Status', v: r => r.label, r: r => <InvBadge i={r} approachingDays={s.approaching_days} /> }
   ], [s.approaching_days, t]);
 
-  const livePrincipal = rows.filter(r => LIVE.includes(r.status)).reduce((x, r) => x + Number(r.principal), 0);
+  const livePrincipal = sumBoth(rows.filter(r => LIVE.includes(r.status)), r => Number(r.principal), r => r.investor_id);
   const exportCsv = () => downloadCsv(`investments-${today()}`,
-    ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Version', 'Rate %/month', 'Investor rate %', 'Bonus %', 'Bonus / month', 'Bonus to', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Lock-in end', 'Earned', 'Paid', 'Outstanding', 'Status', 'Agreement ref', 'Deposit ref', 'Monthly ROI taken by'],
-    rows.map(r => [r.code, r.investor?.code, r.investor?.full_name, r.branch, r.plan_name, r.plan_version, r.monthly_rate, r.investor_rate ?? r.monthly_rate, r.admin_bonus_rate ?? 0, r.admin_bonus ?? 0, r.bonusTo ? r.bonusTo.full_name || r.bonusTo.email : '', r.principal, r.monthly_return, r.lockin_months, r.start_date, r.maturity_date,
-      r.bal?.accrued ?? 0, r.bal?.paid ?? 0, r.outstanding, r.label, r.agreement_ref, r.deposit_ref, roiWayText(r.roi_method, r.roi_upi)]));
+    ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Version', 'Rate %/month', 'Investor rate %', 'Bonus %', 'Bonus / month', 'Bonus to', 'Currency', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Lock-in end', 'Earned', 'Paid', 'Outstanding', 'Status', 'Agreement ref', 'Deposit ref', 'Monthly ROI taken by'],
+    rows.map(r => { const k = isAedInvestor(r.investor_id) ? aedK() : 1, f = (v: unknown) => (Number(v || 0) / k).toFixed(2);
+      return [r.code, r.investor?.code, r.investor?.full_name, r.branch, r.plan_name, r.plan_version, r.monthly_rate, r.investor_rate ?? r.monthly_rate, r.admin_bonus_rate ?? 0, f(r.admin_bonus), r.bonusTo ? r.bonusTo.full_name || r.bonusTo.email : '', k === 1 ? 'INR' : 'AED', f(r.principal), f(r.monthly_return), r.lockin_months, r.start_date, r.maturity_date,
+        f(r.bal?.accrued), f(r.bal?.paid), f(r.outstanding), r.label, r.agreement_ref, r.deposit_ref, roiWayText(r.roi_method, r.roi_upi)]; }));
 
   return (
     <>
       <PageHead crumbs={['Investments']} title="Investment register"
-        sub={q.data ? `${rows.length} investments · ${money(livePrincipal)} live principal` : 'Loading…'}
+        sub={q.data ? `${rows.length} investments · ${moneyBoth(livePrincipal[0], livePrincipal[1])} live principal` : 'Loading…'}
         actions={<>
           <button className="btn" onClick={exportCsv} disabled={!rows.length}><Icon name="download" />Export to Excel</button>
           <button className="btn accent" onClick={() => setOpen(true)}><Icon name="plus" />Record investment</button>
@@ -193,6 +194,8 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
   // amounts can be typed in AED: converted at the AED rate and saved in INR
   const [amtCur, setAmtCur] = useState<AmtCur>('INR');
   const inr = (t: string) => toInr(t, amtCur, aedRate);
+  // amounts in this form are shown in the investor's currency (AED investors in AED)
+  const rmoney = (v: number) => moneyIn(v, currency === 'AED' && aedRate > 0 ? 'AED' : 'INR');
   // branch: chosen at the top; an existing person's (or the IB's) branch is filled in until the admin changes it
   const [branch, setBranch] = useState('');
   const [branchTouched, setBranchTouched] = useState(false);
@@ -364,7 +367,7 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
         if (paths.length) await api.storage.from('documents').remove(paths).catch(() => undefined);
         throw err;
       }
-    }, more.length ? [`${more.length + 1} investments recorded`, `${investorName} · ${money(totalAmt)} in total`] : regOnly ? [withSub ? 'Sub-investor added' : 'IB registered', withSub ? `${investorName} · under ${ibName}` : ibName] : ['Investment recorded', `${investorName} · ${money(amt)} at ${rateShort(r)} a month`]);
+    }, more.length ? [`${more.length + 1} investments recorded`, `${investorName} · ${rmoney(totalAmt)} in total`] : regOnly ? [withSub ? 'Sub-investor added' : 'IB registered', withSub ? `${investorName} · under ${ibName}` : ibName] : ['Investment recorded', `${investorName} · ${rmoney(amt)} at ${rateShort(r)} a month`]);
     if (res) {
       refreshAll();
       const logins: [string, string, string][] = [];
@@ -385,9 +388,9 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
           <dt>Investor</dt><dd>{done.investor}</dd>
           <dt>Branch</dt><dd>{branchName(branch) || (newBranch ? nbName : 'No branch')}</dd>
           {done.code ? <>
-            <dt>{done.more.length ? 'Investment 1' : 'Investment'}</dt><dd className="mono"><a style={{ cursor: 'pointer' }} onClick={() => onDone(done.code!)}>{done.code}</a> · {money(amt)} at {rateShort(r)}</dd>
-            {done.more.map((m, k) => <Fragment key={m.code}><dt>Investment {k + 2}</dt><dd className="mono"><a style={{ cursor: 'pointer' }} onClick={() => onDone(m.code)}>{m.code}</a> · {money(m.amt)} at {rateShort(m.r)}</dd></Fragment>)}
-            {withSub && b > 0 && <><dt>IB bonus</dt><dd>{ibName} · {rateShort(b)} ({money(upMonthly)} / month), shown to them now</dd></>}
+            <dt>{done.more.length ? 'Investment 1' : 'Investment'}</dt><dd className="mono"><a style={{ cursor: 'pointer' }} onClick={() => onDone(done.code!)}>{done.code}</a> · {rmoney(amt)} at {rateShort(r)}</dd>
+            {done.more.map((m, k) => <Fragment key={m.code}><dt>Investment {k + 2}</dt><dd className="mono"><a style={{ cursor: 'pointer' }} onClick={() => onDone(m.code)}>{m.code}</a> · {rmoney(m.amt)} at {rateShort(m.r)}</dd></Fragment>)}
+            {withSub && b > 0 && <><dt>IB bonus</dt><dd>{ibName} · {rateShort(b)} ({rmoney(upMonthly)} / month), shown to them now</dd></>}
             <dt>Monthly ROI taken by</dt><dd>{roiWayText(roiWay, roiUpi.trim())}</dd>
             <dt>Proof</dt><dd>{proof[0]?.name || <span className="muted">None attached</span>}</dd>
           </> : <><dt>Investment</dt><dd className="muted">None (principal 0)</dd></>}
@@ -591,16 +594,16 @@ function RecordInvestment({ preInvestor, onClose, onDone }: { preInvestor: strin
                 <dt>Branch</dt><dd>{newBranch ? (nbName.trim() || '—') + ' (new)' : branchName(branch) || <span className="muted">No branch</span>}</dd>
                 <dt>Investment for</dt><dd>{investorName || '—'}</dd>
                 <dt>Monthly ROI</dt><dd>{r > 0 ? rate(r) : '—'}</dd>
-                <dt>Investor gets</dt><dd>{invRate ? <>{rate(invRate)}{amt > 0 && <> · <b>{money(mine)}</b> / month</>}</> : '—'}</dd>
-                <dt>IB bonus</dt><dd>{withSub && b > 0 ? <>{rate(b)}{amt > 0 && <> · <b>{money(upMonthly)}</b> / month</>} <span className="muted">to {ibName}</span></> : <span className="muted">None</span>}</dd>
+                <dt>Investor gets</dt><dd>{invRate ? <>{rate(invRate)}{amt > 0 && <> · <b>{rmoney(mine)}</b> / month</>}</> : '—'}</dd>
+                <dt>IB bonus</dt><dd>{withSub && b > 0 ? <>{rate(b)}{amt > 0 && <> · <b>{rmoney(upMonthly)}</b> / month</>} <span className="muted">to {ibName}</span></> : <span className="muted">None</span>}</dd>
                 <dt>First return</dt><dd>{start ? firstPeriodText(start, Number.isInteger(months) ? months : 0) : '—'}</dd>
                 <dt>Lock-in ends</dt><dd>{start && months > 0 ? date(addMonths(start, months)) : months === 0 ? 'No lock-in' : '—'}</dd>
                 <dt>Monthly ROI taken by</dt><dd>{roiWay ? roiWayText(roiWay, roiUpi.trim()) : '—'}</dd>
                 {more.length > 0 && <>
-                  {more.map((x, k) => <Fragment key={k}><dt>Investment {k + 2}</dt><dd>{inr(x.amount) > 0 ? money(inr(x.amount)) : '—'} at {Number(x.roi) > 0 ? rate(Number(x.roi)) : '—'}{itemMonthly(x) > 0 ? ' · ' + money(itemMonthly(x)) + ' / month' : ''}{withSub && Number(x.bonus || 0) > 0 ? ' · IB bonus ' + rate(Number(x.bonus)) + (itemBonus(x) > 0 ? ' · ' + money(itemBonus(x)) + ' / month' : '') : ''}{x.start ? ' · from ' + date(x.start) : ''}{x.roiWay ? ' · ' + roiWayText(x.roiWay, x.roiUpi.trim()) : ''}</dd></Fragment>)}
-                  <dt>Total principal</dt><dd><b>{money(totalAmt)}</b> in {more.length + 1} investments</dd>
-                  <dt>Total monthly ROI</dt><dd><b>{money(totalMonthly)}</b> / month <span className="muted">to {investorName || 'the investor'}</span></dd>
-                  {withSub && <><dt>Total IB bonus</dt><dd><b>{money(totalBonus)}</b> / month <span className="muted">to {ibName || 'the IB'}, on top of the ROI</span></dd></>}
+                  {more.map((x, k) => <Fragment key={k}><dt>Investment {k + 2}</dt><dd>{inr(x.amount) > 0 ? rmoney(inr(x.amount)) : '—'} at {Number(x.roi) > 0 ? rate(Number(x.roi)) : '—'}{itemMonthly(x) > 0 ? ' · ' + rmoney(itemMonthly(x)) + ' / month' : ''}{withSub && Number(x.bonus || 0) > 0 ? ' · IB bonus ' + rate(Number(x.bonus)) + (itemBonus(x) > 0 ? ' · ' + rmoney(itemBonus(x)) + ' / month' : '') : ''}{x.start ? ' · from ' + date(x.start) : ''}{x.roiWay ? ' · ' + roiWayText(x.roiWay, x.roiUpi.trim()) : ''}</dd></Fragment>)}
+                  <dt>Total principal</dt><dd><b>{rmoney(totalAmt)}</b> in {more.length + 1} investments</dd>
+                  <dt>Total monthly ROI</dt><dd><b>{rmoney(totalMonthly)}</b> / month <span className="muted">to {investorName || 'the investor'}</span></dd>
+                  {withSub && <><dt>Total IB bonus</dt><dd><b>{rmoney(totalBonus)}</b> / month <span className="muted">to {ibName || 'the IB'}, on top of the ROI</span></dd></>}
                 </>}
               </dl>
             </div>

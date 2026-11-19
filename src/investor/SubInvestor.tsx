@@ -2,7 +2,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { rpc } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery } from '../lib/useQuery';
-import { date, money, moneyShort, rateShort, today } from '../lib/format';
+import { date, moneyIn, moneyShortIn, rateShort, today, isAedInvestor } from '../lib/format';
 import { Badge, Empty, ErrorNote, KycBadge, Kpi, Loading, PageHead } from '../ui/kit';
 import { BarChart, Donut, LineChart, monthLabel } from '../ui/Charts';
 import { Icon } from '../ui/Icon';
@@ -52,6 +52,9 @@ export function SubInvestor() {
   // month by month since the first investment started (at most 24 months shown)
   const t = today();
   const starts = d.investments.map(i => i.start_date).filter((x): x is string => !!x).sort();
+  // this person's money in their own currency (AED investors in AED)
+  const cur = isAedInvestor(p.id) ? 'AED' : 'INR';
+  const money = (v: number | string | null | undefined) => moneyIn(v, cur), moneyShort = (v: number | string | null | undefined) => moneyShortIn(v, cur);
   const months: string[] = [];
   if (starts.length) for (let m = starts[0].slice(0, 7); m <= t.slice(0, 7);) { months.push(m); const [y, mo] = m.split('-').map(Number); m = mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`; }
   const shown = months.slice(-24);

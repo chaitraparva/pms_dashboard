@@ -2,7 +2,8 @@ import { ReactNode, useState } from 'react';
 import { api, rpc, fetchAll, must } from '../lib/api';
 import { useQuery } from '../lib/useQuery';
 import { useAuth } from '../lib/auth';
-import { money, today, addMonths, daysBetween, investmentLabel, isUnlocked, rateShort, LEDGER_TYPE } from '../lib/format';
+import { today, addMonths, daysBetween, investmentLabel, isUnlocked, rateShort, LEDGER_TYPE, isAedInvestor, csvAmount, moneyBoth } from '../lib/format';
+import { splitBranches } from './Branches';
 import { downloadCsv } from '../lib/csv';
 import type { Accrual, AuditLog, Balance, Dashboard, Investment, LedgerEntry, Payout, Plan, PlanVersion, Profile, Branch } from '../lib/types';
 import { ErrorNote, Loading, PageHead, Empty, useAction } from '../ui/kit';
@@ -15,6 +16,8 @@ type Person = Pick<Profile, 'id' | 'code' | 'full_name' | 'email' | 'phone' | 'c
 
 const LIVE = ['active', 'matured', 'redemption_requested', 'redemption_processing'];
 const n2 = (v: number | string | null | undefined) => (v == null ? '' : Number(v).toFixed(2));
+/** An investor's amount in their own currency: AED investors as "AED 3000.00", others in INR. */
+const n2a = (v: number | string | null | undefined, investorId: string | null | undefined) => (v == null ? '' : isAedInvestor(investorId) ? 'AED ' + csvAmount(v, investorId) : Number(v).toFixed(2));
 const nameOf = (p?: { full_name: string; email: string }) => (p ? p.full_name || p.email : '');
 
 async function people() {
@@ -74,9 +77,9 @@ export function Reports() {
     const [invs, bal, ppl, bn] = await Promise.all([investments(), balances(), people(), branchNames()]);
     return csv('portfolio', ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Plan version', 'Rate % / month', 'Principal', 'Monthly return', 'Lock-in months', 'Status', 'Start', 'Lock-in end',
       'Principal locked / unlocked', 'Periods accrued', 'Earned (net)', 'Paid', 'Processing', 'Approved', 'Earned not approved', 'Outstanding', 'Agreement ref', 'Deposit ref'],
-      invs.map(i => { const b = bal.get(i.id); const p = ppl.get(i.investor_id); return [i.code, p?.code, nameOf(p), p?.branch_id ? bn.get(p.branch_id) : '', i.plan_name, i.plan_version, i.monthly_rate, n2(i.principal), n2(i.monthly_return), i.lockin_months,
-        investmentLabel(i, settings?.approaching_days ?? 60, t), i.start_date, i.maturity_date, LIVE.includes(i.status) ? (isUnlocked(i, t) ? 'Unlocked' : 'Locked') : '', b?.periods_accrued ?? 0, n2(b?.accrued), n2(b?.paid), n2(b?.processing), n2(b?.approved), n2(b?.unapproved),
-        n2(outstanding(b)), i.agreement_ref, i.deposit_ref]; }));
+      invs.map(i => { const b = bal.get(i.id); const p = ppl.get(i.investor_id); return [i.code, p?.code, nameOf(p), p?.branch_id ? bn.get(p.branch_id) : '', i.plan_name, i.plan_version, i.monthly_rate, n2a(i.principal, i.investor_id), n2a(i.monthly_return, i.investor_id), i.lockin_months,
+        investmentLabel(i, settings?.approaching_days ?? 60, t), i.start_date, i.maturity_date, LIVE.includes(i.status) ? (isUnlocked(i, t) ? 'Unlocked' : 'Locked') : '', b?.periods_accrued ?? 0, n2a(b?.accrued, i.investor_id), n2a(b?.paid, i.investor_id), n2a(b?.processing, i.investor_id), n2a(b?.approved, i.investor_id), n2a(b?.unapproved, i.investor_id),
+        n2a(outstanding(b), i.investor_id), i.agreement_ref, i.deposit_ref]; }));
   };
 
   const investorSummary = async () => {
@@ -89,7 +92,7 @@ export function Reports() {
         const bs = mine.map(i => bal.get(i.id));
         const next = live.filter(i => !isUnlocked(i, t) && i.lockin_end_date).map(i => i.lockin_end_date as string).sort()[0] || '';
         const unl = live.filter(i => isUnlocked(i, t)).reduce((s, i) => s + Number(i.principal), 0), tot = live.reduce((s, i) => s + Number(i.principal), 0);
-        return [p.code, p.full_name, p.email, p.branch_id ? bn.get(p.branch_id) : '', p.phone, p.city, p.created_at.slice(0, 10), p.kyc_status, p.account_status, live.length, n2(tot), n2(unl), n2(tot - unl),
+        return [p.code, p.full_name, p.email, p.branch_id ? bn.get(p.branch_id) : '', p.phone, p.city, p.created_at.slice(0, 10), p.kyc_status, p.account_status, live.length, n2a(tot, p.id), n2a(unl, p.id), n2a(tot - unl, p.id),
           n2(bs.reduce((s, b) => s + Number(b?.accrued || 0), 0)), n2(bs.reduce((s, b) => s + Number(b?.paid || 0), 0)), n2(bs.reduce((s, b) => s + outstanding(b), 0)), next,
           p.bank_name, p.bank_account_masked, p.bank_ifsc];
       }));
@@ -105,7 +108,7 @@ export function Reports() {
     const ib = new Map(invs.map(i => [i.id, i])), pb = new Map(pays.map(p => [p.accrual_id, p]));
     return csv(`accrual-register-${accFrom}-to-${accTo}`, ['Accrual date', 'Investment', 'Investor ID', 'Investor', 'Period', 'Kind', 'Period start', 'Period end', 'Days', 'Days in period', 'Amount', 'Payout', 'Payout status', 'Reason'],
       acc.map(a => { const i = ib.get(a.investment_id); const p = i ? ppl.get(i.investor_id) : undefined; const po = pb.get(a.id);
-        return [a.accrual_date, i?.code, p?.code, nameOf(p), a.period_no, a.kind, a.period_start, a.period_end, a.days, a.days_in_period, n2(a.amount), po?.code, po?.status, a.reason]; }));
+        return [a.accrual_date, i?.code, p?.code, nameOf(p), a.period_no, a.kind, a.period_start, a.period_end, a.days, a.days_in_period, n2a(a.amount, i?.investor_id), po?.code, po?.status, a.reason]; }));
   };
 
   const payoutRegister = async () => {
@@ -117,7 +120,7 @@ export function Reports() {
     const ib = new Map(invs.map(i => [i.id, i]));
     return csv(`payout-register-${payFrom}-to-${payTo}${payStatus ? '-' + payStatus : ''}`,
       ['Payout', 'Due date', 'Investment', 'Investor ID', 'Investor', 'Amount', 'Status', 'Batch reference', 'Payment reference', 'Paid on', 'Failure reason', 'Approved by', 'Sent by', 'Confirmed by', 'Bank', 'Account no.'],
-      pays.map(p => { const v = ppl.get(p.investor_id); return [p.code, p.due_date, ib.get(p.investment_id)?.code, v?.code, nameOf(v), n2(p.amount), p.status, p.batch_ref, p.payment_ref, p.paid_on, p.failure_reason,
+      pays.map(p => { const v = ppl.get(p.investor_id); return [p.code, p.due_date, ib.get(p.investment_id)?.code, v?.code, nameOf(v), n2a(p.amount, p.investor_id), p.status, p.batch_ref, p.payment_ref, p.paid_on, p.failure_reason,
         nameOf(ppl.get(p.approved_by || '')), nameOf(ppl.get(p.sent_by || '')), nameOf(ppl.get(p.confirmed_by || '')), v?.bank_name, v?.bank_account_masked]; }));
   };
 
@@ -128,16 +131,19 @@ export function Reports() {
       people()
     ]);
     return csv(`upcoming-unlocks-${matDays}d`, ['Lock-in ends', 'Days left', 'Investment', 'Investor ID', 'Investor', 'Email', 'Phone', 'Plan', 'Principal', 'Lock-in months', 'Status'],
-      invs.map(i => { const p = ppl.get(i.investor_id); return [i.maturity_date, i.maturity_date ? daysBetween(t, i.maturity_date) : '', i.code, p?.code, nameOf(p), p?.email, p?.phone, i.plan_name, n2(i.principal), i.lockin_months,
+      invs.map(i => { const p = ppl.get(i.investor_id); return [i.maturity_date, i.maturity_date ? daysBetween(t, i.maturity_date) : '', i.code, p?.code, nameOf(p), p?.email, p?.phone, i.plan_name, n2a(i.principal, i.investor_id), i.lockin_months,
         investmentLabel(i, settings?.approaching_days ?? 60, t)]; }));
   };
 
   const branchSummary = async () => {
     const d = await rpc<Dashboard>('admin_dashboard');
-    const rows: Cell[][] = (d.by_branch || []).map(b => [b.name, b.investors, n2(b.principal), n2(b.unlocked), n2(b.locked), n2(b.accrued), n2(b.paid),
-      (b.by_rate || []).map(r => `${rateShort(r.rate)}: ${r.investors} investor${Number(r.investors) === 1 ? '' : 's'}, ${n2(r.principal)}`).join('; ')]);
-    rows.push(['No branch', d.unassigned_investors, n2(d.unassigned_principal), '', '', '', '', '']);
-    rows.push(['Total', d.total_investors, n2(d.principal_invested), n2(d.unlocked_principal), n2(d.locked_principal), n2(d.accrued_total), n2(d.paid_total), '']);
+    // INR and AED kept apart: "₹X + AED Y"
+    const B = (i: number | undefined, a: number | undefined) => moneyBoth(i, a);
+    const rows: Cell[][] = splitBranches(d).map(b => [b.name, b.investors, B(b.principal, b.aed?.principal), B(b.unlocked, b.aed?.unlocked), B(b.locked, b.aed?.locked), B(b.accrued, b.aed?.accrued), B(b.paid, b.aed?.paid),
+      (b.by_rate || []).map(r => `${rateShort(r.rate)}: ${r.investors} investor${Number(r.investors) === 1 ? '' : 's'}, ${B(r.principal, r.aed_principal)}`).join('; ')]);
+    const I = d.inr || d, A = d.aed;
+    rows.push(['No branch', d.unassigned_investors, B(I.unassigned_principal, A?.unassigned_principal), '', '', '', '', '']);
+    rows.push(['Total', d.total_investors, B(I.principal_invested, A?.principal_invested), B(I.unlocked_principal, A?.unlocked_principal), B(I.locked_principal, A?.locked_principal), B(I.accrued_total, A?.accrued_total), B(I.paid_total, A?.paid_total), '']);
     return csv('branch-summary', ['Branch', 'Investors', 'Principal invested', 'Unlocked principal', 'Locked principal', 'Returns accrued', 'Returns paid', 'By monthly ROI'], rows);
   };
 
@@ -161,7 +167,7 @@ export function Reports() {
     ]);
     const ib = new Map(invs.map(i => [i.id, i]));
     return csv(`ledger-${ledFrom}-to-${ledTo}`, ['Transaction', 'Date', 'Type', 'Investment', 'Investor ID', 'Investor', 'Amount', 'Status', 'Reference', 'Note', 'Recorded at'],
-      led.map(l => { const p = ppl.get(l.investor_id || ''); return [l.code, l.occurred_on, LEDGER_TYPE[l.type] || l.type, ib.get(l.investment_id || '')?.code, p?.code, nameOf(p), n2(l.amount), l.status, l.reference, l.note, l.created_at]; }));
+      led.map(l => { const p = ppl.get(l.investor_id || ''); return [l.code, l.occurred_on, LEDGER_TYPE[l.type] || l.type, ib.get(l.investment_id || '')?.code, p?.code, nameOf(p), n2a(l.amount, l.investor_id), l.status, l.reference, l.note, l.created_at]; }));
   };
 
   const audit = async () => {
@@ -171,9 +177,13 @@ export function Reports() {
       logs.map(l => [l.id, l.at, l.actor_name, l.action, l.entity_type, l.entity_label, l.reason, l.before == null ? '' : JSON.stringify(l.before), l.after == null ? '' : JSON.stringify(l.after)]));
   };
 
+  // INR investors and, apart, AED investors (never added together)
   const monthly = dash.data?.monthly || [];
-  const monthlyCsv = () => csv('monthly-summary', ['Month', 'New principal invested', 'Returns earned (net)', 'Returns paid'], monthly.map(m => [m.month, n2(m.invested), n2(m.accrued), n2(m.paid)]));
-  const tot = monthly.reduce((s, m) => ({ invested: s.invested + Number(m.invested), accrued: s.accrued + Number(m.accrued), paid: s.paid + Number(m.paid) }), { invested: 0, accrued: 0, paid: 0 });
+  const mI = dash.data?.inr?.monthly || monthly, mA = dash.data?.aed?.monthly || [];
+  const at = (k: 'invested' | 'accrued' | 'paid', m: string) => moneyBoth(mI.find(x => x.month === m)?.[k], mA.find(x => x.month === m)?.[k]);
+  const monthlyCsv = () => csv('monthly-summary', ['Month', 'New principal invested', 'Returns earned (net)', 'Returns paid'], monthly.map(m => [m.month, at('invested', m.month), at('accrued', m.month), at('paid', m.month)]));
+  const sumK = (list: typeof monthly, k: 'invested' | 'accrued' | 'paid') => list.reduce((s, m) => s + Number(m[k]), 0);
+  const tot = (k: 'invested' | 'accrued' | 'paid') => moneyBoth(sumK(mI, k), sumK(mA, k));
 
   return (
     <>
@@ -185,9 +195,9 @@ export function Reports() {
             <thead><tr><th>Month</th><th className="n">New principal invested</th><th className="n">Returns earned (net)</th><th className="n">Returns paid</th></tr></thead>
             <tbody>
               {monthly.slice().reverse().map(m => (
-                <tr key={m.month}><td>{monthLabel(m.month)} {m.month.slice(0, 4)}</td><td className="n">{money(m.invested)}</td><td className={'n' + (Number(m.accrued) < 0 ? ' neg' : '')}>{money(m.accrued)}</td><td className="n">{money(m.paid)}</td></tr>
+                <tr key={m.month}><td>{monthLabel(m.month)} {m.month.slice(0, 4)}</td><td className="n">{at('invested', m.month)}</td><td className={'n' + (Number(m.accrued) < 0 ? ' neg' : '')}>{at('accrued', m.month)}</td><td className="n">{at('paid', m.month)}</td></tr>
               ))}
-              <tr><td><b>Total</b></td><td className="n"><b>{money(tot.invested)}</b></td><td className="n"><b>{money(tot.accrued)}</b></td><td className="n"><b>{money(tot.paid)}</b></td></tr>
+              <tr><td><b>Total</b></td><td className="n"><b>{tot('invested')}</b></td><td className="n"><b>{tot('accrued')}</b></td><td className="n"><b>{tot('paid')}</b></td></tr>
             </tbody>
           </table></div>
         ) : <div className="card-b"><Empty title="No activity yet">Monthly totals appear once investments are activated and returns accrue.</Empty></div>}

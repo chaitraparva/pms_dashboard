@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { useQuery } from '../lib/useQuery';
-import { money, date, rateShort } from '../lib/format';
+import { date, rateShort, moneyOf, moneyBoth, sumBoth } from '../lib/format';
 import { loadNetwork, type Network, type NetInvestment, type NetInvestor } from '../lib/networkApi';
 import { Badge, Empty, ErrorNote, Kpi, Loading, PageHead } from '../ui/kit';
 
@@ -42,8 +42,11 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
   }
 
   const allInv = d.investors.flatMap(p => p.investments);
-  const unpaid = r2(d.bonuses.filter(b => b.status === 'accrued').reduce((s, b) => s + b.amount, 0));
-  const paid = r2(d.bonuses.filter(b => b.status === 'paid').reduce((s, b) => s + b.amount, 0));
+  // each person's money in their own currency (AED investors in AED); totals keep INR and AED apart
+  const idOf = (code: string) => d.investors.find(p => p.code === code)?.id;
+  const two = <T,>(rows: T[], amt: (r: T) => number, id: (r: T) => string | undefined) => { const [i, a] = sumBoth(rows, amt, id); return moneyBoth(i, a); };
+  const unpaidRows = d.bonuses.filter(b => b.status === 'accrued'), unpaid = r2(unpaidRows.reduce((s, b) => s + b.amount, 0));
+  const paid = two(d.bonuses.filter(b => b.status === 'paid'), b => b.amount, b => idOf(b.investor_code));
   const bonusRows = allBonus ? d.bonuses : d.bonuses.slice(0, 8);
 
   return (
@@ -57,9 +60,9 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
 
       <div className="kpis k4">
         <Kpi label="My sub-investors" value={d.investors.length} sub={`${d.investors.filter(p => p.investments.some(i => LIVE.includes(i.status))).length} with live investments`} />
-        <Kpi label="Their total investment" value={money(d.investors.reduce((s, p) => s + livePrincipal(p), 0))} sub={`${allInv.filter(i => LIVE.includes(i.status)).length} live investments`} />
-        <Kpi label="My bonus per month" value={money(monthlyBonus(allInv))} sub="from live investments" />
-        <Kpi label="Bonus received" cls="pos" value={money(paid)} sub={unpaid ? `${money(unpaid)} still to be paid` : 'nothing pending'} />
+        <Kpi label="Their total investment" value={two(d.investors, p => livePrincipal(p), p => p.id)} sub={`${allInv.filter(i => LIVE.includes(i.status)).length} live investments`} />
+        <Kpi label="My bonus per month" value={two(d.investors, p => monthlyBonus(p.investments), p => p.id)} sub="from live investments" />
+        <Kpi label="Bonus received" cls="pos" value={paid} sub={unpaid ? `${two(unpaidRows, b => b.amount, b => idOf(b.investor_code))} still to be paid` : 'nothing pending'} />
       </div>
 
       <div className="card">
@@ -72,9 +75,9 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
                 <tr style={{ cursor: 'pointer' }} onClick={() => setOpen(open === p.id ? null : p.id)}>
                   <td><b>{p.name}</b><span className="sub">{p.code} · {p.phone || p.email}</span></td>
                   <td><PersonStatus p={p} /></td>
-                  <td className="n">{money(livePrincipal(p))}<span className="sub">{p.investments.length} investment{p.investments.length === 1 ? '' : 's'}</span></td>
-                  <td className="n">{money(monthlyBonus(p.investments))}</td>
-                  <td className="n">{money(earned(p.investments))}<span className="sub">{money(earnedPaid(p.investments))} received</span></td>
+                  <td className="n">{moneyOf(livePrincipal(p), p.id)}<span className="sub">{p.investments.length} investment{p.investments.length === 1 ? '' : 's'}</span></td>
+                  <td className="n">{moneyOf(monthlyBonus(p.investments), p.id)}</td>
+                  <td className="n">{moneyOf(earned(p.investments), p.id)}<span className="sub">{moneyOf(earnedPaid(p.investments), p.id)} received</span></td>
                   <td className="n"><Link to={'/portal/network/' + p.id} onClick={e => e.stopPropagation()}>Details ›</Link> <span className="muted">{open === p.id ? '▴' : '▾'}</span></td>
                 </tr>
                 {open === p.id && (
@@ -86,11 +89,11 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
                           <tr key={i.id}>
                             <td className="mono">{i.code}</td>
                             <td>{i.plan_name}<span className="sub">{i.lockin_months ? i.lockin_months + ' months lock-in' : 'No lock-in'}</span></td>
-                            <td className="n">{money(i.principal)}</td>
+                            <td className="n">{moneyOf(i.principal, p.id)}</td>
                             <td>{rateShort(i.investor_rate)} to them · <b>{rateShort(i.bonus_rate)} to you</b></td>
                             <td>{i.start_date ? date(i.start_date) : <span className="muted">Not started</span>}{i.maturity_date && <span className="sub">matures {date(i.maturity_date)}</span>}</td>
-                            <td className="n">{money(i.bonus_monthly)}</td>
-                            <td className="n">{money(i.bonus_earned)}</td>
+                            <td className="n">{moneyOf(i.bonus_monthly, p.id)}</td>
+                            <td className="n">{moneyOf(i.bonus_earned, p.id)}</td>
                             <td><InvStatus s={i.status} /></td>
                           </tr>
                         ))}</tbody>
@@ -115,7 +118,7 @@ export function MyNetwork({ page = false }: { page?: boolean }) {
                 <td>{b.investor_name}<span className="sub">{b.investor_code}</span></td>
                 <td className="mono">{b.investment_code}</td>
                 <td>{rateShort(b.rate)}</td>
-                <td className="n">{money(b.amount)}</td>
+                <td className="n">{moneyOf(b.amount, idOf(b.investor_code))}</td>
                 <td>{b.status === 'paid' ? <Badge cls="b-green">Received{b.paid_on ? ' ' + date(b.paid_on) : ''}</Badge> : <Badge cls="b-amber">To be paid</Badge>}</td>
               </tr>
             ))}</tbody>

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useAuth, useSettings } from '../lib/auth';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { money, date, rateShort, today, displayCurrency } from '../lib/format';
+import { date, rateShort, today, moneyIn, moneyOf, isAedInvestor } from '../lib/format';
 import { uploadAttachment } from '../lib/docs';
 import type { Investment, MyAccount, Withdrawal, WithdrawalMethod, WithdrawalPart } from '../lib/types';
 import { Badge, Empty, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -44,8 +44,9 @@ export function Withdraw() {
   const [amount, setAmount] = useState('');
   // the amount can be typed in AED (converted at the AED rate, saved in INR); AED investors start in AED
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
-  // typed in the person's own currency (AED investors in AED), no switch and no rate shown
-  const amtCur: AmtCur = displayCurrency() === 'AED' && aedRate > 0 ? 'AED' : 'INR';
+  // everything here is in the currency of the person it is for (AED investors in AED), typed the same way; no rate shown
+  const amtCur: AmtCur = isAedInvestor(forId) && aedRate > 0 ? 'AED' : 'INR';
+  const money = (v: number | string | null | undefined) => moneyIn(v, amtCur);
   const [method, setMethod] = useState<WithdrawalMethod>('bank');
   const [pay, setPay] = useState<PayDetails>(emptyPay());
   const [note, setNote] = useState('');
@@ -115,7 +116,7 @@ export function Withdraw() {
           <Field label="Withdraw for">
             <div className="chips">
               <button type="button" className={'chip ' + (forMe ? 'on' : '')} onClick={() => { setForId(me); setAmount(''); }}>Myself</button>
-              {acc.subs.map(s => <button key={s.id} type="button" className={'chip ' + (forId === s.id ? 'on' : '')} onClick={() => { setForId(s.id); setAmount(''); }}>{s.full_name}<span className="muted"> · {money(s.available)}</span></button>)}
+              {acc.subs.map(s => <button key={s.id} type="button" className={'chip ' + (forId === s.id ? 'on' : '')} onClick={() => { setForId(s.id); setAmount(''); }}>{s.full_name}<span className="muted"> · {moneyOf(s.available, s.id)}</span></button>)}
             </div>
             <p className="hint">As their IB you can request withdrawals for the sub-investors under you. They are notified too.</p>
           </Field>
@@ -180,9 +181,9 @@ export function Withdraw() {
                 <td className="mono">{w.code}</td>
                 {acc && acc.subs.length > 0 && <td>{whoName(w.investor_id)}</td>}
                 <td>{date(w.requested_on)}</td>
-                <td className="n">{money(w.amount)}</td>
+                <td className="n">{moneyOf(w.amount, w.investor_id)}</td>
                 <td>{methodText(w.method)}{w.method !== 'ib' && payText(w).includes(' · ') && <span className="sub mono">{payText(w).split(' · ').slice(1).join(' · ')}</span>}</td>
-                <td>{(w.allocations || []).map(p => `${p.code} (${rateShort(p.rate)}): ${money(p.amount)}`).join(', ')}</td>
+                <td>{(w.allocations || []).map(p => `${p.code} (${rateShort(p.rate)}): ${moneyOf(p.amount, w.investor_id)}`).join(', ')}</td>
                 <td><AttachmentLinks items={w.attachments} /></td>
                 <td><WdBadge s={w.status} />{w.status === 'completed' && <span className="sub">{w.method === 'ib' ? 'approved' : 'paid'} {date(w.completed_on)}{w.payment_ref ? ' · ' + w.payment_ref : ''}</span>}{w.status === 'cancelled' && w.cancelled_reason && <span className="sub">{w.cancelled_reason}</span>}</td>
                 <td>{w.status === 'pending' && <span style={{ display: 'inline-flex', gap: 6 }}><button className="btn sm" onClick={() => setEditing(w)}>Edit</button><button className="btn sm danger" onClick={() => setDel(w)}>Delete</button></span>}</td>
@@ -208,7 +209,7 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
   const act = useAction();
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
   // in the currency the page is shown in (AED for AED investors); the Super Admin can also switch
-  const [amtCur, setAmtCur] = useState<AmtCur>(displayCurrency() === 'AED' && aedRate > 0 ? 'AED' : 'INR');
+  const [amtCur, setAmtCur] = useState<AmtCur>(isAedInvestor(w.investor_id) && aedRate > 0 ? 'AED' : 'INR');
   const initTxt = amtCur === 'AED' ? String(Math.round(Number(w.amount) / aedRate * 100) / 100) : String(w.amount);
   const [amount, setAmount] = useState(initTxt);
   const [method, setMethod] = useState<WithdrawalMethod>(w.method);
@@ -227,7 +228,7 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
   const ways: [PayMethod, string][] = [['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5'], ...(hasIb ? [['ib', ibLabel] as [PayMethod, string]] : [])];
   const go = async () => {
     const r = await act.run(() => rpc('update_withdrawal', { p_id: w.id, p_amount: amt, p_method: method, ...payArgs(method, pay), p_note: note.trim(),
-      ...(admin ? { p_date: on, p_paid: paid, p_paid_on: paid ? (paidOn || on) : '', p_ref: ref.trim() } : {}) }), ['Withdrawal updated', `${w.code} · ${money(amt)}`]);
+      ...(admin ? { p_date: on, p_paid: paid, p_paid_on: paid ? (paidOn || on) : '', p_ref: ref.trim() } : {}) }), ['Withdrawal updated', `${w.code} · ${moneyOf(amt, w.investor_id)}`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
@@ -264,7 +265,7 @@ export function DeleteWithdrawal({ w, who, onClose }: { w: Withdrawal; who: stri
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title={`Delete ${w.code}?`} sub={`${money(w.amount)}${who ? ' · ' + who : ''}. The amount goes back into the investments it was taken from${w.status === 'completed' ? ' (this withdrawal was already paid)' : ''}, and returns are recalculated from ${date(w.requested_on)}. This cannot be undone.`} onClose={onClose}
+    <Modal title={`Delete ${w.code}?`} sub={`${moneyOf(w.amount, w.investor_id)}${who ? ' · ' + who : ''}. The amount goes back into the investments it was taken from${w.status === 'completed' ? ' (this withdrawal was already paid)' : ''}, and returns are recalculated from ${date(w.requested_on)}. This cannot be undone.`} onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Keep</button><button className="btn danger" onClick={go} disabled={act.busy}>{act.busy ? 'Deleting…' : 'Delete withdrawal'}</button></>} />
   );
 }

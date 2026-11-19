@@ -4,9 +4,9 @@ import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery } from '../lib/useQuery';
 import { useAuth, useSettings } from '../lib/auth';
 import { downloadCsv } from '../lib/csv';
-import { money, moneyShort, date, today, addMonths, lockinText, rateShort, investmentLabel } from '../lib/format';
+import { money, moneyShort, date, today, addMonths, lockinText, rateShort, investmentLabel, moneyBoth, moneyOf } from '../lib/format';
 import type { Branch, Dashboard, Investment, Profile, LedgerEntry, Balance } from '../lib/types';
-import { BranchCard, rateColor, withStandardRates } from './Branches';
+import { BranchCard, rateColor, withStandardRates, both, mergeRates, splitBranches } from './Branches';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, Badge, useAction } from '../ui/kit';
 import { BarChart, Donut, CHART_COLORS, monthLabel } from '../ui/Charts';
 import { Icon } from '../ui/Icon';
@@ -118,21 +118,27 @@ export function Overview() {
   /* ---------- pending actions from real data ---------- */
   const pbs = d.payouts_by_status || {};
   const cnt = (k: string) => Number(pbs[k]?.count || 0);
-  const amt = (k: string) => Number(pbs[k]?.amount || 0);
+  // payout amounts: INR investors and, apart, AED investors
+  const amt = (k: string) => d.inr ? moneyBoth(d.inr.payouts_by_status?.[k]?.amount, d.aed?.payouts_by_status?.[k]?.amount) : money(pbs[k]?.amount || 0);
   const actions: ActionItem[] = [];
-  if (cnt('failed')) actions.push({ tag: 'Payouts', cls: 'b-red', text: `${cnt('failed')} failed payout${cnt('failed') === 1 ? '' : 's'} need a retry · ${money(amt('failed'))}`, to: '/admin/payouts' });
-  if (cnt('processing')) actions.push({ tag: 'Payouts', text: `${cnt('processing')} payout${cnt('processing') === 1 ? '' : 's'} waiting for payment confirmation · ${money(amt('processing'))}`, to: '/admin/payouts' });
-  if (cnt('approved')) actions.push({ tag: 'Payouts', text: `${cnt('approved')} approved payout${cnt('approved') === 1 ? '' : 's'} waiting to be sent · ${money(amt('approved'))}`, to: '/admin/payouts' });
-  if (cnt('accrued')) actions.push({ tag: 'Payouts', cls: 'b-grey', text: `${cnt('accrued')} earned return${cnt('accrued') === 1 ? '' : 's'} awaiting approval · ${money(amt('accrued'))}`, to: '/admin/payouts' });
-  if (d.unassigned_investors && !branch) actions.push({ tag: 'Branch', text: `${d.unassigned_investors} investor${d.unassigned_investors === 1 ? '' : 's'} without a branch · ${money(d.unassigned_principal)} principal`, to: '/admin/investors?branch=none' });
-  pendRows.forEach(i => actions.push({ tag: 'Funding', text: `${i.code} awaiting deposit confirmation · ${names[i.investor_id]?.full_name || ''} · ${money(i.principal)}`, to: '/admin/investments/' + i.code }));
+  if (cnt('failed')) actions.push({ tag: 'Payouts', cls: 'b-red', text: `${cnt('failed')} failed payout${cnt('failed') === 1 ? '' : 's'} need a retry · ${amt('failed')}`, to: '/admin/payouts' });
+  if (cnt('processing')) actions.push({ tag: 'Payouts', text: `${cnt('processing')} payout${cnt('processing') === 1 ? '' : 's'} waiting for payment confirmation · ${amt('processing')}`, to: '/admin/payouts' });
+  if (cnt('approved')) actions.push({ tag: 'Payouts', text: `${cnt('approved')} approved payout${cnt('approved') === 1 ? '' : 's'} waiting to be sent · ${amt('approved')}`, to: '/admin/payouts' });
+  if (cnt('accrued')) actions.push({ tag: 'Payouts', cls: 'b-grey', text: `${cnt('accrued')} earned return${cnt('accrued') === 1 ? '' : 's'} awaiting approval · ${amt('accrued')}`, to: '/admin/payouts' });
+  if (d.unassigned_investors && !branch) actions.push({ tag: 'Branch', text: `${d.unassigned_investors} investor${d.unassigned_investors === 1 ? '' : 's'} without a branch · ${both(d, 'unassigned_principal', false)} principal`, to: '/admin/investors?branch=none' });
+  pendRows.forEach(i => actions.push({ tag: 'Funding', text: `${i.code} awaiting deposit confirmation · ${names[i.investor_id]?.full_name || ''} · ${moneyOf(i.principal, i.investor_id)}`, to: '/admin/investments/' + i.code }));
   kycRows.forEach(p => actions.push({ tag: 'KYC', text: `${p.full_name || p.code} awaiting verification`, to: '/admin/investors/' + p.code }));
 
-  const months = d.monthly || [];
+  // charts draw INR investors only; AED investors' figures are shown apart in AED (never added to INR)
+  const DI = d.inr || d;
+  const months = DI.monthly || [];
   const labels = months.map(m => monthLabel(m.month));
-  const byPlan = (d.by_plan || []).map((p, i) => ({ name: p.plan, value: Number(p.principal), color: CHART_COLORS[i % CHART_COLORS.length] }));
-  const rates = withStandardRates(d.by_rate || []).filter(r => Number(r.investors) > 0);
-  const br = d.by_branch || [];
+  const byPlan = (DI.by_plan || []).map((p, i) => ({ name: p.plan, value: Number(p.principal), color: CHART_COLORS[i % CHART_COLORS.length] }));
+  const rates = mergeRates(d, withStandardRates(d.by_rate || []).filter(r => Number(r.investors) > 0));
+  const br = splitBranches(d);
+  const aedM = d.aed?.monthly || [];
+  const aedTot = (k: 'accrued' | 'paid' | 'invested') => moneyBoth(0, aedM.reduce((x, m) => x + Number(m[k] || 0), 0));
+  const hasAed = !!d.aed && Number(d.aed.principal_invested) > 0;
   const brLabels = br.map(b => b.name);
   const branchCode = branchRow ? '&branch=' + branchRow.code : '';
   const lock = d.by_lockin || [];
@@ -167,12 +173,12 @@ export function Overview() {
         <div className="card"><div className="card-h"><h3>Investors by branch</h3><div className="r hint">Click a branch to open it</div></div><div className="card-b">
           <Donut label="Investors in each branch" fmt={v => `${v} investor${v === 1 ? '' : 's'}`} center1="Investors" center2={String((d.by_branch || []).reduce((n, b) => n + Number(b.investors), 0))}
             onPart={ix => nav('/admin/branches/' + d.by_branch[ix].code)}
-            parts={(d.by_branch || []).map((b, i) => ({ name: b.name, value: Number(b.investors), color: ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)'][i % 3], sub: moneyShort(Number(b.principal)) + ' invested' }))} />
+            parts={br.map((b, i) => ({ name: b.name, value: Number(b.investors), color: ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)'][i % 3], sub: moneyBoth(b.principal, b.aed?.principal, true) + ' invested' }))} />
         </div></div>
         <div className="card"><div className="card-h"><h3>Principal by branch</h3><div className="r hint">Click a branch to open it</div></div><div className="card-b">
-          <Donut label="Principal invested in each branch" fmt={moneyShort} center1="Principal" center2={moneyShort(Number(d.principal_invested))}
+          <Donut label="Principal invested in each branch (INR investors)" fmt={moneyShort} center1="Principal · INR" center2={moneyShort(Number(DI.principal_invested))}
             onPart={ix => nav('/admin/branches/' + d.by_branch[ix].code)}
-            parts={(d.by_branch || []).map((b, i) => ({ name: b.name, value: Number(b.principal), color: ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)'][i % 3], sub: `${moneyShort(Number(b.unlocked))} unlocked` }))} />
+            parts={br.map((b, i) => ({ name: b.name, value: Number(b.principal), color: ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)'][i % 3], sub: `${moneyShort(Number(b.unlocked))} unlocked${Number(b.aed?.principal) ? ' · AED investors ' + moneyBoth(0, b.aed?.principal, true) : ''}` }))} />
         </div></div>
       </div>
 
@@ -202,15 +208,15 @@ export function Overview() {
           <div className="r legend"><span><i style={{ background: 'var(--chart-1)' }} />Principal</span><span><i style={{ background: 'var(--chart-3)' }} />Returns</span></div></div>
           <div className="card-b">
             {br.some(b => Number(b.principal) > 0 || Number(b.accrued) > 0)
-              ? <BarChart labels={brLabels} w={420} h={220} label="Principal and returns by branch" fmt={fmtAxis} tipFmt={money} onBar={i => nav('/admin/branches/' + br[i].code)}
+              ? <BarChart labels={brLabels} w={420} h={220} label="Principal and returns by branch (INR investors)" fmt={fmtAxis} tipFmt={money} onBar={i => nav('/admin/branches/' + br[i].code)}
                   series={[{ name: 'Principal invested', color: 'var(--chart-1)', values: br.map(b => Number(b.principal)) }, { name: 'Returns accrued', color: 'var(--chart-3)', values: br.map(b => Number(b.accrued)) }]} />
               : <Empty title="No branch figures yet">Assign investors to a branch and confirm deposits to compare branches.</Empty>}
-            <p className="hint" style={{ marginTop: 8 }}>Click a bar to open that branch.</p>
+            <p className="hint" style={{ marginTop: 8 }}>INR investors. {hasAed ? `AED investors: ${br.filter(b => Number(b.aed?.principal)).map(b => b.name + ' ' + moneyBoth(0, b.aed?.principal, true)).join(' · ')}. ` : ''}Click a bar to open that branch.</p>
           </div>
         </div>
         <div className="card"><div className="card-h"><h3>Investors by monthly ROI</h3></div><div className="card-b">
           {rates.length
-            ? <Donut parts={rates.map((r, i) => ({ name: `${rateShort(r.rate)} monthly`, value: Number(r.investors), color: rateColor(r.rate, i), sub: moneyShort(r.principal) }))}
+            ? <Donut parts={rates.map((r, i) => ({ name: `${rateShort(r.rate)} monthly`, value: Number(r.investors), color: rateColor(r.rate, i), sub: moneyBoth(r.principal, r.aed_principal, true) }))}
                 fmt={v => `${v} investor${v === 1 ? '' : 's'}`} center1="Investors" center2={String(d.investors_with_investments)} label="Investors across the ROI plans"
                 onPart={ix => nav('/admin/investments?rate=' + rates[ix].rate + branchCode)} />
             : <Empty title="No live investments yet">'The split by ROI appears once investments are recorded.'</Empty>}
@@ -224,7 +230,7 @@ export function Overview() {
                   onBar={(i, j) => nav(`/admin/investments?branch=${br[i].code}&f=${j === 0 ? 'locked' : 'unlocked'}`)}
                   series={[{ name: 'Locked', color: 'var(--violet)', values: br.map(b => Number(b.locked)) }, { name: 'Unlocked', color: 'var(--green)', values: br.map(b => Number(b.unlocked)) }]} />
               : <Empty title="No live principal yet">Principal appears here once a deposit is confirmed for an investor with a branch.</Empty>}
-            <p className="hint" style={{ marginTop: 8 }}>All branches: {moneyShort(d.locked_principal)} locked · {moneyShort(d.unlocked_principal)} unlocked{Number(d.unassigned_principal) && !branch ? ` (incl. ${moneyShort(d.unassigned_principal)} without a branch)` : ''}. Click a bar to list those investments.</p>
+            <p className="hint" style={{ marginTop: 8 }}>Bars: INR investors. All branches: {both(d, 'locked_principal')} locked · {both(d, 'unlocked_principal')} unlocked{Number(d.unassigned_principal) && !branch ? ` (incl. ${both(d, 'unassigned_principal')} without a branch)` : ''}. Click a bar to list those investments.</p>
           </div>
         </div>
       </div>
@@ -241,7 +247,8 @@ export function Overview() {
             </div>
             <div className="legend" style={{ width: '100%', justifyContent: 'flex-end' }}><span><i style={{ background: 'var(--chart-1)' }} />Earned</span><span><i style={{ background: 'var(--green)' }} />Paid</span></div></div>
           <div className="card-b">
-            <BarChart labels={labels} label="Earned vs paid returns by month" fmt={fmtAxis} tipFmt={money}
+            {hasAed && <p className="hint" style={{ marginBottom: 6 }}>Bars: INR investors. AED investors in this period: {aedTot('accrued')} earned · {aedTot('paid')} paid.</p>}
+            <BarChart labels={labels} label="Earned vs paid returns by month (INR investors)" fmt={fmtAxis} tipFmt={money}
               series={[{ name: 'Earned', color: 'var(--chart-1)', values: months.map(m => Number(m.accrued)) }, { name: 'Paid', color: 'var(--green)', values: months.map(m => Number(m.paid)) }]} />
           </div>
         </div>
@@ -260,12 +267,13 @@ export function Overview() {
 
       <div className="grid g-1-1-1">
         <div className="card"><div className="card-h"><h3>Monthly investment volume</h3></div><div className="card-b">
-          <BarChart labels={labels} w={420} h={200} label="New principal by month" fmt={fmtAxis} tipFmt={money}
+          {hasAed && <p className="hint" style={{ marginBottom: 6 }}>INR investors. AED investors: {aedTot('invested')} new principal in this period.</p>}
+          <BarChart labels={labels} w={420} h={200} label="New principal by month (INR investors)" fmt={fmtAxis} tipFmt={money}
             series={[{ name: 'New principal', color: 'var(--chart-2)', values: months.map(m => Number(m.invested)) }]} />
         </div></div>
         <div className="card"><div className="card-h"><h3>Principal by plan</h3></div><div className="card-b">
           {byPlan.length && byPlan.some(p => p.value > 0)
-            ? <Donut parts={byPlan} fmt={moneyShort} center1="Total" center2={moneyShort(d.principal_invested)} label="Principal by plan" />
+            ? <Donut parts={byPlan} fmt={moneyShort} center1="Total · INR" center2={moneyShort(DI.principal_invested)} label="Principal by plan (INR investors)" />
             : <Empty title="No live principal yet">'Principal appears here once an investment is recorded.'</Empty>}
         </div></div>
         <div className="card"><div className="card-h"><h3>6-month and 1-year lock-ins</h3></div><div className="card-b" style={{ display: 'grid', gap: 14 }}>
@@ -277,8 +285,9 @@ export function Overview() {
                   <span>{lockinText(l.months)} lock-in</span>
                   <b className="num" style={{ fontWeight: 500 }}>{l.count} investment{Number(l.count) === 1 ? '' : 's'} · {Math.round(p)}%</b>
                 </div>
-                <div className="hbar" title={money(l.principal)}><div style={{ width: `${p}%` }} /></div>
-                <div className="hint" style={{ marginTop: 4 }}>{money(l.principal)} · {money(l.unlocked)} unlocked</div>
+                {(() => { const li = d.inr?.by_lockin.find(x => x.months === l.months), la = d.aed?.by_lockin.find(x => x.months === l.months);
+                  const pr = d.inr ? moneyBoth(li?.principal, la?.principal) : money(l.principal), un = d.inr ? moneyBoth(li?.unlocked, la?.unlocked) : money(l.unlocked);
+                  return <><div className="hbar" title={pr}><div style={{ width: `${p}%` }} /></div><div className="hint" style={{ marginTop: 4 }}>{pr} · {un} unlocked</div></>; })()}
               </div>
             );
           }) : <Empty title="No live investments">The split by lock-in appears once investments are active.</Empty>}

@@ -3,8 +3,8 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from '../ui/Icon';
 import { CrumbCtx } from '../ui/kit';
 import { useAuth } from '../lib/auth';
-import { api } from '../lib/api';
-import { dateShort, initials, setDisplayCurrency } from '../lib/format';
+import { api, fetchAll } from '../lib/api';
+import { dateShort, initials, setDisplayCurrency, setAedInvestors } from '../lib/format';
 import { onRefresh, refreshAll } from '../lib/useQuery';
 import type { Notification } from '../lib/types';
 
@@ -32,6 +32,16 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
   const rate = Number(settings?.inr_per_aed || 0);
   const shown: 'INR' | 'AED' = !admin && profile?.currency === 'AED' && rate > 0 ? 'AED' : 'INR';
   setDisplayCurrency(shown, rate);
+  // who is in AED (their amounts are shown in AED on every page); pages are drawn again once it is known
+  const [aedN, setAedN] = useState(-1);
+  useEffect(() => {
+    if (!profile) return;
+    let live = true;
+    fetchAll<{ id: string }>((a, b) => api.from('profiles').select('id').eq('currency', 'AED').range(a, b))
+      .then(rows => { if (!live) return; setAedInvestors(rows.map(r => r.id), rate); setAedN(rows.length); })
+      .catch(() => { if (live) setAedN(0); });
+    return () => { live = false; };
+  }, [profile, rate]);
   const navTo = useNavigate();
   const loc = useLocation();
   const [crumbs, setCrumbs] = useState<string[]>([]);
@@ -130,7 +140,7 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
               )}
             </div>
           </header>
-          <main key={shown + rate} className={'content' + (profile?.read_only ? ' ro' : '')} ref={roMark}>
+          <main key={shown + rate + ':' + aedN} className={'content' + (profile?.read_only ? ' ro' : '')} ref={roMark}>
             {profile?.read_only && <div className="note info" style={{ marginBottom: 14 }}><b>CRM login · read only.</b> You can see every page and option, but nothing can be added, accepted, edited or deleted.</div>}
             <Outlet />
           </main>

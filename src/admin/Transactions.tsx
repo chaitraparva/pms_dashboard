@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, fetchAll } from '../lib/api';
 import { useQuery } from '../lib/useQuery';
-import { money, date, today, LEDGER_TYPE } from '../lib/format';
+import { date, today, LEDGER_TYPE, moneyOf, csvAmount, curCode } from '../lib/format';
 import { downloadCsv } from '../lib/csv';
 import type { LedgerEntry } from '../lib/types';
 import { LedgerBadge, ErrorNote, Loading, PageHead, IconBtn } from '../ui/kit';
@@ -45,8 +45,8 @@ export function Transactions() {
   const rows = useMemo(() => all.filter(r => (!from || r.occurred_on >= from) && (!to || r.occurred_on <= to)), [all, from, to]);
 
   const exportCsv = () => downloadCsv(`ledger-${from || 'start'}-to-${to || today()}`,
-    ['Transaction', 'Date', 'Type', 'Investment', 'Investor ID', 'Investor', 'Amount', 'Status', 'Reference', 'Note', 'Created by', 'Recorded at'],
-    rows.map(r => [r.code, r.occurred_on, LEDGER_TYPE[r.type] || r.type, r.inv?.code, r.investor?.code, nameOf(r.investor), Number(r.amount).toFixed(2), r.status,
+    ['Transaction', 'Date', 'Type', 'Investment', 'Investor ID', 'Investor', 'Currency', 'Amount', 'Status', 'Reference', 'Note', 'Created by', 'Recorded at'],
+    rows.map(r => [r.code, r.occurred_on, LEDGER_TYPE[r.type] || r.type, r.inv?.code, r.investor?.code, nameOf(r.investor), curCode(r.investor_id), csvAmount(r.amount, r.investor_id), r.status,
       r.reference, r.note, r.createdBy ? nameOf(r.createdBy) : 'System', r.created_at]));
 
   const cols: Col<Row>[] = [
@@ -55,7 +55,7 @@ export function Transactions() {
     { h: 'Type', v: r => LEDGER_TYPE[r.type] || r.type },
     { h: 'Investment', v: r => r.inv?.code, r: r => r.inv ? <Link className="mono" to={`/admin/investments/${r.inv.code}`}>{r.inv.code}</Link> : <span className="muted">—</span> },
     { h: 'Investor', v: r => nameOf(r.investor), r: r => r.investor?.code ? <><Link to={`/admin/investors/${r.investor.code}`}>{nameOf(r.investor)}</Link><span className="sub">{r.investor.code}</span></> : <span className="muted">—</span> },
-    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => <span className={Number(r.amount) < 0 ? 'neg' : ''}>{money(r.amount)}</span> },
+    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => <span className={Number(r.amount) < 0 ? 'neg' : ''}>{moneyOf(r.amount, r.investor_id)}</span> },
     { h: 'Status', v: r => r.status, r: r => <LedgerBadge s={r.status} /> },
     { h: 'Reference', v: r => r.reference, r: r => r.reference ? <span className="mono muted">{r.reference}</span> : <span className="muted">—</span> },
     { h: 'Note', v: r => r.note, r: r => <span className="muted">{r.note || '—'}</span> }

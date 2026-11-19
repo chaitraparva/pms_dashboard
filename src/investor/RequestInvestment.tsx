@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useAuth, useSettings } from '../lib/auth';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { money, date, dateTime, lockinText, today, addMonths, displayCurrency } from '../lib/format';
+import { date, dateTime, lockinText, today, addMonths, moneyIn, moneyOf, moneyBoth, sumBoth, isAedInvestor } from '../lib/format';
 import { uploadAttachment } from '../lib/docs';
 import type { InvestmentRequest } from '../lib/types';
 import { Badge, Empty, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -42,7 +42,6 @@ export function RequestInvestment() {
   const [amount, setAmount] = useState('');
   // the amount can be typed in AED (converted at the AED rate, saved in INR); AED investors start in AED
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
-  const amtCur: AmtCur = displayCurrency() === 'AED' && aedRate > 0 ? 'AED' : 'INR';
   const [lock, setLock] = useState('12');
   const [customLock, setCustomLock] = useState('');
   const [start, setStart] = useState(today());
@@ -59,6 +58,10 @@ export function RequestInvestment() {
   const subs = acc?.subs || [];
   const isNew = forWho === 'sub' && subId === 'new';
   const months = lock === 'custom' ? Number(customLock) : Number(lock);
+  // in the currency of the person it is for (a new sub-investor: mine), typed the same way; no rate shown
+  const forPerson = forWho === 'sub' && subId && subId !== 'new' ? subId : me;
+  const amtCur: AmtCur = isAedInvestor(forPerson) && aedRate > 0 ? 'AED' : 'INR';
+  const money = (v: number | string | null | undefined) => moneyIn(v, amtCur);
   const amt = toInr(amount, amtCur, aedRate);
   const digits = newPhone.replace(/\D/g, '').slice(-10);
   const errs: Record<string, string | null> = {
@@ -95,8 +98,8 @@ export function RequestInvestment() {
     <>
       <PageHead crumbs={['Request investment']} title="Request investment" sub={isIb ? 'Request an investment for yourself or for one of your sub-investors. The company sets the monthly ROI and approves it.' : 'Request a new investment. The company sets the monthly ROI and approves it; it then shows under My Investments.'} />
       <div className="kpis k4">
-        <Kpi label="Waiting for approval" value={money(pending.reduce((s, r) => s + Number(r.amount), 0))} sub={`${pending.length} request${pending.length === 1 ? '' : 's'}`} subCls={pending.length ? 'warn' : ''} />
-        <Kpi label="Approved" cls="pos" value={money(reqs.filter(r => r.status === 'approved').reduce((s, r) => s + Number(r.amount), 0))} sub={`${reqs.filter(r => r.status === 'approved').length} now investments`} />
+        <Kpi label="Waiting for approval" value={moneyBoth(...sumBoth(pending, r => Number(r.amount), r => r.investor_id || me))} sub={`${pending.length} request${pending.length === 1 ? '' : 's'}`} subCls={pending.length ? 'warn' : ''} />
+        <Kpi label="Approved" cls="pos" value={moneyBoth(...sumBoth(reqs.filter(r => r.status === 'approved'), r => Number(r.amount), r => r.investor_id || me))} sub={`${reqs.filter(r => r.status === 'approved').length} now investments`} />
         {isIb && <Kpi label="My sub-investors" value={subs.length} sub="you can request for them" />}
       </div>
       <div className="grid g-2-1">
@@ -165,7 +168,7 @@ export function RequestInvestment() {
               <tr key={r.id}>
                 <td className="mono">{r.code}<span className="sub">{dateTime(r.created_at)}</span></td>
                 {isIb && <td>{nameOf(r)}{!r.investor_id && <span className="sub">new sub-investor</span>}</td>}
-                <td className="n">{money(r.amount)}</td>
+                <td className="n">{moneyOf(r.amount, r.investor_id || me)}</td>
                 <td>{lockinText(r.lockin_months)}</td>
                 <td>{date(r.start_date)}</td>
                 <td><AttachmentLinks items={r.attachments} /></td>

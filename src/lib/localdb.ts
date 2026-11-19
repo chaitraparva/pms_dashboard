@@ -242,7 +242,10 @@ export function attachmentVisible(path: string): boolean {
 const actorName = (id: string | null) => { const p = T('profiles').find(x => x.id === id); return p ? (p.full_name || p.email) : 'System'; };
 const settings = () => T('settings')[0];
 
-function fmtMoney(v: number): string {
+/** Money in words for notifications: in AED for an investor set to AED (their amounts are AED × the fixed rate), else INR. */
+function fmtMoney(v: number, investorId?: string | null, cur?: string | null): string {
+  const aed = cur ? cur === 'AED' : !!investorId && T('profiles').find(p => p.id === investorId)?.currency === 'AED';
+  if (aed) return 'AED ' + (Number(v) / AED_RATE).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const c = ({ INR: '₹', AED: 'AED ', USD: '$', EUR: '€', GBP: '£' } as Record<string, string>)[settings()?.currency] ?? '';
   return c + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -375,21 +378,21 @@ function runAccrualsFor(i: Row, asOf: string, idx?: Map<string, Row[]>): number 
     if (closed) ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_payout', amount: mineAmt, status: 'confirmed', occurred_on: cl!.on, reference: cl!.ref, note: pay.code, source_table: 'payouts', source_id: pay.id });
     const span = fmtDate(p.start) + ' – ' + fmtDate(end) + (p.full ? '' : ' (' + p.days + ' of ' + p.daysInMonth + ' days)');
     ledger({ investment_id: i.id, investor_id: i.investor_id, type: 'return_accrual', amount: mineAmt, status: 'posted', occurred_on: end, reference: i.code + ' · ' + MONTH_NAMES[+end.slice(5, 7) - 1] + ' ' + end.slice(0, 4),
-      note: 'Monthly return ' + (ratesOn(i, p.start).investor === ratesOn(i, end).investor ? ratesOn(i, end).investor.toFixed(2) + '%' : ratesOn(i, p.start).investor.toFixed(2) + '% then ' + ratesOn(i, end).investor.toFixed(2) + '%') + ' on ' + fmtMoney(principalOn(i, p.start)) + ' · ' + span, source_table: 'accruals', source_id: acc.id, created_by: null });
-    if (!closed) notify(i.investor_id, 'accrual', 'Return earned on ' + i.code + ': ' + fmtMoney(mineAmt), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
+      note: 'Monthly return ' + (ratesOn(i, p.start).investor === ratesOn(i, end).investor ? ratesOn(i, end).investor.toFixed(2) + '%' : ratesOn(i, p.start).investor.toFixed(2) + '% then ' + ratesOn(i, end).investor.toFixed(2) + '%') + ' on ' + fmtMoney(principalOn(i, p.start), i.investor_id) + ' · ' + span, source_table: 'accruals', source_id: acc.id, created_by: null });
+    if (!closed) notify(i.investor_id, 'accrual', 'Return earned on ' + i.code + ': ' + fmtMoney(mineAmt, i.investor_id), span + ' · not yet paid', '/portal/investments/' + i.code, 'accruals', acc.id);
     if (bonusAmt > 0) {
       const bon: Row = { id: uuid(), code: 'BON-' + pad(nextSeq('bonus', 1), 6), investment_id: i.id, investor_id: i.investor_id,
         admin_id: T('profiles').find(p2 => p2.id === i.investor_id)?.introduced_by ?? null, accrual_id: acc.id, period_no: k, accrual_date: end, rate: Number(i.admin_bonus_rate),
         amount: bonusAmt, status: closed ? 'paid' : 'accrued', payment_ref: closed ? cl!.ref : null, paid_on: closed ? cl!.on : null, paid_by: null, closed, created_at: nowIso(), updated_at: nowIso() };
       T('admin_bonuses').push(bon);
       // a bonus recalculated for a month the IB already requested stays in that request (paid if the request is paid)
-      const brq = closed || !bon.admin_id ? null : T('roi_requests').find(x => x.kind === 'bonus' && x.investor_id === bon.admin_id && x.status !== 'cancelled' && (x.months || []).includes(end.slice(0, 7)));
+      const brq = closed || !bon.admin_id ? null : T('roi_requests').find(x => x.kind === 'bonus' && x.investor_id === bon.admin_id && x.status !== 'cancelled' && (!x.currency || x.currency === aedCur(i.investor_id)) && (x.months || []).includes(end.slice(0, 7)));
       if (brq) {
         bon.roi_request_id = brq.id;
         const items: Row[] = brq.items || (brq.items = []), m = end.slice(0, 7);
         const it = items.find(x => x.investment_id === i.id && x.month === m && (!x.bonus_id || !T('admin_bonuses').some(y => y.id === x.bonus_id)));
         if (it) Object.assign(it, { bonus_id: bon.id, amount: bonusAmt });
-        else items.push({ bonus_id: bon.id, payout_id: null, investment_id: i.id, code: i.code, investor: T('profiles').find(x => x.id === i.investor_id)?.full_name || '', rate: Number(i.admin_bonus_rate || 0), amount: bonusAmt, month: m });
+        else items.push({ bonus_id: bon.id, payout_id: null, investment_id: i.id, investor_id: i.investor_id, currency: aedCur(i.investor_id), code: i.code, investor: T('profiles').find(x => x.id === i.investor_id)?.full_name || '', rate: Number(i.admin_bonus_rate || 0), amount: bonusAmt, month: m });
         if (brq.status === 'pending') brq.amount = round2(items.reduce((x, y) => x + Number(y.amount), 0));
         if (brq.status === 'completed') Object.assign(bon, { status: 'paid', payment_ref: brq.payment_ref || brq.code, paid_on: brq.completed_on, paid_by: brq.completed_by });
         brq.updated_at = nowIso();
@@ -400,7 +403,7 @@ function runAccrualsFor(i: Row, asOf: string, idx?: Map<string, Row[]>): number 
   if (!i.maturity_date || !LIVE.includes(i.status)) { /* no lock-in (nothing to unlock) or closed */ }
   else if (i.status === 'active' && i.maturity_date <= asOf) {
     i.status = 'matured'; i.updated_at = nowIso();
-    notify(i.investor_id, 'unlocked', 'Principal unlocked on ' + i.code, fmtMoney(i.principal) + ' has completed its ' + i.lockin_months + '-month lock-in.', '/portal/investments?view=unlocked', 'investments', i.id);
+    notify(i.investor_id, 'unlocked', 'Principal unlocked on ' + i.code, fmtMoney(i.principal, i.investor_id) + ' has completed its ' + i.lockin_months + '-month lock-in.', '/portal/investments?view=unlocked', 'investments', i.id);
   } else if (i.status === 'active' && diffDays(asOf, i.maturity_date) <= settings().approaching_days) {
     notify(i.investor_id, 'maturity_reminder', i.code + ' unlocks on ' + fmtDate(i.maturity_date), 'Lock-in ends in ' + diffDays(asOf, i.maturity_date) + ' days.', '/portal/lock-in', 'investments', i.id);
   }
@@ -504,7 +507,7 @@ function activateInvestment(id: string, start: string, ref: string, reason: stri
   Object.assign(v, { status: 'active', start_date: start, lockin_end_date: maturity, maturity_date: maturity, request_from_date: addDays(maturity, -settings().request_window_days), deposit_ref: ref, activated_by: currentUid, activated_at: nowIso(), updated_at: nowIso() });
   ledgerFor('investments', id, 'deposit').forEach(l => Object.assign(l, { status: 'confirmed', reference: ref, occurred_on: start, note: 'Deposit confirmed', updated_at: nowIso() }));
   ledger({ investment_id: id, investor_id: v.investor_id, type: 'allocation', amount: v.principal, status: 'posted', occurred_on: start, reference: v.agreement_ref, note: v.plan_name + ' v' + v.plan_version, source_table: 'investments', source_id: id });
-  notify(v.investor_id, 'investment_active', 'Investment ' + v.code + ' is active', fmtMoney(v.principal) + ' at ' + investorRate(v).toFixed(2) + '% per month · lock-in ends ' + fmtDate(maturity), '/portal/investments/' + v.code, 'investments', id);
+  notify(v.investor_id, 'investment_active', 'Investment ' + v.code + ' is active', fmtMoney(v.principal, v.investor_id) + ' at ' + investorRate(v).toFixed(2) + '% per month · lock-in ends ' + fmtDate(maturity), '/portal/investments/' + v.code, 'investments', id);
   audit('investment.activate', 'investment', id, v.code, reason || 'Deposit confirmed ' + ref, { status: 'pending_funding' }, { status: 'active', start_date: start, maturity_date: maturity });
   runAccrualsFor(v, today());
 }
@@ -530,11 +533,11 @@ function payoutsTransition(ids: string[], to: string, ref: string | null, reason
       const ex = ledgerFor('payouts', p.id, 'return_payout')[0];
       if (ex) Object.assign(ex, { status: 'pending', reference: r, occurred_on: today(), updated_at: nowIso() });
       else ledger({ investment_id: p.investment_id, investor_id: p.investor_id, type: 'return_payout', amount: p.amount, status: 'pending', occurred_on: today(), reference: r, note: p.code, source_table: 'payouts', source_id: p.id });
-      notify(p.investor_id, 'payout_processing', 'Payment processed for ' + code, fmtMoney(p.amount), '/portal/investments/' + code, 'payouts', p.id);
+      notify(p.investor_id, 'payout_processing', 'Payment processed for ' + code, fmtMoney(p.amount, p.investor_id), '/portal/investments/' + code, 'payouts', p.id);
     } else if (to === 'paid') {
       Object.assign(p, { status: 'paid', payment_ref: r, confirmed_by: currentUid, confirmed_at: nowIso(), paid_on: today() });
       ledgerFor('payouts', p.id, 'return_payout').forEach(l => Object.assign(l, { status: 'confirmed', reference: r, occurred_on: today(), updated_at: nowIso() }));
-      notify(p.investor_id, 'payout_paid', 'Payment fulfilled: ' + fmtMoney(p.amount) + ' for ' + code, 'Reference ' + r, '/portal/investments/' + code, 'payouts', p.id);
+      notify(p.investor_id, 'payout_paid', 'Payment fulfilled: ' + fmtMoney(p.amount, p.investor_id) + ' for ' + code, 'Reference ' + r, '/portal/investments/' + code, 'payouts', p.id);
     } else {
       Object.assign(p, { status: 'failed', failure_reason: reason });
       ledgerFor('payouts', p.id, 'return_payout').forEach(l => Object.assign(l, { status: 'failed', note: reason, updated_at: nowIso() }));
@@ -563,10 +566,15 @@ function brochureVisible(id: string, user: string): boolean {
 /* ---------- dashboard ---------- */
 function dashboard(branch: string | null, pFrom: string | null, pTo: string | null) {
   requireAdmin();
+  // AED and INR never added together: the same figures for INR investors only and for AED investors only (AED as saved)
+  const aedIds = new Set(T('profiles').filter(p => p.currency === 'AED').map(p => p.id));
+  return { ...dashCore(branch, pFrom, pTo, null), inr: dashCore(branch, pFrom, pTo, id => !aedIds.has(id)), aed: dashCore(branch, pFrom, pTo, id => aedIds.has(id)) };
+}
+function dashCore(branch: string | null, pFrom: string | null, pTo: string | null, pick: ((investorId: string) => boolean) | null) {
   const t = today(), s = settings();
   const to = pTo || t; const from = pFrom || addMonths(to.slice(0, 7) + '-01', -7);
   if (from > to) fail('The start of the date range must be before its end.');
-  const inv = T('profiles').filter(p => p.role === 'investor' && (!branch || p.branch_id === branch));
+  const inv = T('profiles').filter(p => p.role === 'investor' && (!branch || p.branch_id === branch) && (!pick || pick(p.id)));
   const invIds = new Set(inv.map(p => p.id)), branchOf = new Map(inv.map(p => [p.id, p.branch_id]));
   const live: Row[] = T('investments').filter(i => invIds.has(i.investor_id) && LIVE.includes(i.status)).map(i => ({ ...i, unlocked: isUnlocked(i), branch_id: branchOf.get(i.investor_id) }));
   const invById = new Map(T('investments').map(i => [i.id, i]));
@@ -638,6 +646,7 @@ function roiAvailable(investorId: string): Row[] {
   return [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, items]) => ({ month, amount: round2(items.reduce((x, it) => x + it.amount, 0)),
     items: items.sort((a, b) => b.rate - a.rate || String(a.code).localeCompare(String(b.code))) }));
 }
+const aedCur = (investorId: string) => (T('profiles').find(p => p.id === investorId)?.currency === 'AED' ? 'AED' : 'INR');
 /** An IB's unpaid bonus of ended months that is not in a request yet, per month (highest bonus % first). */
 function bonusAvailable(ibId: string): Row[] {
   const cur = today().slice(0, 7);
@@ -648,9 +657,11 @@ function bonusAvailable(ibId: string): Row[] {
     if (b.admin_id !== ibId || b.status !== 'accrued' || b.roi_request_id) return;
     const m = String(b.accrual_date).slice(0, 7); if (m >= cur) return;
     const i = invById.get(b.investment_id);
-    const l = byMonth.get(m) || []; l.push({ bonus_id: b.id, payout_id: null, investment_id: b.investment_id, code: i?.code || '', investor: names.get(b.investor_id) || '', rate: Number(b.rate || 0), amount: Number(b.amount) }); byMonth.set(m, l);
+    // the bonus is in the currency of the person it comes from (AED investors in AED)
+    const l = byMonth.get(m) || []; l.push({ bonus_id: b.id, payout_id: null, investment_id: b.investment_id, investor_id: b.investor_id, currency: aedCur(b.investor_id), code: i?.code || '', investor: names.get(b.investor_id) || '', rate: Number(b.rate || 0), amount: Number(b.amount) }); byMonth.set(m, l);
   });
-  return [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, items]) => ({ month, amount: round2(items.reduce((x, it) => x + it.amount, 0)),
+  const part = (items: Row[], c: string) => round2(items.filter(it => it.currency === c).reduce((x, it) => x + it.amount, 0));
+  return [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, items]) => ({ month, amount: round2(items.reduce((x, it) => x + it.amount, 0)), amount_inr: part(items, 'INR'), amount_aed: part(items, 'AED'),
     items: items.sort((a, b) => b.rate - a.rate || String(a.code).localeCompare(String(b.code))) }));
 }
 /** What the signed-in user can request now: for themselves, and (for an IB) for each person under them. */
@@ -682,21 +693,26 @@ function requestRoi(a: Row): string[] {
     }
     const avail = (bonus ? bonusAvailable(id) : roiAvailable(id)).filter(x => months.includes(x.month));
     if (!avail.length) { if (targets.length === 1) fail(`There is no ${what} to request for the chosen month(s).`); continue; }
-    const items = avail.flatMap(x => x.items.map((it: Row) => ({ ...it, month: x.month }))).sort((x, y) => y.rate - x.rate || x.month.localeCompare(y.month));
+    const all = avail.flatMap(x => x.items.map((it: Row) => ({ ...it, month: x.month }))).sort((x, y) => y.rate - x.rate || x.month.localeCompare(y.month));
+    // INR and AED are never added together: an IB bonus from INR and from AED investors becomes two requests
+    const groups: [string, Row[]][] = bonus ? (['INR', 'AED'] as const).map(c => [c, all.filter(it => it.currency === c)] as [string, Row[]]).filter(g => g[1].length) : [[aedCur(id), all]];
+    for (const [groupCur, items] of groups) {
+    const gMonths = [...new Set(items.map(it => it.month as string))].sort();
     const rid = uuid(), code = bonus ? 'BNS-' + pad(nextSeq('bonus_request', 1), 5) : 'ROI-' + pad(nextSeq('roi_request', 1), 5);
     const amount = round2(items.reduce((x, it) => x + it.amount, 0));
-    T('roi_requests').push({ id: rid, code, investor_id: id, requested_by: mePr.id, kind: bonus ? 'bonus' : 'roi', months: avail.map(x => x.month), items, amount, method: method || null, ...to, status: 'pending', requested_on: today(), requested_at: nowIso(),
+    T('roi_requests').push({ id: rid, code, investor_id: id, requested_by: mePr.id, kind: bonus ? 'bonus' : 'roi', currency: groupCur, months: gMonths, items, amount, method: method || null, ...to, status: 'pending', requested_on: today(), requested_at: nowIso(),
       completed_on: null, completed_by: null, payment_ref: null, cancelled_reason: null, note: str(a.p_note), updated_at: nowIso() });
     items.forEach(it => {
       const row = it.bonus_id ? T('admin_bonuses').find(x => x.id === it.bonus_id) : it.payout_id ? T('payouts').find(x => x.id === it.payout_id) : null;
       if (row) { row.roi_request_id = rid; row.updated_at = nowIso(); }
     });
-    const label = avail.map(x => MONTH_NAMES[+x.month.slice(5, 7) - 1] + ' ' + x.month.slice(0, 4)).join(', ');
+    const label = gMonths.map(m => MONTH_NAMES[+m.slice(5, 7) - 1] + ' ' + m.slice(0, 4)).join(', ');
     T('profiles').filter(x => x.role === 'super_admin' && x.account_status === 'active' && !x.read_only).forEach(ad =>
-      notify(ad.id, 'roi_request', what + ' request ' + code + ': ' + fmtMoney(amount), p.full_name + ' · ' + label + (method ? ' · ' + payText({ method, ...to }) : '') + (id !== mePr.id ? ' · requested by ' + mePr.full_name : ''), '/admin/roi-requests', 'roi_requests', rid));
-    if (id !== mePr.id) notify(id, 'roi_request', 'ROI requested for you: ' + fmtMoney(amount), label + ' · by ' + mePr.full_name, '/portal/roi', 'roi_requests', rid + ':for');
-    audit(bonus ? 'bonus.request' : 'roi.request', 'roi_request', rid, code, what + ' requested', null, { investor: p.code, months: avail.map(x => x.month), amount, method: method || null, ...to });
+      notify(ad.id, 'roi_request', what + ' request ' + code + ': ' + fmtMoney(amount, id, groupCur), p.full_name + ' · ' + label + (method ? ' · ' + payText({ method, ...to }) : '') + (id !== mePr.id ? ' · requested by ' + mePr.full_name : ''), '/admin/roi-requests', 'roi_requests', rid));
+    if (id !== mePr.id) notify(id, 'roi_request', 'ROI requested for you: ' + fmtMoney(amount, id, groupCur), label + ' · by ' + mePr.full_name, '/portal/roi', 'roi_requests', rid + ':for');
+    audit(bonus ? 'bonus.request' : 'roi.request', 'roi_request', rid, code, what + ' requested', null, { investor: p.code, months: gMonths, amount, currency: groupCur, method: method || null, ...to });
     ids.push(rid);
+    }
   }
   if (!ids.length) fail(`There is no ${what} to request for the chosen month(s).`);
   return ids;
@@ -722,8 +738,8 @@ function completeRoiRequest(a: Row) {
   });
   Object.assign(r, { status: 'completed', completed_on: on, completed_by: currentUid, payment_ref: ref, updated_at: nowIso() });
   const what = r.kind === 'bonus' ? 'IB bonus ' : 'ROI ';
-  notify(r.investor_id, 'roi_paid', what + r.code + ' · payment fulfilled', fmtMoney(r.amount) + ' paid on ' + fmtDate(on) + (ref ? ' · ' + ref : ''), '/portal/roi', 'roi_requests', r.id + ':done');
-  if (r.requested_by && r.requested_by !== r.investor_id) notify(r.requested_by, 'roi_paid', what + r.code + ' · payment fulfilled', fmtMoney(r.amount) + ' for ' + (T('profiles').find(x => x.id === r.investor_id)?.full_name || ''), '/portal/roi', 'roi_requests', r.id + ':done-ib');
+  notify(r.investor_id, 'roi_paid', what + r.code + ' · payment fulfilled', fmtMoney(r.amount, r.investor_id, r.currency) + ' paid on ' + fmtDate(on) + (ref ? ' · ' + ref : ''), '/portal/roi', 'roi_requests', r.id + ':done');
+  if (r.requested_by && r.requested_by !== r.investor_id) notify(r.requested_by, 'roi_paid', what + r.code + ' · payment fulfilled', fmtMoney(r.amount, r.investor_id, r.currency) + ' for ' + (T('profiles').find(x => x.id === r.investor_id)?.full_name || ''), '/portal/roi', 'roi_requests', r.id + ':done-ib');
   audit(r.kind === 'bonus' ? 'bonus.complete' : 'roi.complete', 'roi_request', r.id, r.code, what + 'paid', { status: 'pending' }, { status: 'completed', paid_on: on, reference: ref });
 }
 function cancelRoiRequest(a: Row) {
@@ -795,8 +811,11 @@ function monthlyBill(m: string) {
   }
   const list = [...rows.values()].map(r => ({ ...r, investments: r.investments.size, roi: round2(r.roi), roi_paid: round2(r.roi_paid), bonus: round2(r.bonus), bonus_paid: round2(r.bonus_paid) }))
     .sort((a, b) => String((a as Row).name).localeCompare(String((b as Row).name)));
-  const tot = (k: string) => round2(list.reduce((x, r) => x + Number((r as Row)[k]), 0));
-  return { month: m, months, running, from: m + '-01', to: running ? today() : monthEnd(m), rows: list, totals: { roi: tot('roi'), roi_paid: tot('roi_paid'), bonus: tot('bonus'), bonus_paid: tot('bonus_paid') } };
+  // totals: INR investors, and apart AED investors (AED as saved)
+  const isA = (r: Row) => people.get(r.investor_id)?.currency === 'AED';
+  const tot = (k: string, a = false) => round2(list.filter(r => isA(r as Row) === a).reduce((x, r) => x + Number((r as Row)[k]), 0));
+  return { month: m, months, running, from: m + '-01', to: running ? today() : monthEnd(m), rows: list, totals: { roi: tot('roi'), roi_paid: tot('roi_paid'), bonus: tot('bonus'), bonus_paid: tot('bonus_paid') },
+    totals_aed: { roi: tot('roi', true), roi_paid: tot('roi_paid', true), bonus: tot('bonus', true), bonus_paid: tot('bonus_paid', true) } };
 }
 /** Marks every return and IB bonus of the months up to and including `p_month` as paid (only ended months; already paid
  *  ones are left as they are). Used once the money for those months has been given. */
@@ -1149,7 +1168,7 @@ export function rpcCall(fn: string, a: Row): unknown {
         if (led.length) led.forEach(l => Object.assign(l, { status: st, reference: p.payment_ref || p.batch_ref || l.reference, occurred_on: to === 'paid' ? on : l.occurred_on, note: to === 'failed' ? p.failure_reason : l.note, updated_at: nowIso() }));
         else ledger({ investment_id: p.investment_id, investor_id: p.investor_id, type: 'return_payout', amount: p.amount, status: st, occurred_on: to === 'paid' ? on : today(), reference: p.payment_ref || p.batch_ref || '', note: p.code, source_table: 'payouts', source_id: p.id });
       }
-      if (to === 'paid' && before.status !== 'paid') notify(p.investor_id, 'payout_paid', 'Payment fulfilled: ' + fmtMoney(p.amount) + ' for ' + code, 'Reference ' + ref, '/portal/investments/' + code, 'payouts', p.id);
+      if (to === 'paid' && before.status !== 'paid') notify(p.investor_id, 'payout_paid', 'Payment fulfilled: ' + fmtMoney(p.amount, p.investor_id) + ' for ' + code, 'Reference ' + ref, '/portal/investments/' + code, 'payouts', p.id);
       audit('payout.edit', 'payout', p.id, p.code, str(a.p_reason, 'Payout edited'), before, { status: to, payment_ref: p.payment_ref, batch_ref: p.batch_ref, paid_on: p.paid_on });
       touched('payouts', 'ledger_entries', 'notifications'); return null;
     }
@@ -1326,7 +1345,7 @@ export async function introduceInvestor(u: Row): Promise<{ code: string; investm
   }
   const inv = T('investments').find(i => i.id === invId)!;
   T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(a2 =>
-    notify(a2.id, 'introducer_new', (mePr!.full_name || 'An investor') + ' added a new investor', name + ' · ' + fmtMoney(inv.principal) + ' on ' + plan.name + '. Verify KYC and confirm the deposit.', '/admin/investors/' + code, 'profiles', id));
+    notify(a2.id, 'introducer_new', (mePr!.full_name || 'An investor') + ' added a new investor', name + ' · ' + fmtMoney(inv.principal, inv.investor_id) + ' on ' + plan.name + '. Verify KYC and confirm the deposit.', '/admin/investors/' + code, 'profiles', id));
   persist('profiles', 'investments', 'ledger_entries', 'notifications', 'audit_logs');
   return { code, investment: inv.code };
 }
@@ -1418,7 +1437,7 @@ function recordDirect(a: Row): { id: string; code: string; investor: string; inv
   ledger({ investment_id: id, investor_id: person.id, type: 'deposit', amount: principal, status: 'confirmed', occurred_on: start, reference: str(a.p_reference), note: 'Recorded by Super Admin', source_table: 'investments', source_id: id });
   ledger({ investment_id: id, investor_id: person.id, type: 'allocation', amount: principal, status: 'posted', occurred_on: start, reference: str(a.p_reference), note: v.plan_name, source_table: 'investments', source_id: id });
   audit('investment.create', 'investment', id, code, 'Recorded by Super Admin', null, { principal, rate, bonus, under: upline?.code || null, lockin_months: lock, start_date: start });
-  if (upline && bonus > 0) notify(upline.id, 'network', person.full_name + ' was added under you', fmtMoney(principal) + ' · your bonus ' + bonus + '% a month (' + fmtMoney(v.admin_bonus) + ')', '/portal/network', 'investments', id);
+  if (upline && bonus > 0) notify(upline.id, 'network', person.full_name + ' was added under you', fmtMoney(principal, person.id) + ' · your bonus ' + bonus + '% a month (' + fmtMoney(v.admin_bonus, person.id) + ')', '/portal/network', 'investments', id);
   runAccrualsFor(v, today());
   return { id, code, investor: person.code, investor_id: person.id, is_new: isNew };
 }
@@ -1600,8 +1619,8 @@ function requestInvestment(a: Row): string {
     created_at: nowIso(), updated_at: nowIso() });
   const who = forSub ? `${subName} (sub-investor of ${mePr.full_name})` : mePr.full_name;
   T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
-    notify(ad.id, 'investment_request', 'Investment request ' + code + ': ' + fmtMoney(amount), who + (attachments.length ? ' · ' + attachments.length + ' attachment' + (attachments.length === 1 ? '' : 's') : ''), '/admin/requests', 'investment_requests', id));
-  notify(mePr.id, 'investment_request', 'Investment request ' + code + ' sent', fmtMoney(amount) + (forSub ? ' for ' + subName : '') + ' · waiting for approval', '/portal/request-investment', 'investment_requests', id + ':sent');
+    notify(ad.id, 'investment_request', 'Investment request ' + code + ': ' + fmtMoney(amount, investorId || mePr.id), who + (attachments.length ? ' · ' + attachments.length + ' attachment' + (attachments.length === 1 ? '' : 's') : ''), '/admin/requests', 'investment_requests', id));
+  notify(mePr.id, 'investment_request', 'Investment request ' + code + ' sent', fmtMoney(amount, investorId || mePr.id) + (forSub ? ' for ' + subName : '') + ' · waiting for approval', '/portal/request-investment', 'investment_requests', id + ':sent');
   audit('investment_request.create', 'investment_request', id, code, forSub ? 'Requested by IB for a sub-investor' : 'Requested by the investor', null, { amount, lockin_months: lock, start_date: start, for: forSub ? 'sub' : 'self' });
   return id;
 }
@@ -1616,11 +1635,13 @@ export async function adminApproveInvestmentRequest(a: Row): Promise<{ id: strin
   if (r.investor_id) { args.p_person = r.investor_id; args.p_ib = r.kind === 'sub' ? r.requested_by : null; }
   else { args.p_name = r.new_sub?.name; args.p_phone = r.new_sub?.phone; args.p_city = r.new_sub?.city; args.p_ib = r.requested_by; }
   const res = await recordWithLogin(args);
+  // a new person added by an AED investor (amount asked in AED) is in AED too
+  if (!r.investor_id && T('profiles').find(p => p.id === r.requested_by)?.currency === 'AED') { const np = T('profiles').find(p => p.id === res.investor_id); if (np && np.currency !== 'AED') { np.currency = 'AED'; persist('profiles'); } }
   (r.attachments || []).forEach((f: Row) => T('documents').push({ id: uuid(), owner_id: res.investor_id, investment_id: res.id, kind: 'proof', title: f.name + ' · ' + res.code, storage_path: f.path,
     mime: f.mime, size_bytes: Number(f.size || 0), visible_to_investor: true, uploaded_by: r.requested_by, created_at: nowIso() }));
   Object.assign(r, { status: 'approved', decided_by: currentUid, decided_at: nowIso(), decision_note: str(a.p_note).trim(), investment_id: res.id, investment_code: res.code, investor_id: res.investor_id, updated_at: nowIso() });
-  notify(res.investor_id, 'investment_request', 'Investment ' + res.code + ' approved', fmtMoney(Number(args.p_principal)) + ' · request ' + r.code, '/portal/investments/' + res.code, 'investment_requests', r.id + ':ok');
-  if (r.requested_by !== res.investor_id) notify(r.requested_by, 'investment_request', 'Request ' + r.code + ' approved', fmtMoney(Number(args.p_principal)) + ' for ' + (T('profiles').find(p => p.id === res.investor_id)?.full_name || 'your sub-investor') + ' · ' + res.code, '/portal/network/' + res.investor_id, 'investment_requests', r.id + ':ok-ib');
+  notify(res.investor_id, 'investment_request', 'Investment ' + res.code + ' approved', fmtMoney(Number(args.p_principal), res.investor_id) + ' · request ' + r.code, '/portal/investments/' + res.code, 'investment_requests', r.id + ':ok');
+  if (r.requested_by !== res.investor_id) notify(r.requested_by, 'investment_request', 'Request ' + r.code + ' approved', fmtMoney(Number(args.p_principal), res.investor_id) + ' for ' + (T('profiles').find(p => p.id === res.investor_id)?.full_name || 'your sub-investor') + ' · ' + res.code, '/portal/network/' + res.investor_id, 'investment_requests', r.id + ':ok-ib');
   audit('investment_request.approve', 'investment_request', r.id, r.code, str(a.p_note, 'Approved'), { status: 'pending' }, { status: 'approved', investment: res.code });
   persist('investment_requests', 'profiles', 'investments', 'ledger_entries', 'accruals', 'payouts', 'notifications', 'admin_bonuses', 'audit_logs', 'documents');
   return res;
@@ -1785,8 +1806,8 @@ function applyInOrder(who: Row, from: string, w: Row | null, drop: string | null
     const plan = planWithdrawal(who.id, Number(x.amount), String(x.requested_on));
     const got = round2(plan.reduce((t, q) => t + Number(q.amount), 0));
     if (got < Number(x.amount)) {
-      if (x === w) fail(`${who.full_name} can withdraw up to ${fmtMoney(got)} on ${fmtDate(x.requested_on)}.`);
-      fail(`With this, ${x.code} of ${fmtDate(x.requested_on)} (${fmtMoney(x.amount)}) would be more than ${who.full_name} has left. Change or delete ${x.code} first.`);
+      if (x === w) fail(`${who.full_name} can withdraw up to ${fmtMoney(got, who.id)} on ${fmtDate(x.requested_on)}.`);
+      fail(`With this, ${x.code} of ${fmtDate(x.requested_on)} (${fmtMoney(x.amount, who.id)}) would be more than ${who.full_name} has left. Change or delete ${x.code} first.`);
     }
     applyWithdrawalParts(x, plan); if (x !== w) x.updated_at = nowIso();
   });
@@ -1867,9 +1888,9 @@ function requestWithdrawal(a: Row): string {
   T('withdrawals').push(row);
   const byIb = !isAdmin() && who.id !== mePr.id;
   if (!isAdmin()) T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
-    notify(ad.id, 'withdrawal', (method === 'ib' ? 'Transfer to IB ' : 'Withdrawal request ') + code + ': ' + fmtMoney(amount), who.full_name + (byIb ? ' (requested by IB ' + mePr.full_name + ')' : '') + ' · ' + how + ' · from ' + parts.map(p => p.code + ' (' + p.plan_rate + '%)').join(', ') + (method === 'ib' ? ' · needs your approval' : ''), '/admin/withdrawals', 'withdrawals', id));
-  notify(who.id, 'withdrawal', 'Withdrawal ' + code + (paid ? ' · payment fulfilled' : ' · payment processed'), fmtMoney(amount) + ' · ' + how + ' · returns are calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
-  if (byIb) notify(mePr.id, 'withdrawal', 'Withdrawal ' + code + ' for ' + who.full_name + ' · payment processed', fmtMoney(amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', id + ':req-ib');
+    notify(ad.id, 'withdrawal', (method === 'ib' ? 'Transfer to IB ' : 'Withdrawal request ') + code + ': ' + fmtMoney(amount, who.id), who.full_name + (byIb ? ' (requested by IB ' + mePr.full_name + ')' : '') + ' · ' + how + ' · from ' + parts.map(p => p.code + ' (' + p.plan_rate + '%)').join(', ') + (method === 'ib' ? ' · needs your approval' : ''), '/admin/withdrawals', 'withdrawals', id));
+  notify(who.id, 'withdrawal', 'Withdrawal ' + code + (paid ? ' · payment fulfilled' : ' · payment processed'), fmtMoney(amount, who.id) + ' · ' + how + ' · returns are calculated on the lower amount from ' + fmtDate(d), '/portal/withdraw', 'withdrawals', id + ':req');
+  if (byIb) notify(mePr.id, 'withdrawal', 'Withdrawal ' + code + ' for ' + who.full_name + ' · payment processed', fmtMoney(amount, who.id) + ' · ' + how, '/portal/withdraw', 'withdrawals', id + ':req-ib');
   audit('withdrawal.request', 'withdrawal', id, code, str(a.p_note, 'Withdrawal requested'), null, { amount, date: d, status: row.status, method, ...to, ib: ib?.code || null, requested_by: mePr.code, parts: parts.map(p => ({ code: p.code, amount: p.amount })) });
   return id;
 }
@@ -1885,10 +1906,10 @@ function completeWithdrawal(a: Row) {
   Object.assign(w, { status: 'completed', completed_on: on, completed_by: adminId, payment_ref: str(a.p_ref), method, ...to, ib_id: method === 'ib' ? ibId : w.ib_id ?? null, admin_note: str(a.p_note), updated_at: nowIso() });
   const how = wdHow(w);
   T('ledger_entries').filter(l => l.source_table === 'withdrawals' && String(l.source_id).startsWith(w.id + ':')).forEach(l => Object.assign(l, { status: 'confirmed', occurred_on: on, reference: w.payment_ref || w.code, note: 'Withdrawal paid · ' + how, updated_at: nowIso() }));
-  notify(w.investor_id, 'withdrawal', 'Withdrawal ' + w.code + ' · payment fulfilled', fmtMoney(w.amount) + ' · ' + how + ' on ' + fmtDate(on) + (w.payment_ref ? ' · ' + w.payment_ref : ''), '/portal/withdraw', 'withdrawals', w.id + ':done');
-  if (method === 'ib' && w.ib_id) notify(w.ib_id, 'withdrawal', 'Transfer received: ' + fmtMoney(w.amount), 'From ' + (T('profiles').find(p => p.id === w.investor_id)?.full_name || 'your sub-investor') + ' · ' + w.code + ' approved by the company', '/portal/network/' + w.investor_id, 'withdrawals', w.id + ':ib');
+  notify(w.investor_id, 'withdrawal', 'Withdrawal ' + w.code + ' · payment fulfilled', fmtMoney(w.amount, w.investor_id) + ' · ' + how + ' on ' + fmtDate(on) + (w.payment_ref ? ' · ' + w.payment_ref : ''), '/portal/withdraw', 'withdrawals', w.id + ':done');
+  if (method === 'ib' && w.ib_id) notify(w.ib_id, 'withdrawal', 'Transfer received: ' + fmtMoney(w.amount, w.investor_id), 'From ' + (T('profiles').find(p => p.id === w.investor_id)?.full_name || 'your sub-investor') + ' · ' + w.code + ' approved by the company', '/portal/network/' + w.investor_id, 'withdrawals', w.id + ':ib');
   if (w.requested_by && w.requested_by !== w.investor_id && w.requested_by !== w.ib_id && T('profiles').some(p => p.id === w.requested_by && p.role === 'investor'))
-    notify(w.requested_by, 'withdrawal', 'Withdrawal ' + w.code + ' · payment fulfilled', fmtMoney(w.amount) + ' · ' + how, '/portal/withdraw', 'withdrawals', w.id + ':done-ib');
+    notify(w.requested_by, 'withdrawal', 'Withdrawal ' + w.code + ' · payment fulfilled', fmtMoney(w.amount, w.investor_id) + ' · ' + how, '/portal/withdraw', 'withdrawals', w.id + ':done-ib');
   audit('withdrawal.complete', 'withdrawal', w.id, w.code, str(a.p_note, 'Paid'), { status: 'pending' }, { status: 'completed', paid_on: on, reference: w.payment_ref });
 }
 function cancelWithdrawal(a: Row) {
@@ -2033,9 +2054,9 @@ function updateWithdrawal(a: Row) {
   if (method === 'ib' && !ib) fail(`${who.full_name} is not under an IB, so a transfer to an IB is not possible.`);
   const invs = undoWithdrawal(w);
   const available = round2(T('investments').filter(i => i.investor_id === who.id && WD_LIVE(i)).reduce((x, i) => x + Number(i.principal), 0));
-  if (amount > available) fail(`Up to ${fmtMoney(available)} can be withdrawn.`);
+  if (amount > available) fail(`Up to ${fmtMoney(available, who.id)} can be withdrawn.`);
   const parts = planWithdrawal(who.id, amount, String(w.requested_on));
-  if (round2(parts.reduce((t, q) => t + Number(q.amount), 0)) < amount) fail(`Up to ${fmtMoney(round2(parts.reduce((t, q) => t + Number(q.amount), 0)))} can be withdrawn on ${fmtDate(w.requested_on)}.`);
+  if (round2(parts.reduce((t, q) => t + Number(q.amount), 0)) < amount) fail(`Up to ${fmtMoney(round2(parts.reduce((t, q) => t + Number(q.amount), 0)), who.id)} can be withdrawn on ${fmtDate(w.requested_on)}.`);
   Object.assign(w, { amount, method, ...to, ib_id: method === 'ib' ? ib!.id : null, note: a.p_note != null ? str(a.p_note).trim() : w.note, allocations: parts, updated_at: nowIso() });
   if (a.p_attachments != null) w.attachments = cleanAttachments(a.p_attachments);
   const how = wdHow(w), d = w.requested_on;
@@ -2048,7 +2069,7 @@ function updateWithdrawal(a: Row) {
   });
   [...invs, ...parts.map(pt => T('investments').find(x => x.id === pt.investment_id)!)].forEach(i => runAccrualsFor(i, today()));
   if (!isAdmin()) T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
-    notify(ad.id, 'withdrawal', 'Withdrawal ' + w.code + ' was changed: ' + fmtMoney(amount), who.full_name + ' · ' + how, '/admin/withdrawals', 'withdrawals', w.id + ':edit:' + nowIso()));
+    notify(ad.id, 'withdrawal', 'Withdrawal ' + w.code + ' was changed: ' + fmtMoney(amount, who.id), who.full_name + ' · ' + how, '/admin/withdrawals', 'withdrawals', w.id + ':edit:' + nowIso()));
   audit('withdrawal.update', 'withdrawal', w.id, w.code, str(a.p_reason, 'Withdrawal changed'), before, { amount, method, ...to, note: w.note });
 }
 function deleteWithdrawal(a: Row) {
@@ -2060,7 +2081,7 @@ function deleteWithdrawal(a: Row) {
   S.tables.notifications = T('notifications').filter(n => !(n.source_table === 'withdrawals' && String(n.source_id).startsWith(w.id)));
   invs.forEach(i => runAccrualsFor(i, today()));
   if (!isAdmin()) T('profiles').filter(p => p.role === 'super_admin' && p.account_status === 'active').forEach(ad =>
-    notify(ad.id, 'withdrawal', 'Withdrawal ' + w.code + ' was deleted by the investor', fmtMoney(w.amount), '/admin/withdrawals', 'withdrawals_deleted', w.id));
+    notify(ad.id, 'withdrawal', 'Withdrawal ' + w.code + ' was deleted by the investor', fmtMoney(w.amount, w.investor_id), '/admin/withdrawals', 'withdrawals_deleted', w.id));
   audit('withdrawal.delete', 'withdrawal', w.id, w.code, str(a.p_reason, 'Withdrawal deleted'), { amount: w.amount, method: w.method, status: w.status }, null);
 }
 
