@@ -644,7 +644,7 @@ async function loadInvestment(code: string): Promise<DetailData | null> {
   return { i, investor: names[i.investor_id], bal: must(bal) as Balance | null, accruals, payouts, ledger, amendments, plan: must(plan) as Plan | null, names, introducedBy, aed: ip?.currency === 'AED' };
 }
 
-type Dialog = null | 'fund' | 'cancel' | 'amend' | 'edit' | 'delete' | 'revise';
+type Dialog = null | 'fund' | 'cancel' | 'amend' | 'edit' | 'delete' | 'revise' | 'revise-bonus';
 
 export function InvestmentDetail() {
   const { code = '' } = useParams();
@@ -705,6 +705,7 @@ export function InvestmentDetail() {
         actions={<>
           {!closed && <button className="btn" onClick={() => setDlg('edit')}>Edit</button>}
           {!closed && !pending && <button className="btn" onClick={() => setDlg('revise')}>Revise ROI</button>}
+          {!closed && !pending && i.bonus_on_top && introducedBy && <button className="btn" onClick={() => setDlg('revise-bonus')}>Revise bonus</button>}
           <button className="btn danger" onClick={() => setDlg('delete')}>Delete</button>
           {pending ? <>
             <button className="btn danger" onClick={() => setDlg('cancel')}>Cancel</button>
@@ -806,6 +807,7 @@ export function InvestmentDetail() {
                   <dt>Bonus</dt><dd>{rate(i.admin_bonus_rate || 0)} · {money(i.admin_bonus)} / month <span className="muted">({i.bonus_on_top ? 'paid on top of the ROI' : 'taken from the plan rate'})</span></dd>
                   <dt>Bonus goes to</dt><dd>{introducedBy ? <b>{nm(introducedBy)}</b> : <span className="muted">Individual: no bonus.</span>}</dd></>}
                 {(i.rate_changes || []).length > 0 && <><dt>ROI history</dt><dd><RateHistory i={i} onCancel={() => q.reload()} /></dd></>}
+                {(i.bonus_changes || []).length > 0 && <><dt>Bonus history</dt><dd><BonusHistory i={i} onCancel={() => q.reload()} /></dd></>}
                 <dt>Method</dt><dd>Simple interest</dd>
                 <dt>Plan</dt><dd>{plan ? <><Link to={'/admin/plans/' + plan.code}>{i.plan_name}</Link> · v{i.plan_version}</> : i.plan_name}</dd>
                 <dt>Lock-in</dt><dd>{lockinText(i.lockin_months)}</dd>
@@ -856,6 +858,7 @@ export function InvestmentDetail() {
       {dlg === 'cancel' && <CancelDialog i={i} onClose={() => setDlg(null)} />}
       {dlg === 'amend' && <AmendDialog i={i} onClose={() => setDlg(null)} />}
       {dlg === 'revise' && <ReviseRoi i={i} onClose={() => { setDlg(null); q.reload(); }} />}
+      {dlg === 'revise-bonus' && <ReviseBonus i={i} ibName={introducedBy ? nm(introducedBy) : 'the IB'} onClose={() => { setDlg(null); q.reload(); }} />}
       {dlg === 'edit' && <EditInvestment i={i} underIb={!!introducedBy} ibName={introducedBy ? nm(introducedBy) : ''} aed={aed} onClose={() => setDlg(null)} />}
       {dlg === 'delete' && <DeleteInvestment i={i} onClose={() => setDlg(null)} />}
     </>
@@ -921,6 +924,8 @@ function EditInvestment({ i, underIb, ibName, aed = false, onClose }: { i: Inves
   const orig = Number((i as Investment & { original_principal?: number }).original_principal ?? i.principal);
   const [roi, setRoi] = useState(String(Number(i.monthly_rate)));
   const [bonus, setBonus] = useState(String(Number(i.admin_bonus_rate || 0)));
+  // after a revised ROI or bonus, those are changed only with Revise ROI / Revise bonus (from a date)
+  const revised = !!((i.rate_changes || []).length || (i.bonus_changes || []).length);
   const [lock, setLock] = useState(String(i.lockin_months));
   // an AED investor's principal is shown and typed in AED (saved at the fixed rate)
   const aedRate = Number(useSettings()?.inr_per_aed || 0), inAed = aed && aedRate > 0;
@@ -955,9 +960,9 @@ function EditInvestment({ i, underIb, ibName, aed = false, onClose }: { i: Inves
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{act.busy ? 'Saving…' : 'Save changes'}</button></>}>
       <div className="form">
         <div className="f-row">
-          <Field label="Monthly ROI (% per month) *" err={e('roi')}><input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} /></Field>
-          <Field label={underIb ? `Bonus to ${ibName} (% per month)` : 'IB bonus'} err={e('bonus')} hint={underIb ? 'Paid on top of the ROI.' : 'Not under an IB.'}>
-            <input className={'input num ' + (e('bonus') ? 'bad' : '')} inputMode="decimal" value={underIb ? bonus : ''} onChange={ev => setBonus(ev.target.value)} disabled={!underIb} placeholder={underIb ? '' : '—'} />
+          <Field label="Monthly ROI (% per month) *" err={e('roi')} hint={(i.rate_changes || []).length ? 'Change it with Revise ROI (from a date).' : undefined}><input className={'input num ' + (e('roi') ? 'bad' : '')} inputMode="decimal" value={roi} onChange={ev => setRoi(ev.target.value)} disabled={!!(i.rate_changes || []).length} /></Field>
+          <Field label={underIb ? `Bonus to ${ibName} (% per month)` : 'IB bonus'} err={e('bonus')} hint={!underIb ? 'Not under an IB.' : revised ? 'Change it with Revise bonus (from a date).' : 'Paid on top of the ROI.'}>
+            <input className={'input num ' + (e('bonus') ? 'bad' : '')} inputMode="decimal" value={underIb ? bonus : ''} onChange={ev => setBonus(ev.target.value)} disabled={!underIb || revised} placeholder={underIb ? '' : '—'} />
           </Field>
         </div>
         <div className="f-row">
@@ -1078,6 +1083,59 @@ function ReviseRoi({ i, onClose }: { i: Investment; onClose: () => void }) {
         {n > 0 && !err.rate && <div className="note info">From <b>{from ? date(from) : '…'}</b>: {rate(n)} a month = <b>{money(Math.round(p * n) / 100)}</b> (was {money(Math.round(p * cur) / 100)}). {Number(i.admin_bonus_rate || 0) > 0 ? `The IB bonus stays ${rate(Number(i.admin_bonus_rate))}.` : ''} A month that has both is split by days.</div>}
         {from && from < t && !err.from && <div className="note">The returns from <b>{date(from)}</b> are recalculated at the new ROI: earned, pending and paid amounts change to match (months marked paid stay paid). Months before {date(from)} do not change. If a month from that date was already paid through a ROI request, this is refused.</div>}
         <Field label="Note (optional)"><input className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. As per agreement: 6% until August" /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/** The IB bonus over time: the first bonus, then each revised bonus from its date. A revision that has not started can be cancelled. */
+function BonusHistory({ i, onCancel }: { i: Investment; onCancel: () => void }) {
+  const act = useAction();
+  const ch = [...(i.bonus_changes || [])].sort((a, b) => a.from.localeCompare(b.from));
+  const t = today();
+  const cancel = async (from: string) => {
+    const r = await act.run(() => rpc('admin_cancel_bonus_revision', { p_id: i.id, p_from: from }), ['Revision cancelled', `${i.code} · ${date(from)}`]);
+    if (r !== undefined) { refreshAll(); onCancel(); }
+  };
+  return (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <div>{rate(ch[0].before)} from {date(i.start_date)}</div>
+      {ch.map(c => <div key={c.from}>{rate(c.rate)} from <b>{date(c.from)}</b>{c.from > t && <> <span className="muted">(starts later)</span> <button className="btn sm" disabled={act.busy} onClick={() => cancel(c.from)}>Cancel</button></>}{c.note && <span className="sub">{c.note}</span>}</div>)}
+    </div>
+  );
+}
+
+/** Revise bonus: from a date (past, today or later) the IB bonus % changes. Months before that date keep their bonus; a
+ *  past date recalculates the bonus from that date. The investor's ROI does not change. */
+function ReviseBonus({ i, ibName, onClose }: { i: Investment; ibName: string; onClose: () => void }) {
+  const act = useAction();
+  const t = today();
+  const cur = Number(i.admin_bonus_rate || 0);
+  const [r, setR] = useState('');
+  const [from, setFrom] = useState(t);
+  const [note, setNote] = useState('');
+  const [tried, setTried] = useState(false);
+  const n = Number(r), p = Number(i.principal);
+  const err = {
+    rate: !r.trim() || !(n >= 0 && n <= 100) || !/^\d+(\.\d{1,4})?$/.test(r.trim()) ? 'Enter the new bonus % per month, e.g. 0.5 (0 = no bonus).' : n === cur ? `The bonus is already ${cur}%.` : null,
+    from: !from ? 'Choose the date.' : i.start_date && from <= i.start_date ? 'After the start date.' : null
+  };
+  const go = async () => {
+    setTried(true); if (err.rate || err.from) return;
+    const x = await act.run(() => rpc('admin_revise_bonus', { p_id: i.id, p_rate: n, p_from: from, p_note: note.trim() }), ['Bonus revised', `${i.code} · ${n}% from ${date(from)}`]);
+    if (x !== undefined) { refreshAll(); onClose(); }
+  };
+  return (
+    <Modal title={`Revise bonus · ${i.code}`} sub={`Bonus to ${ibName}: now ${rate(cur)} a month (${money(Math.round(p * cur) / 100)}), paid on top of the ROI. Months before the date keep their bonus. The investor's ROI does not change.`} onClose={onClose}
+      foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{act.busy ? 'Saving…' : 'Revise bonus'}</button></>}>
+      <div className="form">
+        <div className="f-row">
+          <Field label="New bonus (% per month) *" err={tried ? err.rate : null}><input className={'input num ' + (tried && err.rate ? 'bad' : '')} inputMode="decimal" value={r} onChange={e => setR(e.target.value)} placeholder="e.g. 0.5" /></Field>
+          <Field label="From date *" err={tried ? err.from : null} hint="Any date after the start: past, today or later."><DateInput className="input" value={from} onChange={e => setFrom(e.target.value)} /></Field>
+        </div>
+        {n >= 0 && r.trim() && !err.rate && <div className="note info">From <b>{from ? date(from) : '…'}</b>: {rate(n)} a month = <b>{money(Math.round(p * n) / 100)}</b> to {ibName} (was {money(Math.round(p * cur) / 100)}). A month that has both is split by days.</div>}
+        {from && from < t && !err.from && <div className="note">The bonus from <b>{date(from)}</b> is recalculated: earned, pending and paid amounts change to match (months marked paid stay paid). If a month from that date was already paid through a request or the Bonus page, this is refused.</div>}
+        <Field label="Note (optional)"><input className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Bonus changed as agreed" /></Field>
       </div>
     </Modal>
   );
