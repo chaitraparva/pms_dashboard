@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, must } from '../lib/api';
 import { useQuery } from '../lib/useQuery';
 import { useSettings } from '../lib/auth';
-import { date, initials, LEDGER_TYPE, moneyOf } from '../lib/format';
+import { date, initials, LEDGER_TYPE, moneyInv } from '../lib/format';
 import type { Profile, Investment, LedgerEntry } from '../lib/types';
 import { Empty, ErrorNote, Loading, PageHead, KycBadge, InvBadge, LedgerBadge } from '../ui/kit';
 import { Icon } from '../ui/Icon';
@@ -92,7 +92,7 @@ export function Search() {
                 {d.I.map(i => (
                   <div key={i.id} style={{ cursor: 'pointer' }} onClick={() => nav('/admin/investments/' + i.code)}>
                     <div className="grow"><b><span className="mono">{i.code}</span> · {d.names[i.investor_id]?.full_name || '—'}</b>
-                      <span>{moneyOf(i.principal, i.investor_id)} · {i.plan_name} v{i.plan_version}{i.agreement_ref ? ' · ' + i.agreement_ref : ''}{i.deposit_ref ? ' · ' + i.deposit_ref : ''}</span></div>
+                      <span>{moneyInv(i.principal, i.id, i.investor_id)} · {i.plan_name} v{i.plan_version}{i.agreement_ref ? ' · ' + i.agreement_ref : ''}{i.deposit_ref ? ' · ' + i.deposit_ref : ''}</span></div>
                     <InvBadge i={i} approachingDays={s.approaching_days} />
                   </div>
                 ))}
@@ -109,7 +109,7 @@ export function Search() {
                     <div key={l.id} style={{ cursor: ic ? 'pointer' : undefined }} onClick={() => { if (ic) nav('/admin/investments/' + ic); }}>
                       <div className="grow"><b><span className="mono">{l.code}</span> · {LEDGER_TYPE[l.type] || l.type}{ic ? ' · ' + ic : ''}</b>
                         <span>{date(l.occurred_on)}{l.investor_id && d.names[l.investor_id] ? ' · ' + d.names[l.investor_id].full_name : ''}{l.reference ? ' · ' + l.reference : ''}</span></div>
-                      <span className={'num ' + (Number(l.amount) < 0 ? 'neg' : '')}>{moneyOf(l.amount, l.investor_id)}</span>
+                      <span className={'num ' + (Number(l.amount) < 0 ? 'neg' : '')}>{moneyInv(l.amount, l.investment_id, l.investor_id)}</span>
                       <LedgerBadge s={l.status} />
                     </div>
                   );

@@ -2,12 +2,19 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { rpc } from '../lib/api';
 import { useQuery } from '../lib/useQuery';
-import { date, moneyOf, moneyShortOf } from '../lib/format';
+import { date, moneyOf, moneyShortOf, moneyBoth } from '../lib/format';
 import { Empty, ErrorNote, Loading, PageHead } from '../ui/kit';
 import { loadBranches } from './Investors';
 
+/** A person's amount: in their currency, or "₹X + AED Y" when they have both. */
+export const rankMoney = (r: RankRow, k: 'principal' | 'released' | 'pending' | 'upcoming' | 'to_release', short = false) => {
+  if (r.split) { const t = k === 'to_release' ? [r.split.pending[0] + r.split.upcoming[0], r.split.pending[1] + r.split.upcoming[1]] : r.split[k]; return moneyBoth(t[0], t[1], short); }
+  return short ? moneyShortOf(r[k], r.id) : moneyOf(r[k], r.id);
+};
 export interface RankRow { id: string; code: string; name: string; email: string; phone?: string; branch: string | null; principal: number; released: number; multiple: number; since: string | null; last: string | null; rank: number; plans: string;
-  pending: number; upcoming: number; to_release: number }
+  pending: number; upcoming: number; to_release: number;
+  /** a person with INR and AED investments: [INR, AED as saved] for each amount */
+  split?: Record<'principal' | 'released' | 'pending' | 'upcoming', [number, number]> | null }
 type Period = '' | '6m' | '1y';
 
 export const multipleText = (m: number) => (m >= 1 ? m.toFixed(1) + '×' : Math.round(m * 100) + '%');
@@ -43,11 +50,11 @@ export function Ranking() {
             <div className="card-h"><h3>Highest invested first</h3><div className="r hint">Longer bar = more invested · click to open</div></div>
             <div className="card-b rank-bars">
               {rows.slice(0, 15).map(r => (
-                <button key={r.id} type="button" className="rank-bar" onClick={() => open(r)} title={`${r.name}: ${moneyOf(r.principal, r.id)} invested · ${moneyOf(r.released, r.id)} released · ${moneyOf(r.to_release, r.id)} to be released`}>
+                <button key={r.id} type="button" className="rank-bar" onClick={() => open(r)} title={`${r.name}: ${rankMoney(r, 'principal')} invested · ${rankMoney(r, 'released')} released · ${rankMoney(r, 'to_release')} to be released`}>
                   <span className="rank-no">#{r.rank}</span>
                   <span className="rank-name">{r.name}<small>{r.branch || 'No branch'}</small></span>
                   <span className="rank-track"><i style={{ width: Math.max(4, (Number(r.principal) / top) * 100) + '%' }} /></span>
-                  <b className="num">{moneyShortOf(r.principal, r.id)}</b>
+                  <b className="num">{rankMoney(r, 'principal', true)}</b>
                 </button>
               ))}
             </div>
@@ -63,9 +70,9 @@ export function Ranking() {
                       <td><b>{r.name}</b><span className="sub">{r.email}</span></td>
                       <td>{r.branch || '—'}</td>
                       <td><b>{date(r.last)}</b></td>
-                      <td className="n">{moneyShortOf(r.principal, r.id)}</td>
-                      <td className="n pos">{moneyOf(r.released, r.id)}<span className="sub">{multipleText(r.multiple)} of principal</span></td>
-                      <td className="n">{moneyOf(r.to_release, r.id)}<span className="sub">{moneyOf(r.pending, r.id)} earned · {moneyOf(r.upcoming, r.id)} to come</span></td>
+                      <td className="n">{rankMoney(r, 'principal', true)}</td>
+                      <td className="n pos">{rankMoney(r, 'released')}<span className="sub">{multipleText(r.multiple)} of principal</span></td>
+                      <td className="n">{rankMoney(r, 'to_release')}<span className="sub">{rankMoney(r, 'pending')} earned · {rankMoney(r, 'upcoming')} to come</span></td>
                       <td>{r.plans}</td>
                       <td>{r.since ? date(r.since) : '—'}</td>
                     </tr>
@@ -90,9 +97,9 @@ export function TopInvestors() {
       <div className="card-h"><h3>Ranking · top 5 by amount invested</h3><div className="r"><a style={{ cursor: 'pointer' }} onClick={() => nav('/admin/ranking')}>Full ranking</a></div></div>
       <div className="card-b rank-bars">
         {rows.map(r => (
-          <button key={r.id} type="button" className="rank-bar" onClick={() => nav('/admin/investors/' + r.code)} title={`${moneyOf(r.principal, r.id)} invested · ${moneyOf(r.to_release, r.id)} to be released`}>
+          <button key={r.id} type="button" className="rank-bar" onClick={() => nav('/admin/investors/' + r.code)} title={`${rankMoney(r, 'principal')} invested · ${rankMoney(r, 'to_release')} to be released`}>
             <span className="rank-no">#{r.rank}</span><span className="rank-name">{r.name}<small>{r.branch || 'No branch'}</small></span>
-            <span className="rank-track"><i style={{ width: Math.max(4, (Number(r.principal) / Math.max(1, Number(rows[0]?.principal || 1))) * 100) + '%' }} /></span><b className="num">{moneyShortOf(r.principal, r.id)}</b>
+            <span className="rank-track"><i style={{ width: Math.max(4, (Number(r.principal) / Math.max(1, Number(rows[0]?.principal || 1))) * 100) + '%' }} /></span><b className="num">{rankMoney(r, 'principal', true)}</b>
           </button>
         ))}
         {!rows.length && <Empty title="No investors to rank yet" />}

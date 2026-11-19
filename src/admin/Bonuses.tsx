@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { date, rate, today, moneyOf, moneyBoth, sumBoth, isAedInvestor, csvAmount, curCode } from '../lib/format';
+import { date, rate, today, moneyBoth, sumBoth, sumByCur, invCurrency, moneyInv, csvInv } from '../lib/format';
 import { downloadCsv } from '../lib/csv';
 import type { AdminBonus } from '../lib/types';
 import { Badge, Kpi, ErrorNote, Loading, PageHead, Modal, Field, IconBtn, useAction } from '../ui/kit';
@@ -49,7 +49,7 @@ export function Bonuses() {
   const rows = useMemo(() => mine.filter(r => tab === 'all' || r.status === tab), [mine, tab]);
   const count = (k: Tab) => (k === 'all' ? mine.length : mine.filter(r => r.status === k).length);
   // INR and AED kept apart
-  const sum = (rs: Row[]) => { const [i, a] = sumBoth(rs, r => Number(r.amount), r => r.investor_id); return moneyBoth(i, a); };
+  const sum = (rs: Row[]) => { const [i, a] = sumByCur(rs, r => Number(r.amount), r => invCurrency(r.investment_id, r.investor_id)); return moneyBoth(i, a); };
   const chosen = rows.filter(r => sel.has(r.id) && r.status === 'accrued' && r.admin_id);
 
   const perAdmin = useMemo(() => {
@@ -57,7 +57,7 @@ export function Bonuses() {
     all.filter(r => r.status !== 'cancelled').forEach(r => {
       const k = r.admin_id || 'none';
       const x = m.get(k) || { name: r.admin_id ? nameOf(r.admin) : 'Individual', unpaid: 0, paid: 0, unpaidA: 0, paidA: 0, investors: new Set<string>() };
-      const a = isAedInvestor(r.investor_id);
+      const a = invCurrency(r.investment_id, r.investor_id) === 'AED';
       if (r.status === 'paid') { if (a) x.paidA += Number(r.amount); else x.paid += Number(r.amount); } else { if (a) x.unpaidA += Number(r.amount); else x.unpaid += Number(r.amount); }
       x.investors.add(r.investor_id); m.set(k, x);
     });
@@ -74,18 +74,18 @@ export function Bonuses() {
 
   const exportCsv = () => downloadCsv(`ib-bonus-${tab}-${t}`,
     ['Bonus', 'Paid to', 'Investor ID', 'Investor', 'Investment', 'Plan', 'Principal', 'Period', 'Earned on', 'Bonus rate', 'Currency', 'Amount', 'Status', 'Reference', 'Paid on'],
-    rows.map(r => [r.code, r.admin_id ? nameOf(r.admin) : '', r.investor?.code, nameOf(r.investor), r.inv?.code, r.inv?.plan_name, r.inv ? csvAmount(r.inv.principal, r.investor_id) : '', r.period_no, r.accrual_date,
-      r.rate, curCode(r.investor_id), csvAmount(r.amount, r.investor_id), r.status, r.payment_ref, r.paid_on]));
+    rows.map(r => [r.code, r.admin_id ? nameOf(r.admin) : '', r.investor?.code, nameOf(r.investor), r.inv?.code, r.inv?.plan_name, r.inv ? csvInv(r.inv.principal, r.investment_id, r.investor_id) : '', r.period_no, r.accrual_date,
+      r.rate, invCurrency(r.investment_id, r.investor_id), csvInv(r.amount, r.investment_id, r.investor_id), r.status, r.payment_ref, r.paid_on]));
 
   const cols: Col<Row>[] = [
     { h: 'Bonus', m: true, v: r => r.code },
     { h: 'Paid to', v: r => r.admin_id ? nameOf(r.admin) : '', r: r => r.admin_id ? <>{nameOf(r.admin)}<span className="sub">{r.admin?.code}</span></> : <span className="muted">—</span> },
     { h: 'Investor', v: r => nameOf(r.investor), r: r => r.investor?.code ? <><Link to={`/admin/investors/${r.investor.code}`}>{nameOf(r.investor)}</Link><span className="sub">{r.investor.code}</span></> : nameOf(r.investor) },
-    { h: 'Investment', v: r => r.inv?.code, r: r => r.inv ? <><Link className="mono" to={`/admin/investments/${r.inv.code}`}>{r.inv.code}</Link><span className="sub">{moneyOf(r.inv.principal, r.investor_id)} · {r.inv.plan_name}</span></> : '—' },
+    { h: 'Investment', v: r => r.inv?.code, r: r => r.inv ? <><Link className="mono" to={`/admin/investments/${r.inv.code}`}>{r.inv.code}</Link><span className="sub">{moneyInv(r.inv.principal, r.investment_id, r.investor_id)} · {r.inv.plan_name}</span></> : '—' },
     { h: 'Period', v: r => r.period_no, r: r => '#' + r.period_no },
     { h: 'Earned', v: r => r.accrual_date, r: r => date(r.accrual_date) },
     { h: 'Rate', v: r => Number(r.rate), r: r => rate(r.rate) },
-    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => moneyOf(r.amount, r.investor_id) },
+    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => moneyInv(r.amount, r.investment_id, r.investor_id) },
     { h: 'Reference', v: r => r.payment_ref || '', r: r => r.payment_ref ? <span className="mono">{r.payment_ref}{r.paid_on && <span className="sub">Paid {date(r.paid_on)}</span>}</span> : <span className="muted">—</span> },
     { h: 'Status', v: r => r.status, r: r => <StatusBadge s={r.status} /> }
   ];

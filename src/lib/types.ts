@@ -164,6 +164,7 @@ export type WithdrawalMethod = 'bank' | 'upi' | 'cash' | 'mt5' | 'ib';
 export interface BankDetails { name: string; account: string; ifsc: string; branch: string }
 export interface Withdrawal {
   id: string; code: string; investor_id: string; amount: number; method: WithdrawalMethod; note: string; status: 'pending' | 'completed' | 'cancelled';
+  currency?: 'INR' | 'AED' | null;
   mt5_account?: string | null; upi_id?: string | null; bank_details?: BankDetails | null; ib_id?: string | null; attachments?: Attachment[];
   requested_on: string; requested_at: string; requested_by: string | null; allocations: WithdrawalPart[];
   completed_on: string | null; completed_by: string | null; payment_ref: string | null; admin_note: string | null; cancelled_reason: string | null; updated_at: string;

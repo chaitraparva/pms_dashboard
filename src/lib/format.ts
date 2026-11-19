@@ -56,7 +56,20 @@ export function moneyShort(v: number | string | null | undefined): string {
 const AED_SET = new Set<string>();
 let AED_K = 25;
 export function setAedInvestors(ids: string[], rate: number) { AED_SET.clear(); ids.forEach(i => AED_SET.add(i)); if (rate > 0) AED_K = rate; }
-export const isAedInvestor = (id: string | null | undefined) => !!id && AED_SET.has(id);
+/** Investments with their own currency (a person with both INR and AED investments): investment id → currency. */
+const INV_CUR = new Map<string, 'INR' | 'AED'>();
+export function setInvestmentCurrencies(rows: { id: string; currency?: string | null }[]) { INV_CUR.clear(); rows.forEach(r => { if (r.currency === 'AED' || r.currency === 'INR') INV_CUR.set(r.id, r.currency); }); }
+/** True for an AED investor, or (given an investment id) an investment in AED. */
+/** The investor portal of a person with both INR and AED investments shows one part at a time (never added together); null for everyone else. */
+let PORTAL_CUR: 'INR' | 'AED' | null = null;
+export const portalCur = () => PORTAL_CUR;
+export function setPortalCur(c: 'INR' | 'AED' | null) { PORTAL_CUR = c; }
+export const isAedInvestor = (id: string | null | undefined) => !!id && (INV_CUR.has(id) ? INV_CUR.get(id) === 'AED' : AED_SET.has(id));
+/** The currency of an investment: its own, else its investor's. */
+export const invCurrency = (investmentId: string | null | undefined, investorId: string | null | undefined): 'INR' | 'AED' =>
+  investmentId && INV_CUR.has(investmentId) ? INV_CUR.get(investmentId)! : isAedInvestor(investorId) ? 'AED' : 'INR';
+/** An amount of one investment, in its currency. */
+export const moneyInv = (v: number | string | null | undefined, investmentId: string | null | undefined, investorId: string | null | undefined) => moneyIn(v, invCurrency(investmentId, investorId));
 export const aedRate = () => AED_K;
 const aedFmt = (a: number) => (a < 0 ? '−' : '') + 'AED ' + new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(a));
 /** An amount in the given currency, whatever the page shows. */
@@ -77,9 +90,10 @@ export function moneyShortIn(v: number | string | null | undefined, cur: 'INR' |
 export const moneyOf = (v: number | string | null | undefined, investorId: string | null | undefined) => moneyIn(v, isAedInvestor(investorId) ? 'AED' : 'INR');
 export const moneyShortOf = (v: number | string | null | undefined, investorId: string | null | undefined) => moneyShortIn(v, isAedInvestor(investorId) ? 'AED' : 'INR');
 /** A total split in two: the INR part and the AED part (both as saved, i.e. the AED part is AED × rate), e.g. "₹1.20Cr + AED 50,000.00". */
-export function moneyBoth(inr: number | string | null | undefined, aedSaved: number | string | null | undefined, short = false): string {
+export function moneyBoth(inr: number | string | null | undefined, aedSaved: number | string | null | undefined, short = false, zeroIn: 'INR' | 'AED' = 'INR'): string {
   const i = Number(inr || 0), a = Number(aedSaved || 0);
   const fi = short ? moneyShortIn(i, 'INR') : moneyIn(i, 'INR'), fa = short ? moneyShortIn(a, 'AED') : moneyIn(a, 'AED');
+  if (!a && !i && zeroIn === 'AED') return fa;
   if (a && !i) return fa;
   if (!a) return fi;
   return fi + ' + ' + fa;
@@ -252,3 +266,16 @@ export function investorPlanName(name: string, planRate: number | string, bonusR
 /** For Excel: an investor's amount in their own currency (AED investors in AED), and that currency. */
 export const csvAmount = (v: number | string | null | undefined, investorId: string | null | undefined) => (Number(v || 0) / (isAedInvestor(investorId) ? AED_K : 1)).toFixed(2);
 export const curCode = (investorId: string | null | undefined) => (isAedInvestor(investorId) ? 'AED' : 'INR');
+/** Adds up rows by a currency of each row: [INR part, AED part as saved]. */
+export function sumByCur<T>(rows: T[], amount: (r: T) => number, cur: (r: T) => 'INR' | 'AED'): [number, number] {
+  let i = 0, a = 0;
+  rows.forEach(r => { const v = Number(amount(r) || 0); if (cur(r) === 'AED') a += v; else i += v; });
+  return [Math.round(i * 100) / 100, Math.round(a * 100) / 100];
+}
+/** For Excel: an investment's amount in its own currency. */
+export const csvInv = (v: number | string | null | undefined, investmentId: string | null | undefined, investorId: string | null | undefined) => (Number(v || 0) / (invCurrency(investmentId, investorId) === 'AED' ? AED_K : 1)).toFixed(2);
+/** A person's total made of their investments: "₹X + AED Y" when they have both, else in the one currency (zero in their own). */
+export function personMoney<T extends { id: string }>(rows: T[], amount: (r: T) => number, investorId: string, short = false): string {
+  const [i, a] = sumByCur(rows, amount, r => invCurrency(r.id, investorId));
+  return moneyBoth(i, a, short, isAedInvestor(investorId) ? 'AED' : 'INR');
+}

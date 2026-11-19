@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { date, rateShort, today, moneyOf, moneyBoth, sumBoth, isAedInvestor, aedRate } from '../lib/format';
+import { date, rateShort, today, moneyIn, moneyBoth, sumByCur, isAedInvestor, aedRate } from '../lib/format';
 import { downloadCsv } from '../lib/csv';
 import type { Profile, Withdrawal, WithdrawalPart } from '../lib/types';
 import { Drawer, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -24,6 +24,8 @@ import { PayChips, PayFields, PayView, emptyPay, payArgs, payErrors, payText, ty
 type P = Pick<Profile, 'id' | 'code' | 'full_name' | 'phone' | 'introduced_by'>;
 interface Row extends Withdrawal { who?: P; ib?: P; by?: P }
 type Tab = 'pending' | 'completed' | 'cancelled' | 'all';
+/** A withdrawal's currency: its own, else the investor's. */
+const wc = (w: Withdrawal): 'INR' | 'AED' => (w.currency === 'AED' || w.currency === 'INR' ? w.currency : isAedInvestor(w.investor_id) ? 'AED' : 'INR');
 
 async function load() {
   const [wds, people] = await Promise.all([
@@ -46,15 +48,15 @@ export function Withdrawals() {
   const rows = all.filter(r => tab === 'all' || r.status === tab);
   const n = (k: Tab) => (k === 'all' ? all.length : all.filter(r => r.status === k).length);
   // INR and AED kept apart (AED investors' withdrawals in AED)
-  const sum = (rs: Row[]) => { const [i, a] = sumBoth(rs, r => Number(r.amount), r => r.investor_id); return moneyBoth(i, a); };
+  const sum = (rs: Row[]) => { const [i, a] = sumByCur(rs, r => Number(r.amount), wc); return moneyBoth(i, a); };
   const cols: Col<Row>[] = useMemo(() => [
     { h: 'Request', m: true, v: r => r.code },
     { h: 'Investor', v: r => r.who?.full_name || '', r: r => r.who ? <><Link to={'/admin/investors/' + r.who.code}>{r.who.full_name}</Link><span className="sub">{r.who.code} · {r.who.phone}</span>{r.by && <span className="sub">requested by IB {r.by.full_name}</span>}</> : '—' },
     { h: 'Withdrawal date', v: r => r.requested_on, r: r => date(r.requested_on) },
-    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => <b>{moneyOf(r.amount, r.investor_id)}</b> },
-    { h: 'Pay to', v: r => payText(r) + (r.ib ? ' ' + r.ib.full_name : ''), r: r => r.method === 'ib' ? <>Transfer to IB<span className="sub">to {r.ib?.full_name || 'IB'} · needs approval</span></> : <PayView r={r} amount={moneyOf(r.amount, r.investor_id)} /> },
+    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => <b>{moneyIn(r.amount, wc(r))}</b> },
+    { h: 'Pay to', v: r => payText(r) + (r.ib ? ' ' + r.ib.full_name : ''), r: r => r.method === 'ib' ? <>Transfer to IB<span className="sub">to {r.ib?.full_name || 'IB'} · needs approval</span></> : <PayView r={r} amount={moneyIn(r.amount, wc(r))} /> },
     { h: 'Proof', v: r => (r.attachments || []).length, r: r => <AttachmentLinks items={r.attachments} /> },
-    { h: 'Taken from (highest ROI first)', v: r => (r.allocations || []).map(p => p.code).join(' '), r: r => <>{(r.allocations || []).map((p: WithdrawalPart) => <div key={p.investment_id} className="sub" style={{ display: 'block' }}><span className="mono">{p.code}</span> · {rateShort(p.plan_rate ?? p.rate)} · {moneyOf(p.amount, r.investor_id)} → {moneyOf(p.after, r.investor_id)} left</div>)}</> },
+    { h: 'Taken from (highest ROI first)', v: r => (r.allocations || []).map(p => p.code).join(' '), r: r => <>{(r.allocations || []).map((p: WithdrawalPart) => <div key={p.investment_id} className="sub" style={{ display: 'block' }}><span className="mono">{p.code}</span> · {rateShort(p.plan_rate ?? p.rate)} · {moneyIn(p.amount, wc(r))} → {moneyIn(p.after, wc(r))} left</div>)}</> },
     { h: 'Status', v: r => r.status, r: r => <><WdBadge s={r.status} />{r.status === 'completed' && <span className="sub">{date(r.completed_on)}{r.payment_ref ? ' · ' + r.payment_ref : ''}</span>}{r.status === 'cancelled' && <span className="sub">{r.cancelled_reason}</span>}</> },
     { h: '', r: r => <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
       {r.status === 'pending' && <><button className="btn sm primary" onClick={e => { e.stopPropagation(); setDone(r); }}>{r.method === 'ib' ? 'Approve transfer' : 'Mark fulfilled'}</button>
@@ -68,7 +70,7 @@ export function Withdrawals() {
       <PageHead crumbs={['Withdrawals']} title="Withdrawals" sub="Taken automatically from the investor’s highest monthly ROI first, whatever the lock-in. Returns already use the lower amount from the request date. Pay the investor, then click Mark fulfilled."
         actions={<>
           <button className="btn" disabled={!rows.length} onClick={() => downloadCsv('withdrawals-' + tab, ['Request', 'Investor ID', 'Investor', 'Phone', 'Applied on', 'Currency', 'Amount', 'Pay to', 'Taken from', 'Status', 'Paid on', 'Reference'],
-            rows.map(r => { const k = isAedInvestor(r.investor_id) ? aedRate() : 1; return [r.code, r.who?.code, r.who?.full_name, r.who?.phone, r.requested_on, k === 1 ? 'INR' : 'AED', (Number(r.amount) / k).toFixed(2), payText(r) + (r.ib ? ' ' + r.ib.full_name : ''), (r.allocations || []).map(p => `${p.code} ${(Number(p.amount) / k).toFixed(2)}`).join('; '), r.status, r.completed_on, r.payment_ref]; }))}><Icon name="download" />Export to Excel</button>
+            rows.map(r => { const k = wc(r) === 'AED' ? aedRate() : 1; return [r.code, r.who?.code, r.who?.full_name, r.who?.phone, r.requested_on, wc(r), (Number(r.amount) / k).toFixed(2), payText(r) + (r.ib ? ' ' + r.ib.full_name : ''), (r.allocations || []).map(p => `${p.code} ${(Number(p.amount) / k).toFixed(2)}`).join('; '), r.status, r.completed_on, r.payment_ref]; }))}><Icon name="download" />Export to Excel</button>
           <button className="btn accent" onClick={() => setAdding(true)}><Icon name="plus" />Record withdrawals</button>
         </>} />
       {q.error ? <ErrorNote msg={q.error} retry={q.reload} /> : !q.data ? <Loading /> : (
@@ -105,17 +107,17 @@ function CompleteDialog({ w, onClose }: { w: Row; onClose: () => void }) {
   const [mt5, setMt5] = useState(w.mt5_account || '');
   const [ref, setRef] = useState('');
   const go = async () => {
-    const r = await act.run(() => rpc('admin_complete_withdrawal', { p_id: w.id, p_paid_on: on, p_method: method, p_mt5: mt5.trim(), p_ref: ref.trim() }), [method === 'ib' ? 'Transfer approved' : 'Payment fulfilled', `${w.code} · ${moneyOf(w.amount, w.investor_id)} · the investor now sees Payment fulfilled`]);
+    const r = await act.run(() => rpc('admin_complete_withdrawal', { p_id: w.id, p_paid_on: on, p_method: method, p_mt5: mt5.trim(), p_ref: ref.trim() }), [method === 'ib' ? 'Transfer approved' : 'Payment fulfilled', `${w.code} · ${moneyIn(w.amount, wc(w))} · the investor now sees Payment fulfilled`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
     <Modal title={w.method === 'ib' ? `Approve transfer ${w.code} to ${w.ib?.full_name || 'the IB'}?` : `Mark ${w.code} as payment fulfilled?`}
-      sub={w.method === 'ib' ? `${moneyOf(w.amount, w.investor_id)} from ${w.who?.full_name || 'the investor'} is transferred to their IB ${w.ib?.full_name || ''}. Both are notified.` : `Only after ${w.who?.full_name || 'the investor'} has received ${moneyOf(w.amount, w.investor_id)}.`} onClose={onClose}
+      sub={w.method === 'ib' ? `${moneyIn(w.amount, wc(w))} from ${w.who?.full_name || 'the investor'} is transferred to their IB ${w.ib?.full_name || ''}. Both are notified.` : `Only after ${w.who?.full_name || 'the investor'} has received ${moneyIn(w.amount, wc(w))}.`} onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy}>{method === 'ib' ? 'Approve transfer' : 'Mark fulfilled'}</button></>}>
       <div className="form">
         {(w.attachments || []).length > 0 && <Field label="Attached by the investor"><AttachmentLinks items={w.attachments} /></Field>}
         {w.note && <p className="hint">Note: {w.note}</p>}
-        {w.method !== 'ib' && <Field label="Requested to"><div><PayView r={w} amount={moneyOf(w.amount, w.investor_id)} /></div></Field>}
+        {w.method !== 'ib' && <Field label="Requested to"><div><PayView r={w} amount={moneyIn(w.amount, wc(w))} /></div></Field>}
         <Field label="Paid by"><div className="chips">
           {(w.method === 'ib' ? [['ib', 'Transfer to IB']] : [['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5']]).map(([k, l]) =>
             <button key={k} type="button" className={'chip ' + (method === k ? 'on' : '')} onClick={() => setMethod(k as WithdrawalMethod)}>{l}</button>)}
@@ -159,7 +161,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
   const [amtCur, setAmtCur] = useState<AmtCur>('INR');
   const inr = (t: string) => toInr(t, amtCur, aedRate);
-  const wmoney = (v: number) => moneyOf(v, who);
+  const wmoney = (v: number) => moneyIn(v, amtCur);
   const hasIb = !!people.find(p => p.id === who)?.introduced_by;
   const t = today();
   const set = (k: number, patch: Partial<WdRow>) => setRows(rs => rs.map((r, j) => (j === k ? { ...r, ...patch } : r)));
@@ -182,7 +184,7 @@ function RecordDialog({ people, onClose }: { people: P[]; onClose: () => void })
     setTried(true); if (bad) return;
     const r = await act.run(() => rpc('admin_record_withdrawals', {
       p_investor: who,
-      p_items: rows.map(x => ({ p_amount: inr(x.amount), p_date: x.on || t, p_method: x.method, ...payArgs(x.method, x.pay), p_paid: x.paid, p_paid_on: x.paid ? (x.paidOn || x.on) : '', p_ref: x.ref.trim(), p_note: 'Recorded by Super Admin' }))
+      p_items: rows.map(x => ({ p_amount: inr(x.amount), p_currency: amtCur, p_date: x.on || t, p_method: x.method, ...payArgs(x.method, x.pay), p_paid: x.paid, p_paid_on: x.paid ? (x.paidOn || x.on) : '', p_ref: x.ref.trim(), p_note: 'Recorded by Super Admin' }))
     }), [rows.length === 1 ? 'Withdrawal recorded' : `${rows.length} withdrawals recorded`, `${wmoney(total)} in total · applied in date order; returns recalculated from the earliest date.`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };

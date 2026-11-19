@@ -6,7 +6,7 @@ import { useAuth, useSettings } from '../lib/auth';
 import { createIbLogin, resetUserPassword, setInvestorLogin } from '../lib/adminApi';
 import { uploadDocument, openDocument, deleteDocument } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
-import { money, date, dateTime, initials, isUnlocked, lockinText, rate, today, LEDGER_TYPE, setDisplayCurrency, moneyOf, moneyBoth, sumBoth, isAedInvestor, aedRate } from '../lib/format';
+import { date, dateTime, initials, isUnlocked, lockinText, rate, today, LEDGER_TYPE, setDisplayCurrency, moneyBoth, sumBoth, isAedInvestor, sumByCur, invCurrency, moneyInv, personMoney } from '../lib/format';
 import type { AuditLog, Branch, Profile, Investment, Balance, LedgerEntry, DocumentRow, KycStatus, Payout } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, KycBadge, AcctBadge, InvBadge, LedgerBadge, Drawer, Modal, Field, useAction, Badge, PayBadge } from '../ui/kit';
@@ -27,11 +27,15 @@ function maskId(v: string): string {
 
 const fmtBytes = (n: number) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
 
-interface Row extends Profile { principal: number; unlocked: number; accrued: number; paid: number; next: string | null; branch: string; introducer: string }
+interface Row extends Profile { principal: number; unlocked: number; accrued: number; paid: number; next: string | null; branch: string; introducer: string;
+  /** the same in INR and in AED (a person can have investments in both) */ two: Record<'principal' | 'unlocked' | 'accrued' | 'paid', [number, number]> }
 
 export const loadBranches = async () => must(await api.from('branches').select('*').order('name')) as Branch[];
 
 /* =============================== DIRECTORY =============================== */
+/** A person's total: in their currency, or "₹X + AED Y" when they have investments in both. */
+const two = (r: Row, k: keyof Row['two']) => moneyBoth(r.two[k][0], r.two[k][1], false, isAedInvestor(r.id) ? 'AED' : 'INR');
+
 export function Investors() {
   const nav = useNavigate();
   const [sp] = useSearchParams();
@@ -59,7 +63,13 @@ export function Investors() {
         unlocked: live.filter(i => isUnlocked(i)).reduce((s, i) => s + Number(i.principal), 0),
         accrued: m.reduce((s, i) => s + Number(bm.get(i.id)?.accrued || 0), 0),
         paid: m.reduce((s, i) => s + Number(bm.get(i.id)?.paid || 0), 0),
-        next: live.filter(i => !isUnlocked(i)).map(i => i.lockin_end_date).filter((x): x is string => !!x).sort()[0] || null
+        next: live.filter(i => !isUnlocked(i)).map(i => i.lockin_end_date).filter((x): x is string => !!x).sort()[0] || null,
+        two: {
+          principal: sumByCur(live, i => Number(i.principal), i => invCurrency(i.id, p.id)),
+          unlocked: sumByCur(live.filter(i => isUnlocked(i)), i => Number(i.principal), i => invCurrency(i.id, p.id)),
+          accrued: sumByCur(m, i => Number(bm.get(i.id)?.accrued || 0), i => invCurrency(i.id, p.id)),
+          paid: sumByCur(m, i => Number(bm.get(i.id)?.paid || 0), i => invCurrency(i.id, p.id))
+        }
       };
     });
     return { rows, branches };
@@ -78,17 +88,17 @@ export function Investors() {
     { h: 'Registered', v: r => r.created_at, r: r => date(r.created_at) },
     { h: 'Verification', v: r => r.kyc_status, r: r => <KycBadge k={r.kyc_status} /> },
     { h: 'Account', v: r => r.account_status, r: r => <AcctBadge s={r.account_status} /> },
-    { h: 'Principal', n: true, v: r => r.principal, r: r => moneyOf(r.principal, r.id) },
-    { h: 'Unlocked', n: true, v: r => r.unlocked, r: r => moneyOf(r.unlocked, r.id) },
-    { h: 'Earned', n: true, v: r => r.accrued, r: r => moneyOf(r.accrued, r.id) },
-    { h: 'Paid', n: true, v: r => r.paid, r: r => <span className="pos">{moneyOf(r.paid, r.id)}</span> },
+    { h: 'Principal', n: true, v: r => r.principal, r: r => two(r, 'principal') },
+    { h: 'Unlocked', n: true, v: r => r.unlocked, r: r => two(r, 'unlocked') },
+    { h: 'Earned', n: true, v: r => r.accrued, r: r => two(r, 'accrued') },
+    { h: 'Paid', n: true, v: r => r.paid, r: r => <span className="pos">{two(r, 'paid')}</span> },
     { h: 'Next unlock', v: r => r.next || '9999', r: r => (r.next ? date(r.next) : <span className="muted">—</span>) }
   ], []);
 
   const exportCsv = () => downloadCsv(`investors-${today()}`,
     ['Investor ID', 'Name', 'Email', 'Branch', 'Under', 'Phone', 'City', 'Registered', 'KYC', 'Account', 'Currency', 'Principal (live)', 'Unlocked principal', 'Earned', 'Paid', 'Next unlock'],
-    rows.map(r => { const k = isAedInvestor(r.id) ? aedRate() : 1, f = (v: number) => (Number(v || 0) / k).toFixed(2);
-      return [r.code, r.full_name, r.email, r.branch, r.introducer, r.phone, r.city, r.created_at.slice(0, 10), r.kyc_status, r.account_status, k === 1 ? 'INR' : 'AED', f(r.principal), f(r.unlocked), f(r.accrued), f(r.paid), r.next || '']; }));
+    rows.map(r => { const k = isAedInvestor(r.id) ? 'AED' : 'INR', f = (x: keyof Row['two']) => moneyBoth(r.two[x][0], r.two[x][1], false, k);
+      return [r.code, r.full_name, r.email, r.branch, r.introducer, r.phone, r.city, r.created_at.slice(0, 10), r.kyc_status, r.account_status, k, f('principal'), f('unlocked'), f('accrued'), f('paid'), r.next || '']; }));
 
   return (
     <>
@@ -160,7 +170,7 @@ interface DetailData {
   /** IB bonus earned and paid: [from INR investors, from AED investors (as saved)] */
   bonus: { earned: [number, number]; paid: [number, number] };
   /** the running month so far (day by day, Pending until the month ends) */
-  running: { roi: number; bonus: number; from: string | null; to: string | null };
+  running: { rows: { id: string; roi: number; bonus: number }[]; roi: number; bonus: number; from: string | null; to: string | null };
   /** as an IB: the bonus this person earns every month from the people under them, and this month so far */
   ib: { monthly: [number, number]; running: [number, number]; subs: number };
 }
@@ -187,7 +197,9 @@ async function loadDetail(code: string): Promise<DetailData | null> {
     fetchAll<{ amount: number; status: string; investor_id: string }>((a, b) => api.from('admin_bonuses').select('amount, status, investor_id').eq('admin_id', p.id).range(a, b))
   ]);
   const run = await rpc<{ roi: number; bonus: number; from: string; to: string }[]>('running_month', { p_investor: p.id }).catch(() => []);
-  const running = { roi: Math.round(run.reduce((x, r) => x + Number(r.roi), 0) * 100) / 100, bonus: Math.round(run.reduce((x, r) => x + Number(r.bonus), 0) * 100) / 100, from: run[0]?.from || null, to: run[0]?.to || null };
+  // this month so far per investment (each in its own currency)
+  const runRows = (run as { investment_id?: string; roi: number; bonus: number }[]).map(r => ({ id: r.investment_id || '', roi: Number(r.roi), bonus: Number(r.bonus) }));
+  const running = { rows: runRows, roi: Math.round(run.reduce((x, r) => x + Number(r.roi), 0) * 100) / 100, bonus: Math.round(run.reduce((x, r) => x + Number(r.bonus), 0) * 100) / 100, from: run[0]?.from || null, to: run[0]?.to || null };
   // as an IB: monthly bonus now from the live investments of the people under them, and the running month so far
   const subIds = brought.map(b => b.id);
   const subInvs = subIds.length ? await fetchAll<Investment>((a, b) => api.from('investments').select('*').in('investor_id', subIds).range(a, b)) : [];
@@ -222,12 +234,9 @@ export function InvestorDetail() {
   const aedRate = Number(s?.inr_per_aed || 0), inAed = p.currency === 'AED' && aedRate > 0;
   setDisplayCurrency(inAed ? 'AED' : 'INR', aedRate);
   const live = invs.filter(i => LIVE.includes(i.status));
-  const principal = live.reduce((x, i) => x + Number(i.principal), 0);
   // every month across the live investments: the investor's ROI, and the IB bonus paid on top to the IB
-  const monthlyRoi = live.reduce((x, i) => x + Number(i.monthly_return || 0), 0);
   const monthlyBonus = live.reduce((x, i) => x + Number(i.admin_bonus || 0), 0);
   const branch = branches.find(b => b.id === p.branch_id) || null;
-  const paid = invs.reduce((x, i) => x + Number(bal.get(i.id)?.paid || 0), 0);
   const self = me?.id === p.id;
   const bonusEarned = bonus.earned[0] + bonus.earned[1];
   const bonusPending = bonus.earned[0] - bonus.paid[0] > 0.005 || bonus.earned[1] - bonus.paid[1] > 0.005;
@@ -263,7 +272,7 @@ export function InvestorDetail() {
         </div>
       </PageHead>
 
-      {p.currency === 'AED' && <div className="note info">{inAed ? <>This investor is in <b>AED</b>: amounts on this page are in AED.</> : <>This investor is set to <b>AED</b>, but no AED rate is set yet. Set it in <b>Settings</b>.</>}</div>}
+      {p.currency === 'AED' && <div className="note info">{inAed ? (invs.some(i => invCurrency(i.id, p.id) === 'INR') ? <>This investor has <b>AED</b> and <b>INR</b> investments: each amount is shown in its own currency, never added together.</> : <>This investor is in <b>AED</b>: amounts on this page are in AED.</>) : <>This investor is set to <b>AED</b>, but no AED rate is set yet. Set it in <b>Settings</b>.</>}</div>}
       {p.kyc_status !== 'verified' && (
         <div className="note">
           <b>{p.kyc_status === 'rejected' ? 'Verification was rejected.' : 'Awaiting KYC verification.'}</b> Investments can only be recorded for verified investors.
@@ -273,16 +282,16 @@ export function InvestorDetail() {
       )}
 
       <div className="kpis">
-        <Kpi label="Principal" value={money(principal)} sub={`${live.length} investment${live.length === 1 ? '' : 's'}`} />
-        <Kpi label="Total monthly ROI" value={money(monthlyRoi)} sub={`/ month to ${p.full_name || 'the investor'}`} />
+        <Kpi label="Principal" value={personMoney(live, i => Number(i.principal), p.id)} sub={`${live.length} investment${live.length === 1 ? '' : 's'}`} />
+        <Kpi label="Total monthly ROI" value={personMoney(live, i => Number(i.monthly_return || 0), p.id)} sub={`/ month to ${p.full_name || 'the investor'}`} />
         {(ib.subs > 0 || bonusEarned > 0) && <>
           {/* this person is an IB: the bonus they earn from the people under them (in the currency of each person) */}
           <Kpi label="IB bonus per month" value={moneyBoth(ib.monthly[0], ib.monthly[1])} cls="pos" sub={`from ${ib.subs} ${ib.subs === 1 ? 'person' : 'people'} under ${p.full_name || 'them'}${ib.running[0] + ib.running[1] > 0 ? ` · this month so far ${moneyBoth(ib.running[0], ib.running[1])} (pending)` : ''}`} />
           <Kpi label="IB bonus earned" value={moneyBoth(bonus.earned[0], bonus.earned[1])} sub={`${moneyBoth(bonus.paid[0], bonus.paid[1])} paid${bonusPending ? ` · ${moneyBoth(bonus.earned[0] - bonus.paid[0], bonus.earned[1] - bonus.paid[1])} pending` : ''}`} subCls={bonusPending ? 'warn' : ''} />
         </>}
-        {(introducer || !(ib.subs > 0 || bonusEarned > 0)) && <Kpi label={introducer ? 'Bonus to their IB' : 'Total IB bonus'} value={monthlyBonus > 0 ? money(monthlyBonus) : 'None'} sub={monthlyBonus > 0 ? `/ month to ${introducer?.full_name || 'the IB'}, on top of the ROI` : introducer ? `Under ${introducer.full_name || 'an IB'} · no bonus set` : 'Not under an IB'} />}
-        <Kpi label="Returns paid" value={money(paid)} cls="pos" sub="Confirmed with bank reference" />
-        <Kpi label="This month so far" value={money(running.roi)} sub={running.from ? `Pending · ${date(running.from)} – ${date(running.to)}${running.bonus > 0 ? ` · IB bonus ${money(running.bonus)}` : ''}` : 'Pending'} subCls="warn" />
+        {(introducer || !(ib.subs > 0 || bonusEarned > 0)) && <Kpi label={introducer ? 'Bonus to their IB' : 'Total IB bonus'} value={monthlyBonus > 0 ? personMoney(live, i => Number(i.admin_bonus || 0), p.id) : 'None'} sub={monthlyBonus > 0 ? `/ month to ${introducer?.full_name || 'the IB'}, on top of the ROI` : introducer ? `Under ${introducer.full_name || 'an IB'} · no bonus set` : 'Not under an IB'} />}
+        <Kpi label="Returns paid" value={personMoney(invs, i => Number(bal.get(i.id)?.paid || 0), p.id)} cls="pos" sub="Confirmed with bank reference" />
+        <Kpi label="This month so far" value={personMoney(running.rows, r => r.roi, p.id)} sub={running.from ? `Pending · ${date(running.from)} – ${date(running.to)}${running.bonus > 0 ? ` · IB bonus ${personMoney(running.rows, r => r.bonus, p.id)}` : ''}` : 'Pending'} subCls="warn" />
       </div>
 
       {introducer && introducer.role === 'investor' && (
@@ -317,8 +326,8 @@ export function InvestorDetail() {
                     <tr key={i.id} className="click" onClick={() => nav('/admin/investments/' + i.code)}>
                       <td className="m">{i.code}</td>
                       <td>{i.plan_name} v{i.plan_version}<span className="sub">{lockinText(i.lockin_months)}</span></td>
-                      <td className="n">{money(i.principal)}</td><td>{rate(i.monthly_rate)}</td><td>{date(i.start_date || i.expected_start)}</td><td>{date(i.maturity_date)}</td>
-                      <td className="n">{money(b?.accrued || 0)}</td><td className="n pos">{money(b?.paid || 0)}</td>
+                      <td className="n">{moneyInv(i.principal, i.id, p.id)}</td><td>{rate(i.monthly_rate)}</td><td>{date(i.start_date || i.expected_start)}</td><td>{date(i.maturity_date)}</td>
+                      <td className="n">{moneyInv(b?.accrued || 0, i.id, p.id)}</td><td className="n pos">{moneyInv(b?.paid || 0, i.id, p.id)}</td>
                       <td><InvBadge i={i} approachingDays={s.approaching_days} /></td>
                     </tr>
                   );
@@ -361,7 +370,7 @@ export function InvestorDetail() {
               <thead><tr><th>Payout</th><th>Investment</th><th>Due</th><th className="n">Amount</th><th>Status</th><th>Reference</th></tr></thead>
               <tbody>{payouts.map(x => (
                 <tr key={x.id}><td className="m">{x.code}</td><td className="m"><Link to={'/admin/investments/' + (invCode[x.investment_id] || '')}>{invCode[x.investment_id] || '—'}</Link></td>
-                  <td>{date(x.due_date)}</td><td className="n">{money(x.amount)}</td><td><PayBadge s={x.status} /></td><td className="m">{x.payment_ref || x.batch_ref || '—'}</td></tr>
+                  <td>{date(x.due_date)}</td><td className="n">{moneyInv(x.amount, x.investment_id, p.id)}</td><td><PayBadge s={x.status} /></td><td className="m">{x.payment_ref || x.batch_ref || '—'}</td></tr>
               ))}</tbody>
             </table>
           ) : <div className="card-b"><Empty title="No payouts yet">Monthly returns appear here once an investment starts accruing.</Empty></div>}
@@ -378,7 +387,7 @@ export function InvestorDetail() {
                 <tbody>{ledger.map(t => (
                   <tr key={t.id}><td>{date(t.occurred_on)}<span className="sub mono">{t.code}</span></td><td>{LEDGER_TYPE[t.type] || t.type}</td>
                     <td className="m">{t.investment_id ? invCode[t.investment_id] || '—' : '—'}</td>
-                    <td className={'n ' + (Number(t.amount) < 0 ? 'neg' : '')}>{money(t.amount)}</td><td><LedgerBadge s={t.status} /></td></tr>
+                    <td className={'n ' + (Number(t.amount) < 0 ? 'neg' : '')}>{moneyInv(t.amount, t.investment_id, p.id)}</td><td><LedgerBadge s={t.status} /></td></tr>
                 ))}</tbody>
               </table>
             ) : <div className="card-b"><Empty title="No transactions">Entries appear when an investment is recorded for this investor.</Empty></div>}

@@ -27,7 +27,7 @@ export function Documents() {
   const [tab, setTab] = useState('all');
   const q = useQuery(async () => {
     const [inv, docs] = await Promise.all([
-      loadInvestments(profile!.id),
+      loadInvestments(profile!.id, true),
       api.from('documents').select('*').eq('owner_id', profile!.id).eq('visible_to_investor', true).order('created_at', { ascending: false })
     ]);
     return { codes: codeMap(inv), docs: must(docs) as DocumentRow[] };

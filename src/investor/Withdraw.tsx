@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useAuth, useSettings } from '../lib/auth';
 import { useQuery, refreshAll } from '../lib/useQuery';
-import { date, rateShort, today, moneyIn, moneyOf, isAedInvestor } from '../lib/format';
+import { date, rateShort, today, moneyIn, moneyOf, isAedInvestor, invCurrency } from '../lib/format';
 import { uploadAttachment } from '../lib/docs';
 import type { Investment, MyAccount, Withdrawal, WithdrawalMethod, WithdrawalPart } from '../lib/types';
 import { Badge, Empty, ErrorNote, Field, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -45,7 +45,11 @@ export function Withdraw() {
   // the amount can be typed in AED (converted at the AED rate, saved in INR); AED investors start in AED
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
   // everything here is in the currency of the person it is for (AED investors in AED), typed the same way; no rate shown
-  const amtCur: AmtCur = isAedInvestor(forId) && aedRate > 0 ? 'AED' : 'INR';
+  const baseCur: AmtCur = isAedInvestor(forId) && aedRate > 0 ? 'AED' : 'INR';
+  // a person with INR and AED investments chooses which to withdraw from (never mixed in one withdrawal)
+  const [wdc, setWdc] = useState<AmtCur | null>(null);
+  const myCurs = forId === me ? [...new Set((q.data?.invs || []).filter(i => LIVE.includes(i.status)).map(i => invCurrency(i.id, me)))] : [baseCur];
+  const amtCur: AmtCur = wdc && myCurs.includes(wdc) ? wdc : myCurs.length === 1 ? myCurs[0] : baseCur;
   const money = (v: number | string | null | undefined) => moneyIn(v, amtCur);
   const [method, setMethod] = useState<WithdrawalMethod>('bank');
   const [pay, setPay] = useState<PayDetails>(emptyPay());
@@ -65,9 +69,9 @@ export function Withdraw() {
   // the exact order the company takes money in (highest ROI first), for the chosen person
   useEffect(() => {
     let live = true; setOrder(null);
-    rpc<WithdrawalPart[]>('withdrawal_preview', { p_amount: 1e15, ...(forId !== me ? { p_investor: forId } : {}) }).then(r => { if (live) setOrder(r || []); }).catch(() => { if (live) setOrder([]); });
+    rpc<WithdrawalPart[]>('withdrawal_preview', { p_amount: 1e15, p_currency: amtCur, ...(forId !== me ? { p_investor: forId } : {}) }).then(r => { if (live) setOrder(r || []); }).catch(() => { if (live) setOrder([]); });
     return () => { live = false; };
-  }, [forId, me, q.data]);
+  }, [forId, me, q.data, amtCur]);
   const parts = order || [];
   const available = Math.round(parts.reduce((s, p) => s + Number(p.before), 0) * 100) / 100;
   const typed = toInr(amount, amtCur, aedRate);
@@ -76,9 +80,9 @@ export function Withdraw() {
   useEffect(() => {
     if (!(amt > 0)) { setPreview([]); return; }
     let live = true;
-    rpc<WithdrawalPart[]>('withdrawal_preview', { p_amount: Math.min(amt, available), ...(forId !== me ? { p_investor: forId } : {}) }).then(r => { if (live) setPreview(r || []); }).catch(() => {});
+    rpc<WithdrawalPart[]>('withdrawal_preview', { p_amount: Math.min(amt, available), p_currency: amtCur, ...(forId !== me ? { p_investor: forId } : {}) }).then(r => { if (live) setPreview(r || []); }).catch(() => {});
     return () => { live = false; };
-  }, [amt, available, forId, me]);
+  }, [amt, available, forId, me, amtCur]);
   // a transfer to an IB is only possible when the person is under one (for a sub-investor, that IB is me)
   const ibName = forMe ? acc?.ib?.name || null : profile!.full_name;
   useEffect(() => { if (method === 'ib' && !ibName) setMethod('bank'); }, [ibName, method]);
@@ -101,7 +105,7 @@ export function Withdraw() {
     const r = await act.run(async () => {
       const attachments = [];
       for (const f of files) attachments.push(await uploadAttachment(f, me));
-      return rpc('request_withdrawal', { ...forArg, p_amount: amt, p_method: method, ...payArgs(method, pay), p_note: note.trim(), p_attachments: attachments });
+      return rpc('request_withdrawal', { ...forArg, p_amount: amt, p_currency: amtCur, p_method: method, ...payArgs(method, pay), p_note: note.trim(), p_attachments: attachments });
     }, [method === 'ib' ? 'Transfer to IB requested' : 'Withdrawal requested', method === 'ib' ? 'The company approves it. It shows as Payment processed until then.' : 'It shows as Payment processed; it becomes Payment fulfilled when the company pays it.']);
     if (r !== undefined) { setConfirm(false); setAmount(''); setPay(emptyPay()); setNote(''); setFiles([]); setTried(false); refreshAll(); q.reload(); }
   };
@@ -135,6 +139,7 @@ export function Withdraw() {
           <div className="card-b">
             {!order ? <Loading rows={2} /> : !parts.length ? <Empty title="Nothing to withdraw">{forMe ? 'You have' : sub!.full_name + ' has'} no live investment right now.</Empty> : (
               <div className="form">
+                {myCurs.length > 1 && <Field label="Withdraw from"><CurChips cur={amtCur} onChange={c => { setWdc(c); setAmount(''); }} rate={aedRate} /><p className="hint">{amtCur === 'AED' ? 'Your AED investments.' : 'Your INR investments.'}</p></Field>}
                 <Field label={`Amount (${amtCur}) *`} err={tried ? err : null} hint={`Up to ${money(available)}.`}>
                   <input className={'input num ' + (tried && err ? 'bad' : '')} inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder={amtCur === 'AED' ? 'e.g. 5000' : 'e.g. 100000'} />
                   {amtCur === 'INR' && <AmountWords v={amount} />}
@@ -181,9 +186,9 @@ export function Withdraw() {
                 <td className="mono">{w.code}</td>
                 {acc && acc.subs.length > 0 && <td>{whoName(w.investor_id)}</td>}
                 <td>{date(w.requested_on)}</td>
-                <td className="n">{moneyOf(w.amount, w.investor_id)}</td>
+                <td className="n">{moneyIn(w.amount, (w.currency || (isAedInvestor(w.investor_id) ? 'AED' : 'INR')) as AmtCur)}</td>
                 <td>{methodText(w.method)}{w.method !== 'ib' && payText(w).includes(' · ') && <span className="sub mono">{payText(w).split(' · ').slice(1).join(' · ')}</span>}</td>
-                <td>{(w.allocations || []).map(p => `${p.code} (${rateShort(p.rate)}): ${moneyOf(p.amount, w.investor_id)}`).join(', ')}</td>
+                <td>{(w.allocations || []).map(p => `${p.code} (${rateShort(p.rate)}): ${moneyIn(p.amount, (w.currency || (isAedInvestor(w.investor_id) ? 'AED' : 'INR')) as AmtCur)}`).join(', ')}</td>
                 <td><AttachmentLinks items={w.attachments} /></td>
                 <td><WdBadge s={w.status} />{w.status === 'completed' && <span className="sub">{w.method === 'ib' ? 'approved' : 'paid'} {date(w.completed_on)}{w.payment_ref ? ' · ' + w.payment_ref : ''}</span>}{w.status === 'cancelled' && w.cancelled_reason && <span className="sub">{w.cancelled_reason}</span>}</td>
                 <td>{w.status === 'pending' && <span style={{ display: 'inline-flex', gap: 6 }}><button className="btn sm" onClick={() => setEditing(w)}>Edit</button><button className="btn sm danger" onClick={() => setDel(w)}>Delete</button></span>}</td>
@@ -209,7 +214,7 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
   const act = useAction();
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
   // in the currency the page is shown in (AED for AED investors); the Super Admin can also switch
-  const [amtCur, setAmtCur] = useState<AmtCur>(isAedInvestor(w.investor_id) && aedRate > 0 ? 'AED' : 'INR');
+  const [amtCur, setAmtCur] = useState<AmtCur>((w.currency || (isAedInvestor(w.investor_id) ? 'AED' : 'INR')) === 'AED' && aedRate > 0 ? 'AED' : 'INR');
   const initTxt = amtCur === 'AED' ? String(Math.round(Number(w.amount) / aedRate * 100) / 100) : String(w.amount);
   const [amount, setAmount] = useState(initTxt);
   const [method, setMethod] = useState<WithdrawalMethod>(w.method);

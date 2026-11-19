@@ -1,7 +1,7 @@
 // Data loading and small date helpers shared by the investor portal pages.
 // Every figure shown comes from rows the signed-in investor can read (RLS).
 import { api, must, fetchAll, rpc } from '../lib/api';
-import { addMonths, calendarPeriods, daysBetween, today, type CalPeriod } from '../lib/format';
+import { addMonths, calendarPeriods, daysBetween, today, invCurrency, portalCur, type CalPeriod } from '../lib/format';
 import type { Accrual, Balance, Investment, LedgerEntry, MyAccount, Payout } from '../lib/types';
 
 /** The signed-in investor: whether they are an IB, their IB (if any), their sub-investors and bank details. */
@@ -23,8 +23,12 @@ export const bal = (p: Portfolio, id: string) => p.balances[id] || ZERO(id);
 /** Returns earned but not yet confirmed as paid (sums of payout rows by status, from the balances view). */
 export const unpaid = (b: Balance) => Number(b.unapproved) + Number(b.approved) + Number(b.processing);
 
-export async function loadInvestments(investorId: string): Promise<Investment[]> {
-  return must(await api.from('investments').select('*').eq('investor_id', investorId).order('created_at', { ascending: false })) as Investment[];
+/** A person with INR and AED investments sees one part at a time in the portal: only rows in the part chosen. */
+export const inPart = (investmentId: string | null | undefined, investorId: string) => { const c = portalCur(); return !c || !investmentId || invCurrency(investmentId, investorId) === c; };
+
+export async function loadInvestments(investorId: string, all = false): Promise<Investment[]> {
+  const rows = must(await api.from('investments').select('*').eq('investor_id', investorId).order('created_at', { ascending: false })) as Investment[];
+  return all ? rows : rows.filter(i => inPart(i.id, investorId));
 }
 
 export async function loadPortfolio(investorId: string): Promise<Portfolio> {
@@ -38,12 +42,13 @@ export async function loadPortfolio(investorId: string): Promise<Portfolio> {
   ]);
   const balances: Record<string, Balance> = {};
   (must(bs) as Balance[]).forEach(b => { balances[b.investment_id] = b; });
-  return { investments, balances, accruals, payouts };
+  return { investments, balances, accruals, payouts: portalCur() ? payouts.filter(x => ids.includes(x.investment_id)) : payouts };
 }
 
 export async function loadLedger(investorId: string): Promise<LedgerEntry[]> {
   return fetchAll<LedgerEntry>((a, b) => api.from('ledger_entries').select('*').eq('investor_id', investorId)
-    .order('occurred_on', { ascending: false }).order('created_at', { ascending: false }).range(a, b));
+    .order('occurred_on', { ascending: false }).order('created_at', { ascending: false }).range(a, b))
+    .then(rows => rows.filter(l => inPart(l.investment_id, investorId)));
 }
 
 /** Map investment id → code for labelling rows. */

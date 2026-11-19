@@ -7,7 +7,7 @@ import { AedNote, CurChips, toInr, type AmtCur } from '../ui/CurAmount';
 import { uploadDocument, openDocument, deleteDocument, uploadAttachment } from '../lib/docs';
 import { downloadCsv } from '../lib/csv';
 import { recordInvestmentFull } from '../lib/adminApi';
-import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText, roiWayText, setDisplayCurrency, moneyOf, moneyIn, moneyBoth, sumBoth, isAedInvestor, aedRate as aedK } from '../lib/format';
+import { money, date, dateShort, dateTime, rate, today, addMonths, daysBetween, investmentLabel, isUnlocked, lockinText, rateShort, LEDGER_TYPE, calendarPeriods, firstPeriodText, roiWayText, setDisplayCurrency, moneyIn, moneyBoth, invCurrency, moneyInv, sumByCur, aedRate as aedK } from '../lib/format';
 import type { Investment, Balance, Branch, Profile, Plan, Accrual, Payout, LedgerEntry } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Kpi, Empty, ErrorNote, Loading, PageHead, InvBadge, PayBadge, LedgerBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
@@ -79,22 +79,22 @@ export function Investments() {
     { h: 'Investor', v: r => r.investor?.full_name || '', r: r => <>{r.investor?.full_name || '—'}<span className="sub">{r.investor?.code}{r.branch ? ' · ' + r.branch : ''}</span></> },
     { h: 'Plan', v: r => r.plan_name, r: r => <>{r.plan_name}{r.plan_id && <> <span className="muted mono">v{r.plan_version}</span></>}<span className="sub">{rate(r.monthly_rate)}</span></> },
     { h: 'Bonus to', v: r => r.bonusTo?.full_name || '', r: r => Number(r.admin_bonus || 0) > 0
-      ? (r.bonusTo ? <>{r.bonusTo.full_name || r.bonusTo.email}<span className="sub">{rate(r.admin_bonus_rate || 0)} · {moneyOf(r.admin_bonus, r.investor_id)} / month</span></> : <span className="muted">Individual<span className="sub">{rate(r.admin_bonus_rate || 0)} unassigned</span></span>)
+      ? (r.bonusTo ? <>{r.bonusTo.full_name || r.bonusTo.email}<span className="sub">{rate(r.admin_bonus_rate || 0)} · {moneyInv(r.admin_bonus, r.id, r.investor_id)} / month</span></> : <span className="muted">Individual<span className="sub">{rate(r.admin_bonus_rate || 0)} unassigned</span></span>)
       : <span className="muted">—</span> },
-    { h: 'Principal', n: true, v: r => Number(r.principal), r: r => moneyOf(r.principal, r.investor_id) },
+    { h: 'Principal', n: true, v: r => Number(r.principal), r: r => moneyInv(r.principal, r.id, r.investor_id) },
     { h: 'Lock-in', v: r => r.lockin_months, r: r => lockinText(r.lockin_months) },
     { h: 'Start', v: r => r.start_date || '9999', r: r => (r.start_date ? date(r.start_date) : <span className="muted">Not funded</span>) },
     { h: 'Lock-in end', v: r => r.maturity_date || '9999', r: r => (r.maturity_date ? <>{date(r.maturity_date)}{LIVE.includes(r.status) && <span className="sub">{Math.max(0, daysBetween(t, r.maturity_date))} days</span>}</> : '—') },
-    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => moneyOf(r.bal?.accrued || 0, r.investor_id) },
-    { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{moneyOf(r.bal?.paid || 0, r.investor_id)}</span> },
-    { h: 'Outstanding', n: true, v: r => r.outstanding, r: r => moneyOf(r.outstanding, r.investor_id) },
+    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => moneyInv(r.bal?.accrued || 0, r.id, r.investor_id) },
+    { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{moneyInv(r.bal?.paid || 0, r.id, r.investor_id)}</span> },
+    { h: 'Outstanding', n: true, v: r => r.outstanding, r: r => moneyInv(r.outstanding, r.id, r.investor_id) },
     { h: 'Status', v: r => r.label, r: r => <InvBadge i={r} approachingDays={s.approaching_days} /> }
   ], [s.approaching_days, t]);
 
-  const livePrincipal = sumBoth(rows.filter(r => LIVE.includes(r.status)), r => Number(r.principal), r => r.investor_id);
+  const livePrincipal = sumByCur(rows.filter(r => LIVE.includes(r.status)), r => Number(r.principal), r => invCurrency(r.id, r.investor_id));
   const exportCsv = () => downloadCsv(`investments-${today()}`,
     ['Investment', 'Investor ID', 'Investor', 'Branch', 'Plan', 'Version', 'Rate %/month', 'Investor rate %', 'Bonus %', 'Bonus / month', 'Bonus to', 'Currency', 'Principal', 'Monthly return', 'Lock-in months', 'Start', 'Lock-in end', 'Earned', 'Paid', 'Outstanding', 'Status', 'Agreement ref', 'Deposit ref', 'Monthly ROI taken by'],
-    rows.map(r => { const k = isAedInvestor(r.investor_id) ? aedK() : 1, f = (v: unknown) => (Number(v || 0) / k).toFixed(2);
+    rows.map(r => { const k = invCurrency(r.id, r.investor_id) === 'AED' ? aedK() : 1, f = (v: unknown) => (Number(v || 0) / k).toFixed(2);
       return [r.code, r.investor?.code, r.investor?.full_name, r.branch, r.plan_name, r.plan_version, r.monthly_rate, r.investor_rate ?? r.monthly_rate, r.admin_bonus_rate ?? 0, f(r.admin_bonus), r.bonusTo ? r.bonusTo.full_name || r.bonusTo.email : '', k === 1 ? 'INR' : 'AED', f(r.principal), f(r.monthly_return), r.lockin_months, r.start_date, r.maturity_date,
         f(r.bal?.accrued), f(r.bal?.paid), f(r.outstanding), r.label, r.agreement_ref, r.deposit_ref, roiWayText(r.roi_method, r.roi_upi)]; }));
 
@@ -641,7 +641,7 @@ async function loadInvestment(code: string): Promise<DetailData | null> {
   const ip = must(await api.from('profiles').select('introduced_by,currency').eq('id', i.investor_id).maybeSingle()) as { introduced_by?: string | null; currency?: string | null } | null;
   const introducedBy = ip?.introduced_by || null;
   const names = await namesFor([i.investor_id, introducedBy, i.created_by, i.activated_by, ...amendments.flatMap(a => [a.requested_by, a.approved_by])]);
-  return { i, investor: names[i.investor_id], bal: must(bal) as Balance | null, accruals, payouts, ledger, amendments, plan: must(plan) as Plan | null, names, introducedBy, aed: ip?.currency === 'AED' };
+  return { i, investor: names[i.investor_id], bal: must(bal) as Balance | null, accruals, payouts, ledger, amendments, plan: must(plan) as Plan | null, names, introducedBy, aed: (i as Investment & { currency?: string }).currency ? (i as Investment & { currency?: string }).currency === 'AED' : ip?.currency === 'AED' };
 }
 
 type Dialog = null | 'fund' | 'cancel' | 'amend' | 'edit' | 'delete' | 'revise' | 'revise-bonus';

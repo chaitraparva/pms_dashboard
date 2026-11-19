@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useSettings } from '../lib/auth';
-import { money, moneyShort, date, dateShort, dateTime, lockinText, rate, rateShort, today, monthlyReturn, STANDARD_RATES, moneyOf, moneyBoth, sumBoth } from '../lib/format';
+import { money, moneyShort, date, dateShort, dateTime, lockinText, rate, rateShort, today, monthlyReturn, STANDARD_RATES, moneyBoth, sumByCur, invCurrency, moneyInv } from '../lib/format';
 import type { Plan, PlanVersion, PlanStatus, Investment, Profile, EarlyRedemption, Settings } from '../lib/types';
 import { DataTable } from '../ui/DataTable';
 import { Empty, ErrorNote, Loading, PageHead, InvBadge, Badge, Drawer, Modal, Field, useAction } from '../ui/kit';
@@ -46,7 +46,7 @@ export function Plans() {
     return q.data.plans.map(p => {
       const cur = q.data!.versions.find(v => v.plan_id === p.id && v.version === p.current_version);
       const live = q.data!.invs.filter(i => i.plan_id === p.id && LIVE.includes(i.status));
-      return { p, cur, live: live.length, principal: sumBoth(live, i => Number(i.principal), i => i.investor_id), total: q.data!.invs.filter(i => i.plan_id === p.id).length };
+      return { p, cur, live: live.length, principal: sumByCur(live, i => Number(i.principal), i => invCurrency(i.id, i.investor_id)), total: q.data!.invs.filter(i => i.plan_id === p.id).length };
     });
   }, [q.data]);
   const shown = cards.filter(c => filter === 'all' ? c.p.status !== 'archived' : c.p.status === filter);
@@ -356,7 +356,7 @@ export function PlanDetail() {
                 <dt>Accrual schedule</dt><dd>Monthly on start-date anniversary</dd>
                 <dt>Payout schedule</dt><dd>Within {cur.payout_lag_days} day{cur.payout_lag_days === 1 ? '' : 's'} of accrual</dd>
                 <dt>Eligible to invest</dt><dd>{date(cur.eligible_from)} – {cur.eligible_to ? date(cur.eligible_to) : 'open-ended'}</dd>
-                <dt>Live principal</dt><dd>{(() => { const [a, b] = sumBoth(live, i => Number(i.principal), i => i.investor_id); return moneyBoth(a, b); })()} · {live.length} live</dd>
+                <dt>Live principal</dt><dd>{(() => { const [a, b] = sumByCur(live, i => Number(i.principal), i => invCurrency(i.id, i.investor_id)); return moneyBoth(a, b); })()} · {live.length} live</dd>
                 <dt>Created by</dt><dd>{(pl.created_by && names[pl.created_by]) || '—'} · {date(plan.created_at)}</dd>
                 <dt>Last modified by</dt><dd>{(pl.updated_by && names[pl.updated_by]) || '—'} · {date(plan.updated_at)}</dd>
               </dl>
@@ -403,7 +403,7 @@ export function PlanDetail() {
               <tbody>{invs.map(i => (
                 <tr key={i.id} className="click" onClick={() => nav('/admin/investments/' + i.code)}>
                   <td className="m">{i.code}</td><td>{names[i.investor_id] || '—'}</td><td className="m">v{i.plan_version}</td><td>{rate(i.monthly_rate)}</td>
-                  <td className="n">{moneyOf(i.principal, i.investor_id)}</td><td>{i.start_date ? date(i.start_date) : <span className="muted">Not funded</span>}</td><td>{date(i.maturity_date)}</td>
+                  <td className="n">{moneyInv(i.principal, i.id, i.investor_id)}</td><td>{i.start_date ? date(i.start_date) : <span className="muted">Not funded</span>}</td><td>{date(i.maturity_date)}</td>
                   <td><InvBadge i={i} approachingDays={s.approaching_days} /></td>
                 </tr>
               ))}</tbody>

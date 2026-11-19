@@ -4,12 +4,12 @@ import { api, must } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery } from '../lib/useQuery';
 import { openDocument } from '../lib/docs';
-import { date, dateShort, investmentLabel, isUnlocked, LEDGER_TYPE, lockinText, money, pct, rate, rateShort, roiWayText } from '../lib/format';
+import { date, dateShort, investmentLabel, isUnlocked, LEDGER_TYPE, lockinText, money, pct, rate, rateShort, roiWayText, portalCur } from '../lib/format';
 import { Badge, Empty, ErrorNote, InvBadge, Kpi, LedgerBadge, Loading, PageHead, PayBadge, useAction } from '../ui/kit';
 import { DataTable } from '../ui/DataTable';
 import { Icon } from '../ui/Icon';
 import type { Accrual, DocumentRow, Investment, Payout } from '../lib/types';
-import { bal, codeMap, daysLeft, isLive, loadLedger, loadPortfolio, periodReturn, periodsFor, unpaid } from './data';
+import { bal, codeMap, daysLeft, isLive, loadInvestments, loadLedger, loadPortfolio, periodReturn, periodsFor, unpaid } from './data';
 import { BackLink, maturityText, Prose, Steps, Tracker, useApproaching } from './parts';
 
 const VIEWS: [string, string][] = [['All', 'all'], ['Unlocked', 'unlocked'], ['Locked', 'locked'], ['Pending funding', 'pending_funding'], ['Closed', 'closed']];
@@ -151,7 +151,9 @@ export function InvestmentDetail() {
     const p = await loadPortfolio(profile!.id);
     const i = p.investments.find(x => x.code === code);
     const docs = i ? must(await api.from('documents').select('*').eq('investment_id', i.id).order('created_at', { ascending: false })) as DocumentRow[] : [];
-    return { p, i, docs };
+    // INR and AED investments are shown apart: an investment of the other part says so
+    const other = !i && portalCur() ? (await loadInvestments(profile!.id, true)).find(x => x.code === code) : undefined;
+    return { p, i, docs, other };
   }, [profile?.id, code]);
 
   if (q.loading && !q.data) return <><PageHead crumbs={['My Investments', code || '']} title={code || ''} /><Loading /></>;
@@ -160,7 +162,9 @@ export function InvestmentDetail() {
   if (!q.data || !i) return (
     <>
       <PageHead crumbs={['My Investments', 'Not found']} title="Investment not found" />
-      <Empty title="Investment not found">We couldn't find that investment in your account. <Link to="/portal/investments">Back to my investments</Link></Empty>
+      {q.data?.other
+        ? <Empty title={`${code} is one of your ${portalCur() === 'AED' ? 'INR' : 'AED'} investments`}>Choose "{portalCur() === 'AED' ? 'INR' : 'AED'} investments" at the top of the page to see it.</Empty>
+        : <Empty title="Investment not found">We couldn't find that investment in your account. <Link to="/portal/investments">Back to my investments</Link></Empty>}
     </>
   );
   const { p, docs } = q.data;

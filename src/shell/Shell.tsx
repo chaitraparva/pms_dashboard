@@ -4,7 +4,7 @@ import { Icon } from '../ui/Icon';
 import { CrumbCtx } from '../ui/kit';
 import { useAuth } from '../lib/auth';
 import { api, fetchAll } from '../lib/api';
-import { dateShort, initials, setDisplayCurrency, setAedInvestors } from '../lib/format';
+import { dateShort, initials, setDisplayCurrency, setAedInvestors, setInvestmentCurrencies, setPortalCur } from '../lib/format';
 import { onRefresh, refreshAll } from '../lib/useQuery';
 import type { Notification } from '../lib/types';
 
@@ -30,18 +30,34 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
   // Super Admin pages switch to AED only on the page of an AED investor (that page sets it).
   const admin = base === '/admin';
   const rate = Number(settings?.inr_per_aed || 0);
-  const shown: 'INR' | 'AED' = !admin && profile?.currency === 'AED' && rate > 0 ? 'AED' : 'INR';
+  // an investor with both INR and AED investments sees one part at a time (chosen at the top), never added together
+  const [mixed, setMixed] = useState(false);
+  const [pcur, setPcur] = useState<'INR' | 'AED'>(() => { try { return localStorage.getItem('pms-pcur') === 'AED' ? 'AED' : 'INR'; } catch { return 'INR'; } });
+  const pickCur = (c: 'INR' | 'AED') => { setPcur(c); try { localStorage.setItem('pms-pcur', c); } catch { /* ignore */ } };
+  const split = !admin && mixed && rate > 0;
+  const shown: 'INR' | 'AED' = split ? pcur : !admin && profile?.currency === 'AED' && rate > 0 ? 'AED' : 'INR';
   setDisplayCurrency(shown, rate);
+  setPortalCur(split ? pcur : null);
   // who is in AED (their amounts are shown in AED on every page); pages are drawn again once it is known
   const [aedN, setAedN] = useState(-1);
   useEffect(() => {
     if (!profile) return;
     let live = true;
-    fetchAll<{ id: string }>((a, b) => api.from('profiles').select('id').eq('currency', 'AED').range(a, b))
-      .then(rows => { if (!live) return; setAedInvestors(rows.map(r => r.id), rate); setAedN(rows.length); })
+    Promise.all([fetchAll<{ id: string }>((a, b) => api.from('profiles').select('id').eq('currency', 'AED').range(a, b)),
+      fetchAll<{ id: string; currency: string; investor_id: string }>((a, b) => api.from('investments').select('id,currency,investor_id').in('currency', ['INR', 'AED']).range(a, b))])
+      .then(async ([rows, invs]) => {
+        if (!live) return; setAedInvestors(rows.map(r => r.id), rate); setInvestmentCurrencies(invs);
+        let both = false;
+        if (!admin && invs.some(r => r.investor_id === profile.id)) {
+          const own = await fetchAll<{ id: string; currency: string | null }>((a, b) => api.from('investments').select('id,currency').eq('investor_id', profile.id).range(a, b)).catch(() => []);
+          const base = profile.currency === 'AED' ? 'AED' : 'INR';
+          both = new Set(own.map(i => i.currency === 'AED' || i.currency === 'INR' ? i.currency : base)).size > 1;
+        }
+        if (!live) return; setMixed(both); setAedN(rows.length + invs.length * 1000);
+      })
       .catch(() => { if (live) setAedN(0); });
     return () => { live = false; };
-  }, [profile, rate]);
+  }, [profile, rate, admin]);
   const navTo = useNavigate();
   const loc = useLocation();
   const [crumbs, setCrumbs] = useState<string[]>([]);
@@ -109,6 +125,9 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
             <form className="gsearch" onSubmit={e => { e.preventDefault(); if (q.trim()) onSearch(q.trim()); }} role="search">
               <Icon name="search" /><input value={q} onChange={e => setQ(e.target.value)} placeholder={searchPh} aria-label="Search" />
             </form>
+            {split && <div className="chips" role="group" aria-label="Which investments to show" title="Your INR and AED investments are shown apart, never added together">
+              {(['INR', 'AED'] as const).map(c => <button key={c} type="button" className={'chip ' + (pcur === c ? 'on' : '')} onClick={() => pickCur(c)}>{c} investments</button>)}
+            </div>}
             <div style={{ position: 'relative' }} data-pop>
               <button className="icon-btn" onClick={() => setPop(pop === 'bell' ? '' : 'bell')} aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}><Icon name="bell" />{unread > 0 && <em>{unread > 99 ? '99+' : unread}</em>}</button>
               {pop === 'bell' && (
@@ -140,7 +159,7 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
               )}
             </div>
           </header>
-          <main key={shown + rate + ':' + aedN} className={'content' + (profile?.read_only ? ' ro' : '')} ref={roMark}>
+          <main key={shown + rate + ':' + aedN + (split ? ':p' : '')} className={'content' + (profile?.read_only ? ' ro' : '')} ref={roMark}>
             {profile?.read_only && <div className="note info" style={{ marginBottom: 14 }}><b>CRM login · read only.</b> You can see every page and option, but nothing can be added, accepted, edited or deleted.</div>}
             <Outlet />
           </main>

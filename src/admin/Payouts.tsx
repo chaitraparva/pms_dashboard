@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, rpc, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useAuth } from '../lib/auth';
-import { money, date, today, roiWayText, moneyOf, moneyBoth, sumBoth, csvAmount, curCode } from '../lib/format';
+import { money, date, today, roiWayText, moneyBoth, sumByCur, invCurrency, moneyInv, csvInv } from '../lib/format';
 import { downloadCsv } from '../lib/csv';
 import type { Dashboard, Payout, PayoutStatus } from '../lib/types';
 import { PayBadge, Kpi, ErrorNote, Loading, PageHead, Modal, Field, IconBtn, useAction } from '../ui/kit';
@@ -59,7 +59,7 @@ export function Payouts() {
   const selectable = (r: Row) => ops.some(o => OP_FROM[o].includes(r.status));
   const chosen = rows.filter(r => sel.has(r.id) && selectable(r));
   // INR and AED kept apart (AED investors' payouts in AED)
-  const both = (rs: Row[]) => { const [i, a] = sumBoth(rs, r => Number(r.amount), r => r.investor_id); return moneyBoth(i, a); };
+  const both = (rs: Row[]) => { const [i, a] = sumByCur(rs, r => Number(r.amount), r => invCurrency(r.investment_id, r.investor_id)); return moneyBoth(i, a); };
   const chosenSum = both(chosen);
 
   const switchTab = (k: Tab) => { setTab(k); setSel(new Set()); };
@@ -84,7 +84,7 @@ export function Payouts() {
   const exportCsv = () => downloadCsv(`payouts-${tab}-${t}`,
     ['Payout', 'Investor ID', 'Investor', 'Investment', 'Plan', 'Period', 'Due date', 'Currency', 'Amount', 'Status', 'Bank', 'Account', 'IFSC', 'Batch reference', 'Payment reference', 'Paid on', 'Failure reason', 'ROI taken by'],
     rows.map(r => [r.code, r.investor?.code, nameOf(r.investor), r.inv?.code, r.inv?.plan_name, r.acc ? r.acc.period_no + (r.acc.kind === 'stub' ? ' (stub)' : '') : '', r.due_date,
-      curCode(r.investor_id), csvAmount(r.amount, r.investor_id), r.status, r.investor?.bank_name, r.investor?.bank_account_masked, r.investor?.bank_ifsc, r.batch_ref, r.payment_ref, r.paid_on, r.failure_reason, roiWayText(r.inv?.roi_method, r.inv?.roi_upi)]));
+      invCurrency(r.investment_id, r.investor_id), csvInv(r.amount, r.investment_id, r.investor_id), r.status, r.investor?.bank_name, r.investor?.bank_account_masked, r.investor?.bank_ifsc, r.batch_ref, r.payment_ref, r.paid_on, r.failure_reason, roiWayText(r.inv?.roi_method, r.inv?.roi_upi)]));
 
   const cols: Col<Row>[] = [
     { h: 'Payout', m: true, v: r => r.code },
@@ -92,7 +92,7 @@ export function Payouts() {
     { h: 'Investment', v: r => r.inv?.code, r: r => r.inv ? <><Link className="mono" to={`/admin/investments/${r.inv.code}`}>{r.inv.code}</Link><span className="sub">{r.inv.plan_name}</span></> : '—' },
     { h: 'Period', v: r => r.acc?.period_no ?? 0, r: r => r.acc ? `#${r.acc.period_no}${r.acc.kind === 'stub' ? ' (stub)' : ''}` : '—' },
     { h: 'Due', v: r => r.due_date, r: r => <span style={r.due_date <= t && !['paid', 'cancelled'].includes(r.status) ? { color: 'var(--amber)' } : undefined}>{date(r.due_date)}</span> },
-    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => moneyOf(r.amount, r.investor_id) },
+    { h: 'Amount', n: true, v: r => Number(r.amount), r: r => moneyInv(r.amount, r.investment_id, r.investor_id) },
     { h: 'Taken by', v: r => r.inv?.roi_method || '', r: r => r.inv?.roi_method ? <>{roiWayText(r.inv.roi_method)}{r.inv.roi_upi && <span className="sub mono">{r.inv.roi_upi}</span>}</> : <span className="muted">Not set</span> },
     { h: 'Bank', v: r => r.investor?.bank_name || '', r: r => r.investor?.bank_name || r.investor?.bank_account_masked ? <>{r.investor.bank_name || '—'}<span className="sub mono">{r.investor.bank_account_masked}</span></> : <span className="muted">Not on file</span> },
     {
@@ -213,11 +213,11 @@ function EditPayout({ p, onClose }: { p: Row; onClose: () => void }) {
   const [reason, setReason] = useState(p.failure_reason || '');
   const STATUSES: [PayoutStatus, string][] = [['accrued', 'Earned'], ['approved', 'Approved'], ['processing', 'Payment processed'], ['paid', 'Payment fulfilled'], ['failed', 'Failed']];
   const go = async () => {
-    const r = await act.run(() => rpc('admin_update_payout', { p_id: p.id, p_status: status, p_ref: ref.trim(), p_paid_on: paidOn, p_reason: reason.trim() }), ['Payout updated', `${p.code} · ${moneyOf(p.amount, p.investor_id)}`]);
+    const r = await act.run(() => rpc('admin_update_payout', { p_id: p.id, p_status: status, p_ref: ref.trim(), p_paid_on: paidOn, p_reason: reason.trim() }), ['Payout updated', `${p.code} · ${moneyInv(p.amount, p.investment_id, p.investor_id)}`]);
     if (r !== undefined) { refreshAll(); onClose(); }
   };
   return (
-    <Modal title={`Edit ${p.code}`} sub={`${moneyOf(p.amount, p.investor_id)} · ${nameOf(p.investor)} · ${p.inv?.code || ''}`} onClose={onClose}
+    <Modal title={`Edit ${p.code}`} sub={`${moneyInv(p.amount, p.investment_id, p.investor_id)} · ${nameOf(p.investor)} · ${p.inv?.code || ''}`} onClose={onClose}
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || (status === 'failed' && !reason.trim()) || (status === 'paid' && !ref.trim())}>Save</button></>}>
       <div className="form">
         <Field label="Status"><div className="chips">{STATUSES.map(([k, l]) => <button key={k} type="button" className={'chip ' + (status === k ? 'on' : '')} onClick={() => setStatus(k)}>{l}</button>)}</div></Field>

@@ -7,7 +7,7 @@ import { api, rpc, must, fetchAll } from '../lib/api';
 import { useQuery, refreshAll } from '../lib/useQuery';
 import { useSettings } from '../lib/auth';
 import { downloadCsv } from '../lib/csv';
-import { date, isUnlocked, lockinText, money, moneyShort, rateShort, today, moneyBoth, moneyOf, isAedInvestor, aedRate } from '../lib/format';
+import { date, isUnlocked, lockinText, money, moneyShort, rateShort, today, moneyBoth, aedRate, invCurrency, moneyInv, personMoney } from '../lib/format';
 import type { Balance, Branch, BranchStats, Dashboard, Investment, Profile, RateSplit } from '../lib/types';
 import { DataTable, Col } from '../ui/DataTable';
 import { Badge, Empty, ErrorNote, Field, InvBadge, Kpi, Loading, Modal, PageHead, useAction } from '../ui/kit';
@@ -242,36 +242,39 @@ export function BranchDetail() {
   const reconciles = Math.abs(sum('principal') - Number(d.principal_invested)) < 0.005 && Math.abs(sum('unlocked') - Number(d.unlocked_principal)) < 0.005;
   const rates = mergeRates(d, withStandardRates(d.by_rate || []));
   // each investor's own currency: AED investors in AED, the others in INR
-  const mo = (v: number | string, id: string) => moneyOf(v, id);
+  // a person's totals from their investments, each in its own currency ("₹X + AED Y" when they have both)
+  const { bal } = q.data;
+  const liveOf = (r: InvRow) => r.invs.filter(i => LIVE.includes(i.status));
+  const pm = (r: InvRow, list: Investment[], amt: (i: Investment) => number) => personMoney(list, amt, r.p.id);
 
   const investorCols: Col<InvRow>[] = [
     { h: 'Investor', v: r => r.p.full_name || r.p.email, r: r => <><b>{r.p.full_name || '—'}</b><span className="sub">{r.p.email}</span></> },
-    { h: 'Total principal', n: true, v: r => r.principal, r: r => mo(r.principal, r.p.id) },
+    { h: 'Total principal', n: true, v: r => r.principal, r: r => pm(r, liveOf(r), i => Number(i.principal)) },
     { h: 'ROI', v: r => r.rates[0] ?? -1, r: r => r.rates.length ? r.rates.map(rateShort).join(', ') : '—' },
     { h: 'Lock-in', v: r => r.lockins[0] ?? -1, r: r => r.lockins.length ? r.lockins.map(m => m === 12 ? '1 year' : m + ' mo').join(', ') : '—' },
     { h: 'Invested on', v: r => r.first || '9999', r: r => date(r.first) },
     { h: 'Lock-in end', v: r => r.lastMaturity || '9999', r: r => <>{date(r.lastMaturity)}{r.nextUnlock && r.nextUnlock !== r.lastMaturity && <span className="sub">next unlock {date(r.nextUnlock)}</span>}</> },
-    { h: 'Locked', n: true, v: r => r.locked, r: r => mo(r.locked, r.p.id) },
-    { h: 'Unlocked', n: true, v: r => r.unlocked, r: r => <span className={r.unlocked ? 'pos' : ''}>{mo(r.unlocked, r.p.id)}</span> },
-    { h: 'Returns accrued', n: true, v: r => r.accrued, r: r => mo(r.accrued, r.p.id) },
-    { h: 'Returns paid', n: true, v: r => r.paid, r: r => <span className="pos">{mo(r.paid, r.p.id)}</span> },
+    { h: 'Locked', n: true, v: r => r.locked, r: r => pm(r, liveOf(r).filter(i => !isUnlocked(i, t)), i => Number(i.principal)) },
+    { h: 'Unlocked', n: true, v: r => r.unlocked, r: r => <span className={r.unlocked ? 'pos' : ''}>{pm(r, liveOf(r).filter(i => isUnlocked(i, t)), i => Number(i.principal))}</span> },
+    { h: 'Returns accrued', n: true, v: r => r.accrued, r: r => pm(r, r.invs, i => Number(bal.get(i.id)?.accrued || 0)) },
+    { h: 'Returns paid', n: true, v: r => r.paid, r: r => <span className="pos">{pm(r, r.invs, i => Number(bal.get(i.id)?.paid || 0))}</span> },
     { h: 'Status', v: r => r.p.kyc_status + r.p.account_status, r: r => r.p.account_status !== 'active' ? <Badge cls="b-red">Suspended</Badge> : r.p.kyc_status !== 'verified' ? <Badge cls="b-amber">KYC {r.p.kyc_status}</Badge> : r.invs.length ? <Badge cls="b-green">{r.invs.filter(i => LIVE.includes(i.status)).length} live</Badge> : <Badge cls="b-grey">No investments</Badge> }
   ];
   const lineCols: Col<Line>[] = [
     { h: 'Investment', v: r => r.code, m: true },
     { h: 'Investor', v: r => r.who?.full_name || '', r: r => <>{r.who?.full_name || '—'}<span className="sub">{r.who?.email}</span></> },
     { h: 'Investment date', v: r => r.start_date || r.expected_start || '', r: r => date(r.start_date || r.expected_start) },
-    { h: 'Principal', n: true, v: r => Number(r.principal), r: r => mo(r.principal, r.investor_id) },
+    { h: 'Principal', n: true, v: r => Number(r.principal), r: r => moneyInv(r.principal, r.id, r.investor_id) },
     { h: 'ROI', v: r => Number(r.monthly_rate), r: r => rateShort(r.monthly_rate) },
     { h: 'Lock-in', v: r => r.lockin_months, r: r => r.lockin_months === 12 ? '1 year' : r.lockin_months + ' months' },
     { h: 'Lock-in end', v: r => r.maturity_date || '', r: r => date(r.maturity_date) },
-    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => mo(r.bal?.accrued || 0, r.investor_id) },
-    { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{mo(r.bal?.paid || 0, r.investor_id)}</span> },
+    { h: 'Earned', n: true, v: r => Number(r.bal?.accrued || 0), r: r => moneyInv(r.bal?.accrued || 0, r.id, r.investor_id) },
+    { h: 'Paid', n: true, v: r => Number(r.bal?.paid || 0), r: r => <span className="pos">{moneyInv(r.bal?.paid || 0, r.id, r.investor_id)}</span> },
     { h: 'Status', v: r => r.status, r: r => <InvBadge i={r} approachingDays={s.approaching_days} /> }
   ];
   const exportCsv = () => downloadCsv(`${branch.code.toLowerCase()}-branch-${t}`,
     ['Investment', 'Investor', 'Email', 'Investment date', 'Currency', 'Principal', 'Monthly ROI %', 'Lock-in months', 'Lock-in end', 'Locked / unlocked', 'Earned', 'Paid', 'Status'],
-    lines.map(l => { const k = isAedInvestor(l.investor_id) ? aedRate() : 1, f = (v: unknown) => (Number(v || 0) / k).toFixed(2);
+    lines.map(l => { const k = invCurrency(l.id, l.investor_id) === 'AED' ? aedRate() : 1, f = (v: unknown) => (Number(v || 0) / k).toFixed(2);
       return [l.code, l.who?.full_name, l.who?.email, l.start_date || l.expected_start, k === 1 ? 'INR' : 'AED', f(l.principal), l.monthly_rate, l.lockin_months, l.maturity_date,
         LIVE.includes(l.status) ? (isUnlocked(l, t) ? 'Unlocked' : 'Locked') : '', f(l.bal?.accrued), f(l.bal?.paid), l.status]; }));
 

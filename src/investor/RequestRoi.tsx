@@ -69,13 +69,14 @@ export function RequestRoi() {
   const isIb = subs.length > 0 || !!bonus;
   // an IB with no ROI of their own starts on their sub-investors
   const mode = !me ? 'subs' : !isIb ? 'me' : forWho ?? (me.months.length ? 'me' : subs.length ? 'subs' : 'bonus');
-  const total = (p: Person) => p.months.filter(m => chosen(p).includes(m.month)).reduce((x, m) => x + m.amount, 0);
   // each person's ROI in their own currency (AED investors in AED); an IB bonus keeps INR and AED apart
   const ownId = (p: Person) => (p.kind === 'bonus' ? p.id.slice(6) : p.id);
-  const fmtMonth = (p: Person, m: MonthOpt) => (p.kind === 'bonus' ? moneyBoth(m.amount_inr ?? m.amount, m.amount_aed) : moneyOf(m.amount, ownId(p)));
+  // the month's amount split by currency (a person with INR and AED investments sees "₹X + AED Y")
+  const zc = (p: Person) => (p.kind !== 'bonus' && isAedInvestor(ownId(p)) ? 'AED' : 'INR') as 'INR' | 'AED';
+  const fmtMonth = (p: Person, m: MonthOpt) => (m.amount_inr != null ? moneyBoth(m.amount_inr, m.amount_aed, false, zc(p)) : moneyOf(m.amount, ownId(p)));
   const fmtTotal = (p: Person, list?: MonthOpt[]) => { const ms = list || p.months.filter(m => chosen(p).includes(m.month));
-    return p.kind === 'bonus' ? moneyBoth(ms.reduce((x, m) => x + Number(m.amount_inr ?? m.amount), 0), ms.reduce((x, m) => x + Number(m.amount_aed || 0), 0)) : moneyOf(ms.reduce((x, m) => x + m.amount, 0), ownId(p)); };
-  const fmtMany = (ps: Person[]) => { let i = 0, a = 0; ps.forEach(p => { const v = total(p); if (isAedInvestor(p.id)) a += v; else i += v; }); return moneyBoth(i, a); };
+    return ms.every(m => m.amount_inr != null) ? moneyBoth(ms.reduce((x, m) => x + Number(m.amount_inr || 0), 0), ms.reduce((x, m) => x + Number(m.amount_aed || 0), 0), false, zc(p)) : moneyOf(ms.reduce((x, m) => x + m.amount, 0), ownId(p)); };
+  const fmtMany = (ps: Person[]) => { let i = 0, a = 0; ps.forEach(p => p.months.filter(m => chosen(p).includes(m.month)).forEach(m => { if (m.amount_inr != null) { i += Number(m.amount_inr); a += Number(m.amount_aed || 0); } else if (isAedInvestor(p.id)) a += m.amount; else i += m.amount; })); return moneyBoth(i, a); };
 
   const card = (p: Person, title: string) => { const b = p.kind === 'bonus', w = b ? 'IB bonus' : 'ROI'; return (
     <div className="card" key={p.id}>

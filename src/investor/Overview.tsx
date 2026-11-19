@@ -3,12 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api, must, rpc } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery } from '../lib/useQuery';
-import { date, dateShort, isUnlocked, lockinText, money, moneyShort, rate, today, moneyBoth, sumBoth } from '../lib/format';
+import { date, dateShort, isUnlocked, lockinText, money, moneyShort, rate, today, moneyBoth, sumBoth, portalCur, personMoney } from '../lib/format';
 import { Empty, ErrorNote, Kpi, Loading, PageHead } from '../ui/kit';
 import { BarChart, Donut, LineChart, monthLabel } from '../ui/Charts';
 import { Icon } from '../ui/Icon';
 import type { Announcement, Investment } from '../lib/types';
-import { bal, isLive, lastMonths, loadPortfolio, nextAccrual, type Portfolio } from './data';
+import { bal, inPart, isLive, lastMonths, loadInvestments, loadPortfolio, nextAccrual, type Portfolio } from './data';
 import { Tracker } from './parts';
 import { loadMyBrochures } from './Brochures';
 import { loadProperties, ParvaBanner, PropertyGrid } from './Properties';
@@ -19,15 +19,20 @@ export function Overview() {
   const nav = useNavigate();
   const id = profile!.id;
   const q = useQuery(async () => {
-    const [p, ann, bros, props, myRank] = await Promise.all([
+    const [p, ann, bros, props, rank0, every] = await Promise.all([
       loadPortfolio(id),
       api.from('announcements').select('id,code,title,category,published_at').eq('status', 'published').order('published_at', { ascending: false }).limit(4),
       loadMyBrochures(),
       loadProperties(),
-      rpc<MyRank | null>('my_rank').catch(() => null)
+      rpc<MyRank | null>('my_rank').catch(() => null),
+      portalCur() ? loadInvestments(id, true) : Promise.resolve(null)
     ]);
+    // INR and AED investments shown apart: the rank figures of the part being shown
+    const k = portalCur() === 'AED' ? 1 : 0;
+    const myRank = rank0 && portalCur() && rank0.split ? { ...rank0, principal: rank0.split.principal[k], released: rank0.split.released[k], pending: rank0.split.pending[k], upcoming: rank0.split.upcoming[k],
+      to_release: rank0.split.pending[k] + rank0.split.upcoming[k] } : rank0;
     // the running month so far: own returns, and (for an IB) the bonus on the people under them
-    const run = await rpc<{ investor_id: string; roi: number; bonus: number; from: string; to: string }[]>('running_month').catch(() => []);
+    const run = (await rpc<{ investment_id: string; investor_id: string; roi: number; bonus: number; from: string; to: string }[]>('running_month').catch(() => [])).filter(r => r.investor_id !== id || inPart(r.investment_id, id));
     // the IB bonus is in the currency of the person it comes from (AED investors in AED), never added to INR
     const running = { roi: run.reduce((x, r) => x + Number(r.roi), 0), bonus: run.reduce((x, r) => x + Number(r.bonus), 0), bonusTwo: sumBoth(run, r => Number(r.bonus), r => r.investor_id), from: run[0]?.from || null, to: run[0]?.to || null };
     // an IB: the bonus they get every month from the people under them, and what has been paid to them so far
@@ -39,7 +44,7 @@ export function Overview() {
       paid: sumBoth(net.bonuses.filter(b => b.status === 'paid'), b => Number(b.amount), b => idOf(b.investor_code)),
       pending: sumBoth(net.bonuses.filter(b => b.status === 'accrued'), b => Number(b.amount), b => idOf(b.investor_code)),
       people: net.investors.length } : null;
-    return { p, myRank, running, ibBonus, anns: must(ann) as Pick<Announcement, 'id' | 'code' | 'title' | 'category' | 'published_at'>[], bros, props };
+    return { p, myRank, running, ibBonus, every, anns: must(ann) as Pick<Announcement, 'id' | 'code' | 'title' | 'category' | 'published_at'>[], bros, props };
   }, [id]);
 
   const first = (profile!.full_name || '').trim().split(/\s+/)[0] || 'there';
@@ -48,7 +53,7 @@ export function Overview() {
   if (q.loading && !q.data) return <><PageHead crumbs={['Overview']} title={`Welcome back, ${first}`} /><Loading /></>;
   if (q.error || !q.data) return <><PageHead crumbs={['Overview']} title={`Welcome back, ${first}`} /><ErrorNote msg={q.error || 'Could not load your portfolio.'} retry={q.reload} /></>;
 
-  const { p, myRank, anns, bros, props, running, ibBonus } = q.data;
+  const { p, myRank, anns, bros, props, running, ibBonus, every } = q.data;
   const inv = p.investments;
   const live = inv.filter(isLive);
   const principal = live.reduce((s, i) => s + Number(i.principal), 0);
@@ -98,6 +103,10 @@ export function Overview() {
                 series={[{ name: 'Invested', color: 'var(--chart-1)', values: live.map(i => Number(i.principal)) }, { name: 'ROI released', color: 'var(--green)', values: live.map(i => Number(bal(p, i.id).paid)) }]} />
             </div>
           </div>
+
+          {every && (() => { const all = every.filter(isLive); return (
+            <div className="note info"><b>You have INR and AED investments.</b> They are shown apart, never added together. Now showing your {portalCur()} investments; switch at the top.
+              {' '}All your live investments: {personMoney(all, i => Number(i.principal), id)} · monthly ROI {personMoney(all, i => Number(i.monthly_return || 0), id)}.</div>); })()}
 
           <div className="kpis k4">
             <Kpi label="Total invested" value={money(principal)} sub={`${live.length} investment${live.length === 1 ? '' : 's'} · view details`} onClick={() => nav('/portal/investments')}
@@ -224,7 +233,8 @@ export function Overview() {
 const PLAN_COLORS = ['var(--chart-3)', 'var(--chart-2)', 'var(--chart-1)', 'var(--violet)'];
 
 interface MyRank { rank: number; total: number; multiple: number; branch: string | null; branch_rank: number; branch_total: number;
-  last: string | null; since: string | null; principal: number; released: number; pending: number; upcoming: number; to_release: number }
+  last: string | null; since: string | null; principal: number; released: number; pending: number; upcoming: number; to_release: number;
+  split?: { principal: number[]; released: number[]; pending: number[]; upcoming: number[] } | null }
 
 /** "You are here": the investor's rank (most invested = rank 1), with ROI released and ROI still to be released. */
 function YourRank({ r }: { r: MyRank }) {
