@@ -2344,7 +2344,20 @@ function dailyAccruals() {
   runAllAccruals();
   S.seq.accruals_day = d;
 }
-export function catchUp() { const prev = currentUid; currentUid = null; try { toCalendarMonths(); bonusOnTop(); applyRateChanges(); dailyAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
+export function catchUp() { const prev = currentUid; currentUid = null; try { fixAedRate(); toCalendarMonths(); bonusOnTop(); applyRateChanges(); dailyAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
+/** One-time: the AED rate is fixed at 1 AED = ₹25 (manual, so the daily market rate no longer changes it). The Super Admin
+ *  can still change it in Settings afterwards. Nothing saved is converted. */
+function fixAedRate() {
+  if (S.seq.aed_fixed_25) return;
+  const s = settings(); if (!s) return;
+  const before = { inr_per_aed: s.inr_per_aed ?? null, mode: s.aed_rate_mode ?? null };
+  s.inr_per_aed = 25; s.aed_rate_on = today(); s.aed_rate_mode = 'manual'; s.aed_rate_source = 'manual';
+  s.aed_rate_history = [{ rate: 25, on: today(), at: nowIso() }, ...(Array.isArray(s.aed_rate_history) ? s.aed_rate_history.filter((h: Row) => h.on !== today()) : [])].slice(0, 60);
+  s.updated_at = nowIso();
+  S.seq.aed_fixed_25 = 1;
+  audit('settings.aed_rate', 'settings', null, 'AED rate', '1 AED = ₹25 (fixed)', before, { inr_per_aed: 25, mode: 'manual' });
+  persist('settings');
+}
 /** IB bonuses recorded while the person was not yet placed under their IB (or before the IB was known) belong to the IB the
  *  person is under now: they are given to that IB, so every IB sees all the bonus on the people under them. */
 function bonusOwners() {
