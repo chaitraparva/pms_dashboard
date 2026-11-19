@@ -853,7 +853,7 @@ export function InvestmentDetail() {
       {dlg === 'cancel' && <CancelDialog i={i} onClose={() => setDlg(null)} />}
       {dlg === 'amend' && <AmendDialog i={i} onClose={() => setDlg(null)} />}
       {dlg === 'revise' && <ReviseRoi i={i} onClose={() => { setDlg(null); q.reload(); }} />}
-      {dlg === 'edit' && <EditInvestment i={i} underIb={!!introducedBy} ibName={introducedBy ? nm(introducedBy) : ''} onClose={() => setDlg(null)} />}
+      {dlg === 'edit' && <EditInvestment i={i} underIb={!!introducedBy} ibName={introducedBy ? nm(introducedBy) : ''} aed={aed} onClose={() => setDlg(null)} />}
       {dlg === 'delete' && <DeleteInvestment i={i} onClose={() => setDlg(null)} />}
     </>
   );
@@ -912,14 +912,17 @@ function CancelDialog({ i, onClose }: { i: Investment; onClose: () => void }) {
 }
 
 /** Super Admin: change an investment's terms. Changing ROI, bonus, lock-in, principal or start date recalculates its returns. */
-function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underIb: boolean; ibName: string; onClose: () => void }) {
+function EditInvestment({ i, underIb, ibName, aed = false, onClose }: { i: Investment; underIb: boolean; ibName: string; aed?: boolean; onClose: () => void }) {
   const act = useAction();
   const hasWd = ((i as Investment & { principal_changes?: unknown[] }).principal_changes || []).length > 0;
   const orig = Number((i as Investment & { original_principal?: number }).original_principal ?? i.principal);
   const [roi, setRoi] = useState(String(Number(i.monthly_rate)));
   const [bonus, setBonus] = useState(String(Number(i.admin_bonus_rate || 0)));
   const [lock, setLock] = useState(String(i.lockin_months));
-  const [amount, setAmount] = useState(String(orig));
+  // an AED investor's principal is shown and typed in AED (saved at the fixed rate)
+  const aedRate = Number(useSettings()?.inr_per_aed || 0), inAed = aed && aedRate > 0;
+  const origTxt = inAed ? String(Math.round(orig / aedRate * 100) / 100) : String(orig);
+  const [amount, setAmount] = useState(origTxt);
   const [start, setStart] = useState(i.start_date || i.expected_start || today());
   const [ref, setRef] = useState(i.deposit_ref || '');
   const [notes, setNotes] = useState(i.notes || '');
@@ -927,7 +930,8 @@ function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underI
   const [roiUpi, setRoiUpi] = useState(i.roi_upi || '');
   const [reason, setReason] = useState('');
   const [tried, setTried] = useState(false);
-  const r = Number(roi), b = Number(bonus || 0), m = Number(lock), amt = Number(amount);
+  // unchanged = exactly the saved principal
+  const r = Number(roi), b = Number(bonus || 0), m = Number(lock), amt = amount === origTxt ? orig : toInr(amount, inAed ? 'AED' : 'INR', aedRate);
   const errs: Record<string, string | null> = {
     roi: !(r > 0 && r <= 100) || !DEC(roi, 4) ? 'Enter the monthly ROI, e.g. 2.3 or 6.' : null,
     bonus: underIb && (!DEC(bonus || '0', 4) || b > 100) ? 'Enter the bonus as 0 or more.' : null,
@@ -954,7 +958,7 @@ function EditInvestment({ i, underIb, ibName, onClose }: { i: Investment; underI
           </Field>
         </div>
         <div className="f-row">
-          <Field label="Principal (INR) *" err={e('amount')} hint={hasWd ? 'This investment has withdrawals, so the principal cannot be changed.' : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} disabled={hasWd} /><AmountWords v={amount} /></Field>
+          <Field label={`Principal (${inAed ? 'AED' : 'INR'}) *`} err={e('amount')} hint={hasWd ? 'This investment has withdrawals, so the principal cannot be changed.' : undefined}><input className={'input num ' + (e('amount') ? 'bad' : '')} inputMode="decimal" value={amount} onChange={ev => setAmount(ev.target.value)} disabled={hasWd} />{!inAed && <AmountWords v={amount} />}</Field>
           <Field label="Lock-in (months) *" err={e('lock')} hint="0 = no lock-in."><input className={'input num ' + (e('lock') ? 'bad' : '')} inputMode="numeric" value={lock} onChange={ev => setLock(ev.target.value)} /></Field>
         </div>
         <div className="f-row">

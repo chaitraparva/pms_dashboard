@@ -131,7 +131,6 @@ export function Shell({ roleLabel, nav, searchPh, onSearch, base }: { roleLabel:
             </div>
           </header>
           <main key={shown + rate} className={'content' + (profile?.read_only ? ' ro' : '')} ref={roMark}>
-            {shown === 'AED' && <div className="note" style={{ marginBottom: 14 }}>Amounts are shown in <b>AED</b> at <b>1 AED = ₹{rate}</b>{settings?.aed_rate_on ? ` (rate of ${dateShort(settings.aed_rate_on)})` : ''}.</div>}
             {profile?.read_only && <div className="note info" style={{ marginBottom: 14 }}><b>CRM login · read only.</b> You can see every page and option, but nothing can be added, accepted, edited or deleted.</div>}
             <Outlet />
           </main>

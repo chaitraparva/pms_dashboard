@@ -161,7 +161,7 @@ export function Overview() {
         </div>
       )}
 
-      <AdminBanner principal={Number(d.principal_invested)} investors={d.investors_with_investments} branches={(d.by_branch || []).map(b => b.name)} />
+      <AdminBanner principal={Number(d.principal_invested)} cur={d.by_currency} investors={d.investors_with_investments} branches={(d.by_branch || []).map(b => b.name)} />
 
       <div className="grid g-1-1">
         <div className="card"><div className="card-h"><h3>Investors by branch</h3><div className="r hint">Click a branch to open it</div></div><div className="card-b">
@@ -176,12 +176,20 @@ export function Overview() {
         </div></div>
       </div>
 
-      <div className="kpis">
+      <div className={d.by_currency ? 'kpis k3' : 'kpis'}>
         <Kpi label="Total investors" value={d.total_investors} sub={`+${d.new_investors_month} this month · ${d.investors_with_investments} invested`} subCls={d.new_investors_month ? 'up' : ''} onClick={() => nav('/admin/investors' + (branchRow ? '?branch=' + branchRow.code : ''))} tip="Investor accounts in this view, any status." />
+        {d.by_currency ? <>
+          <Kpi label="Principal · INR" value={moneyShort(d.by_currency.inr.principal)} sub={`${d.by_currency.inr.investments} live investments · ${d.by_currency.inr.investors} investors`} onClick={() => nav('/admin/investments' + (branchRow ? '?branch=' + branchRow.code : ''))} tip="Principal of live investments of investors in INR." />
+          <Kpi label="Principal · AED" value={aedShort(d.by_currency.aed.principal)} sub={`${d.by_currency.aed.investments} live investments · ${d.by_currency.aed.investors} investors`} onClick={() => nav('/admin/investments' + (branchRow ? '?branch=' + branchRow.code : ''))} tip="Principal of live investments of investors in AED, in AED." />
+          <Kpi label="Unlocked principal" value={moneyShort(d.by_currency.inr.unlocked)} cls={Number(d.unlocked_principal) ? 'pos' : ''} sub={`${aedShort(d.by_currency.aed.unlocked)} · ${d.unlocked_count} past lock-in`} onClick={() => nav('/admin/investments?f=unlocked' + branchCode)} tip="Principal past its lock-in: INR investors, and AED investors below in AED." />
+          <Kpi label="Locked principal" value={moneyShort(d.by_currency.inr.locked)} sub={`${aedShort(d.by_currency.aed.locked)} · ${d.locked_count} in lock-in`} onClick={() => nav('/admin/investments?f=locked' + branchCode)} tip="Principal still in lock-in: INR investors, and AED investors below in AED." />
+          <Kpi label="Total returns" value={moneyShort(d.by_currency.inr.accrued)} sub={`${aedShort(d.by_currency.aed.accrued)} · earned`} onClick={() => nav('/admin/accruals')} tip="Returns earned: INR investors, and AED investors below in AED." />
+        </> : <>
         <Kpi label="Total principal invested" value={moneyShort(d.principal_invested)} sub={`${d.live_investments} live investments`} onClick={() => nav('/admin/investments' + (branchRow ? '?branch=' + branchRow.code : ''))} tip="Sum of principal on live investments. This is investor money, not company revenue." />
         <Kpi label="Unlocked principal" value={moneyShort(d.unlocked_principal)} cls={Number(d.unlocked_principal) ? 'pos' : ''} sub={`${d.unlocked_count} investment${d.unlocked_count === 1 ? '' : 's'} past lock-in`} onClick={() => nav('/admin/investments?f=unlocked' + branchCode)} tip="Principal of investments whose lock-in end date has passed. A status only: nothing is paid out or reinvested automatically." />
         <Kpi label="Locked principal" value={moneyShort(d.locked_principal)} sub={`${d.locked_count} in lock-in`} onClick={() => nav('/admin/investments?f=locked' + branchCode)} tip="Principal of live investments still inside their 6-month or 1-year lock-in." />
         <Kpi label="Total returns" value={moneyShort(d.accrued_total)} sub={Number(d.reversed_total) ? `Net of ${money(Math.abs(Number(d.reversed_total)))} reversals` : 'Earned, net of reversals'} onClick={() => nav('/admin/accruals')} tip="Sum of all accrual entries less reversals. Earned is not the same as paid." />
+        </>}
       </div>
 
       <div className="branch-cards">
@@ -283,14 +291,16 @@ export function Overview() {
 }
 
 /** Parva Realty banner at the top of the Super Admin Overview: a property photo with the portfolio at a glance. */
-function AdminBanner({ principal, investors, branches }: { principal: number; investors: number; branches: string[] }) {
+/** AED amounts in short form, e.g. AED 1.25M or AED 36,726. */
+const aedShort = (n: number) => 'AED ' + (Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n.toLocaleString('en-US', { maximumFractionDigits: 0 }));
+function AdminBanner({ principal, cur, investors, branches }: { principal: number; cur?: Dashboard['by_currency']; investors: number; branches: string[] }) {
   const nav = useNavigate();
   const pq = useQuery(async () => must(await api.from('properties').select('title,image_url,status').eq('status', 'published').order('sort_order')) as { title: string; image_url: string | null }[], []);
   const photo = pq.data?.find(p => p.image_url)?.image_url;
   return (
     <div className="parva-banner admin-banner" style={photo ? { backgroundImage: `linear-gradient(90deg, rgba(11,24,52,.95) 0%, rgba(11,24,52,.75) 50%, rgba(11,24,52,.2) 100%), url("${photo}")` } : undefined}>
       <span className="pb-tag">PARVA REALTY · PORTFOLIO MANAGEMENT</span>
-      <b>{moneyShort(principal)} invested by {investors} investor{investors === 1 ? '' : 's'}</b>
+      <b>{cur ? <>{moneyShort(cur.inr.principal)}{cur.aed.principal > 0 && <> + {aedShort(cur.aed.principal)}</>}</> : moneyShort(principal)} invested by {investors} investor{investors === 1 ? '' : 's'}</b>
       <span className="pb-sub">{branches.length ? branches.join(' and ') + ' branches · ' : ''}{pq.data?.length || 0} Parva properties live for investors</span>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
         <button type="button" className="btn pb-btn" onClick={() => nav('/admin/ranking')}>Investor ranking</button>

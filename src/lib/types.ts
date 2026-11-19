@@ -135,6 +135,7 @@ export interface BranchStats {
 
 export interface Dashboard {
   today: string; from: string; to: string; branch_id: string | null;
+  by_currency?: Record<'inr' | 'aed', { investors: number; investments: number; principal: number; unlocked: number; locked: number; accrued: number; paid: number; outstanding: number }>;
   registered_investors: number; total_investors: number; new_investors_month: number; investors_with_investments: number; live_investments: number;
   principal_invested: number; unlocked_principal: number; unlocked_count: number; locked_principal: number; locked_count: number;
   accrued_total: number; reversed_total: number; paid_total: number;

@@ -44,7 +44,8 @@ export function Withdraw() {
   const [amount, setAmount] = useState('');
   // the amount can be typed in AED (converted at the AED rate, saved in INR); AED investors start in AED
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
-  const [amtCur, setAmtCur] = useState<AmtCur>(displayCurrency() === 'AED' && aedRate > 0 ? 'AED' : 'INR');
+  // typed in the person's own currency (AED investors in AED), no switch and no rate shown
+  const amtCur: AmtCur = displayCurrency() === 'AED' && aedRate > 0 ? 'AED' : 'INR';
   const [method, setMethod] = useState<WithdrawalMethod>('bank');
   const [pay, setPay] = useState<PayDetails>(emptyPay());
   const [note, setNote] = useState('');
@@ -133,10 +134,9 @@ export function Withdraw() {
           <div className="card-b">
             {!order ? <Loading rows={2} /> : !parts.length ? <Empty title="Nothing to withdraw">{forMe ? 'You have' : sub!.full_name + ' has'} no live investment right now.</Empty> : (
               <div className="form">
-                <Field label="Amount in"><CurChips cur={amtCur} onChange={c => { setAmtCur(c); setAmount(''); }} rate={aedRate} /></Field>
-                <Field label={`Amount (${amtCur}) *`} err={tried ? err : null} hint={`Up to ${money(available)}${amtCur === 'AED' && displayCurrency() !== 'AED' && aedRate > 0 ? ` (AED ${(available / aedRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}.`}>
+                <Field label={`Amount (${amtCur}) *`} err={tried ? err : null} hint={`Up to ${money(available)}.`}>
                   <input className={'input num ' + (tried && err ? 'bad' : '')} inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder={amtCur === 'AED' ? 'e.g. 5000' : 'e.g. 100000'} />
-                  {amtCur === 'INR' && <AmountWords v={amount} />}<AedNote text={amount} cur={amtCur} rate={aedRate} />
+                  {amtCur === 'INR' && <AmountWords v={amount} />}
                 </Field>
                 <Field label="Where should the money go? *">
                   <PayChips ways={ways} value={method} onChange={m => setMethod(m)} />
@@ -206,9 +206,11 @@ export function Withdraw() {
 /** Edit a pending withdrawal: amount, where the money goes, note. The investor (or their IB) and the Super Admin can do this. */
 export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admin = false, onClose }: { w: Withdrawal; who: string; hasIb: boolean; ibLabel?: string; admin?: boolean; onClose: () => void }) {
   const act = useAction();
-  const [amount, setAmount] = useState(String(w.amount));
   const aedRate = Number(useSettings()?.inr_per_aed || 0);
-  const [amtCur, setAmtCur] = useState<AmtCur>('INR');
+  // in the currency the page is shown in (AED for AED investors); the Super Admin can also switch
+  const [amtCur, setAmtCur] = useState<AmtCur>(displayCurrency() === 'AED' && aedRate > 0 ? 'AED' : 'INR');
+  const initTxt = amtCur === 'AED' ? String(Math.round(Number(w.amount) / aedRate * 100) / 100) : String(w.amount);
+  const [amount, setAmount] = useState(initTxt);
   const [method, setMethod] = useState<WithdrawalMethod>(w.method);
   const [pay, setPay] = useState<PayDetails>(payFrom(w));
   const [note, setNote] = useState(w.note || '');
@@ -218,7 +220,8 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
   const [paidOn, setPaidOn] = useState(w.completed_on || '');
   const [ref, setRef] = useState(w.payment_ref || '');
   const t = today();
-  const amt = toInr(amount, amtCur, aedRate);
+  // unchanged = exactly the saved amount
+  const amt = amount === initTxt ? Number(w.amount) : toInr(amount, amtCur, aedRate);
   const err = !(amt > 0) || !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ? 'Enter the amount.' : Object.keys(payErrors(method, pay, !admin)).length ? 'Fill in where the money goes.'
     : admin && on && on > t ? 'The withdrawal date must be today or earlier.' : admin && paid && paidOn && (paidOn < on || paidOn > t) ? 'Paid on must be on or after the withdrawal date.' : null;
   const ways: [PayMethod, string][] = [['bank', 'Bank'], ['upi', 'UPI'], ['cash', 'Cash'], ['mt5', 'MT5'], ...(hasIb ? [['ib', ibLabel] as [PayMethod, string]] : [])];
@@ -232,8 +235,8 @@ export function EditWithdrawal({ w, who, hasIb, ibLabel = 'Transfer to IB', admi
       foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go} disabled={act.busy || !!err}>{act.busy ? 'Saving…' : 'Save'}</button></>}>
       <div className="form">
         {admin && <Field label="Withdrawal date" hint="Empty = keep the current date."><DateInput className="input" max={t} value={on} onChange={e => setOn(e.target.value)} /></Field>}
-        <Field label="Amount in"><CurChips cur={amtCur} onChange={c => { if (c === amtCur) return; setAmtCur(c); setAmount(c === 'INR' ? String(w.amount) : ''); }} rate={aedRate} /></Field>
-        <Field label={`Amount (${amtCur}) *`} err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} />{amtCur === 'INR' && <AmountWords v={amount} />}<AedNote text={amount} cur={amtCur} rate={aedRate} /></Field>
+        {admin && <Field label="Amount in"><CurChips cur={amtCur} onChange={c => { if (c === amtCur) return; setAmtCur(c); setAmount(''); }} rate={aedRate} /></Field>}
+        <Field label={`Amount (${amtCur}) *`} err={err && !(amt > 0) ? err : null}><input className="input num" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} />{amtCur === 'INR' && <AmountWords v={amount} />}{admin && <AedNote text={amount} cur={amtCur} rate={aedRate} />}</Field>
         <Field label="Where should the money go?"><PayChips ways={ways} value={method} onChange={m => setMethod(m)} /></Field>
         <PayFields method={method} d={pay} onChange={setPay} tried required={!admin} amount={amt > 0 ? amt : undefined} />
         {admin && <>

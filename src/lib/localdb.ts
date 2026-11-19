@@ -583,8 +583,17 @@ function dashboard(branch: string | null, pFrom: string | null, pTo: string | nu
   pay.forEach(p => { const x = payStatus[p.status] ||= { count: 0, amount: 0 }; x.count++; x.amount = round2(x.amount + Number(p.amount)); });
   const maturing = live.filter(i => !i.unlocked && i.maturity_date && diffDays(t, i.maturity_date) >= 0 && diffDays(t, i.maturity_date) <= s.approaching_days);
   const lockins = [...new Set(live.map(i => i.lockin_months))].sort((a, b) => a - b);
+  // AED and INR kept apart: investors set to AED in AED (their amounts ÷ the fixed rate), everyone else in INR
+  const aedIds = new Set(inv.filter(p => p.currency === 'AED').map(p => p.id));
+  const cur = (isAed: boolean) => {
+    const k = isAed ? AED_RATE : 1, mine = (id: string) => aedIds.has(id) === isAed;
+    const l = live.filter(i => mine(i.investor_id)), ac = acc.filter(x => mine(invById.get(x.investment_id)!.investor_id)), py = pay.filter(x => mine(x.investor_id));
+    const v = (n: number) => round2(n / k);
+    return { investors: new Set(l.map(i => i.investor_id)).size, investments: l.length, principal: v(sum(l)), unlocked: v(sum(l.filter(i => i.unlocked))), locked: v(sum(l.filter(i => !i.unlocked))),
+      accrued: v(sum(ac, 'amount')), paid: v(sum(py.filter(x => x.status === 'paid'), 'amount')), outstanding: v(sum(py.filter(x => OUT.includes(x.status)), 'amount')) };
+  };
   return {
-    today: t, from, to, branch_id: branch,
+    today: t, from, to, branch_id: branch, by_currency: { inr: cur(false), aed: cur(true) },
     registered_investors: inv.length, total_investors: inv.length, new_investors_month: inv.filter(p => p.created_at.slice(0, 7) >= t.slice(0, 7)).length,
     investors_with_investments: new Set(live.map(i => i.investor_id)).size, live_investments: live.length,
     principal_invested: sum(live), unlocked_principal: sum(live.filter(i => i.unlocked)), unlocked_count: live.filter(i => i.unlocked).length,

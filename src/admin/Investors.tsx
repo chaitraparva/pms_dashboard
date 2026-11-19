@@ -257,7 +257,7 @@ export function InvestorDetail() {
         </div>
       </PageHead>
 
-      {p.currency === 'AED' && <div className="note info">{inAed ? <>This investor is set to <b>AED</b>: amounts on this page are shown in AED at <b>1 AED = ₹{aedRate}</b>{s?.aed_rate_on ? ` (${date(s.aed_rate_on)})` : ''}. Saved amounts are in INR.</> : <>This investor is set to <b>AED</b>, but no AED rate is set yet. Set it in <b>Settings</b>.</>}</div>}
+      {p.currency === 'AED' && <div className="note info">{inAed ? <>This investor is in <b>AED</b>: amounts on this page are in AED.</> : <>This investor is set to <b>AED</b>, but no AED rate is set yet. Set it in <b>Settings</b>.</>}</div>}
       {p.kyc_status !== 'verified' && (
         <div className="note">
           <b>{p.kyc_status === 'rejected' ? 'Verification was rejected.' : 'Awaiting KYC verification.'}</b> Investments can only be recorded for verified investors.
