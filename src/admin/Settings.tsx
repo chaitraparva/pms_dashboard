@@ -200,47 +200,16 @@ export function Settings() {
   );
 }
 
-/** The INR-per-AED rate (changes daily). Only used to show amounts in AED with the ₹ INR / AED switch at the top; nothing saved is converted. */
+/** The AED rate is fixed at 1 AED = ₹25 for good: amounts of investors set to AED are shown in AED at exactly this rate,
+ *  so an investment of AED 50,000 always shows AED 50,000 and its ROI exact AED. */
 function AedRate() {
-  const { settings, reloadSettings } = useAuth();
-  const act = useAction();
-  const cur = Number(settings?.inr_per_aed || 0);
-  const mode = settings?.aed_rate_mode === 'manual' ? 'manual' : 'auto';
-  const [v, setV] = useState(cur ? String(cur) : '');
-  useEffect(() => { setV(cur ? String(cur) : ''); }, [cur]);
-  const n = Number(v);
-  const err = !v.trim() ? 'Enter the rate.' : !(n > 0 && n < 1000) || !/^\d+(\.\d{1,4})?$/.test(v.trim()) ? 'Enter how many rupees make 1 AED, e.g. 26.3' : null;
-  const save = async () => {
-    if (err) return;
-    const r = await act.run(() => rpc('admin_set_aed_rate', { p_rate: v.trim() }), ['AED rate saved', `1 AED = ₹${v.trim()} (manual) from today`]);
-    if (r !== undefined) await reloadSettings();
-  };
-  const setMode = async (m: 'auto' | 'manual') => {
-    if (m === mode) return;
-    const r = await act.run(() => rpc('admin_set_aed_mode', { p_mode: m }), [m === 'auto' ? 'Automatic rate on' : 'Manual rate on', m === 'auto' ? 'Today’s market rate is used and updated every day.' : 'Your own rate is used until you switch back.']);
-    if (r !== undefined) { await reloadSettings(); if (m === 'auto') setTimeout(() => { reloadSettings(); }, 2500); }
-  };
-  const hist = (settings?.aed_rate_history || []).slice(0, 5);
+  const { settings } = useAuth();
+  const cur = Number(settings?.inr_per_aed || 25);
   return (
     <div className="card">
-      <div className="card-h"><h3>Currency · AED rate</h3><div className="r">{cur ? <Badge cls="b-blue">1 AED = ₹{cur}{settings?.aed_rate_on ? ` · ${date(settings.aed_rate_on)}` : ''}{settings?.aed_rate_source === 'auto' ? ' · market' : settings?.aed_rate_source === 'manual' ? ' · manual' : ''}</Badge> : <Badge cls="b-amber">Not set yet</Badge>}</div></div>
+      <div className="card-h"><h3>Currency · AED rate</h3><div className="r"><Badge cls="b-blue">1 AED = ₹{cur} · fixed</Badge></div></div>
       <div className="card-b form">
-        <Field label="Rate" hint={mode === 'auto' ? 'Today’s market rate is fetched automatically once a day. If it cannot be fetched, the last rate stays.' : 'Your own rate is used every day until you change it or switch back to automatic.'}>
-          <div className="chips" role="radiogroup" aria-label="AED rate">
-            <button type="button" role="radio" aria-checked={mode === 'auto'} className={'chip ' + (mode === 'auto' ? 'on' : '')} onClick={() => setMode('auto')} disabled={act.busy}>Automatic (market rate, daily)</button>
-            <button type="button" role="radio" aria-checked={mode === 'manual'} className={'chip ' + (mode === 'manual' ? 'on' : '')} onClick={() => setMode('manual')} disabled={act.busy}>Manual (my own rate)</button>
-          </div>
-        </Field>
-        {mode === 'manual' && (
-          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-            <Field label="Rupees for 1 AED" err={v && err ? err : null}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span>1 AED = ₹</span><input className="input num" style={{ maxWidth: 140 }} inputMode="decimal" value={v} onChange={e => setV(e.target.value)} placeholder="e.g. 26.3" /></div>
-            </Field>
-            <button className="btn primary" onClick={save} disabled={act.busy || !!err || (n === cur && settings?.aed_rate_source === 'manual')}>{act.busy ? 'Saving…' : 'Save rate'}</button>
-          </div>
-        )}
-        <p className="hint">Investors set to AED (Record investment or Edit account) see their amounts in AED at this rate, and so does their page here. Nothing saved is converted.</p>
-        {hist.length > 1 && <p className="hint">Earlier: {hist.slice(1).map(h => `₹${h.rate} (${date(h.on)})`).join(' · ')}</p>}
+        <p className="hint">The AED rate is fixed at <b>1 AED = ₹{cur}</b> and does not change. Investors set to AED (Record investment or Edit account) see their principal, ROI, bonus and withdrawals in AED, exactly as invested. Amounts typed in AED are saved at this rate.</p>
       </div>
     </div>
   );

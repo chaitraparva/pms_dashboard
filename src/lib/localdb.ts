@@ -965,7 +965,7 @@ export function rpcCall(fn: string, a: Row): unknown {
     case 'admin_dashboard': return dashboard(a.p_branch || null, a.p_from || null, a.p_to || null);
     case 'admin_set_aed_rate': {
       // the Super Admin's INR-per-AED rate for showing amounts in AED (nothing saved is converted)
-      requireAdmin(); const rate = Number(a.p_rate);
+      requireAdmin(); fail('The AED rate is fixed at 1 AED = ₹25 and cannot be changed.'); const rate = Number(a.p_rate);
       if (!(rate > 0 && rate < 1000) || !/^\d+(\.\d{1,4})?$/.test(String(a.p_rate).trim())) fail('Enter how many rupees make 1 AED, e.g. 26.3');
       const s = settings(); const before = { inr_per_aed: s.inr_per_aed ?? null, aed_rate_on: s.aed_rate_on ?? null };
       s.inr_per_aed = rate; s.aed_rate_on = today(); s.aed_rate_mode = 'manual'; s.aed_rate_source = 'manual';
@@ -975,7 +975,7 @@ export function rpcCall(fn: string, a: Row): unknown {
     }
     case 'admin_set_aed_mode': {
       // automatic: the daily market rate (fetched by the server); manual: the Super Admin's own rate
-      requireAdmin(); const s = settings(); const mode = a.p_mode === 'manual' ? 'manual' : 'auto';
+      requireAdmin(); fail('The AED rate is fixed at 1 AED = ₹25 and cannot be changed.'); const s = settings(); const mode = a.p_mode === 'manual' ? 'manual' : 'auto';
       const before = { aed_rate_mode: s.aed_rate_mode ?? 'auto' }; s.aed_rate_mode = mode;
       if (mode === 'auto') s.aed_rate_auto_on = null; // fetch the market rate on the next request
       s.updated_at = nowIso(); s.updated_by = currentUid;
@@ -2213,7 +2213,9 @@ export function applyAutoAedRate(rate: number) {
   s.inr_per_aed = r; s.aed_rate_on = d; s.aed_rate_auto_on = d; s.aed_rate_source = 'auto';
   persist('settings');
 }
-export const aedAutoDue = () => { const s = settings(); return !!s && s.aed_rate_mode !== 'manual' && s.aed_rate_auto_on !== today(); };
+/** The AED rate is fixed at 1 AED = ₹25 for good, so the market rate is never fetched. */
+export const AED_RATE = 25;
+export const aedAutoDue = () => false;
 export async function checkLogin(email: string, pw: string): Promise<string | null> {
   // an IB signs in with the phone number the Super Admin registered
   const key = email.includes('@') ? '' : phoneKey(email);
@@ -2344,19 +2346,112 @@ function dailyAccruals() {
   runAllAccruals();
   S.seq.accruals_day = d;
 }
-export function catchUp() { const prev = currentUid; currentUid = null; try { fixAedRate(); toCalendarMonths(); bonusOnTop(); applyRateChanges(); dailyAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
+export function catchUp() { const prev = currentUid; currentUid = null; try { fixAedRate(); fixAedEntries(); toCalendarMonths(); bonusOnTop(); applyRateChanges(); dailyAccruals(); paidPast(); bonusOwners(); const st = settings(); if (st && st.tagline === 'Every investment, return and maturity in one place.') { st.tagline = 'Every investment and return in one place.'; persist('settings'); } } finally { currentUid = prev; } }
 /** One-time: the AED rate is fixed at 1 AED = ₹25 (manual, so the daily market rate no longer changes it). The Super Admin
  *  can still change it in Settings afterwards. Nothing saved is converted. */
 function fixAedRate() {
-  if (S.seq.aed_fixed_25) return;
   const s = settings(); if (!s) return;
+  if (S.seq.aed_fixed_25 && Number(s.inr_per_aed) === AED_RATE && s.aed_rate_mode === 'manual') return;
   const before = { inr_per_aed: s.inr_per_aed ?? null, mode: s.aed_rate_mode ?? null };
-  s.inr_per_aed = 25; s.aed_rate_on = today(); s.aed_rate_mode = 'manual'; s.aed_rate_source = 'manual';
-  s.aed_rate_history = [{ rate: 25, on: today(), at: nowIso() }, ...(Array.isArray(s.aed_rate_history) ? s.aed_rate_history.filter((h: Row) => h.on !== today()) : [])].slice(0, 60);
+  s.inr_per_aed = AED_RATE; s.aed_rate_on = today(); s.aed_rate_mode = 'manual'; s.aed_rate_source = 'manual';
+  s.aed_rate_history = [{ rate: AED_RATE, on: today(), at: nowIso() }, ...(Array.isArray(s.aed_rate_history) ? s.aed_rate_history.filter((h: Row) => h.on !== today()) : [])].slice(0, 60);
   s.updated_at = nowIso();
   S.seq.aed_fixed_25 = 1;
   audit('settings.aed_rate', 'settings', null, 'AED rate', '1 AED = ₹25 (fixed)', before, { inr_per_aed: 25, mode: 'manual' });
   persist('settings');
+}
+/** One-time: amounts that were typed in AED (and saved in INR at that day's market rate) are saved again at the fixed
+ *  1 AED = ₹25, so they show exactly the AED that was invested: [code, INR saved, AED typed]. Each is changed only if its
+ *  saved amount is still exactly the one below. The investor's withdrawals are applied again and the returns of these
+ *  investments recalculated (months closed as paid stay paid). An investor with returns already paid otherwise is left
+ *  unchanged and listed in the audit log. */
+const AED_ENTRIES: [string, number, number][] = [
+  ['INV-1697', 1281340, 50000],
+  ['WDR-00014', 1281340, 50000],
+  ['INV-1707', 51113400, 2000000],
+  ['WDR-00020', 51113400, 2000000],
+  ['INV-1703', 255747, 10000],
+  ['INV-1704', 938569.81, 36725],
+  ['WDR-00016', 938569.81, 36725],
+  ['INV-1705', 766701, 30000],
+  ['INV-1710', 29390205, 1150000],
+  ['INV-1711', 25556700, 1000000],
+  ['INV-1733', 1277835, 50000],
+  ['INV-1734', 938569.81, 36725],
+  ['INV-1735', 856149.45, 33500],
+  ['INV-1736', 1277835, 50000],
+  ['INV-1737', 856149.45, 33500],
+  ['INV-1738', 1022268, 40000],
+  ['INV-1739', 1277835, 50000],
+  ['INV-1740', 1277835, 50000],
+  ['INV-1741', 294310.96, 11516],
+  ['INV-1742', 1277835, 50000],
+  ['INV-1743', 2811237, 110000],
+  ['INV-1744', 383350.5, 15000],
+  ['INV-1745', 2172319.5, 85000],
+  ['INV-1746', 1916752.5, 75000],
+  ['INV-1747', 2546390, 100000],
+  ['INV-1748', 2546390, 100000],
+  ['WDR-00024', 1273195, 50000],
+  ['INV-1749', 937930.89, 36700],
+  ['WDR-00022', 934525.13, 36700],
+  ['INV-1750', 1277835, 50000],
+  ['INV-1751', 5111340, 200000],
+  ['INV-1752', 3833505, 150000],
+  ['INV-1753', 6389175, 250000],
+  ['INV-1755', 2546390, 100000],
+  ['INV-1756', 2546390, 100000],
+  ['INV-1757', 5092780, 200000],
+  ['INV-1758', 4023296.2, 158000],
+  ['INV-1759', 2342678.8, 92000]
+];
+function fixAedEntries() {
+  if (S.seq.aed_entries_25) return;
+  S.seq.aed_entries_25 = 1;
+  const keys = ['investments', 'withdrawals', 'accruals', 'payouts', 'admin_bonuses', 'ledger_entries', 'notifications', 'roi_requests'];
+  const snap = JSON.stringify(keys.map(k => S.tables[k] || []));
+  const done: string[] = [], skipped: string[] = [];
+  try {
+    const byCode = new Map<string, Row>();
+    T('investments').forEach(i => byCode.set(i.code, i)); T('withdrawals').forEach(w => byCode.set(w.code, w));
+    // group by investor
+    const groups = new Map<string, [Row, number, number][]>();
+    AED_ENTRIES.forEach(([code, inr, aed]) => {
+      const x = byCode.get(code);
+      const saved = x ? round2(Number(code.startsWith('WDR') ? x.amount : (x.original_principal ?? x.principal))) : NaN;
+      if (!x || saved !== inr || (code.startsWith('WDR') && x.status === 'cancelled')) { skipped.push(code + ' (amount changed or not found)'); return; }
+      const g = groups.get(x.investor_id) || []; g.push([x, inr, aed]); groups.set(x.investor_id, g);
+    });
+    groups.forEach((items, investorId) => {
+      const who = T('profiles').find(p => p.id === investorId);
+      const invs = T('investments').filter(i => i.investor_id === investorId);
+      const ids = new Set(invs.map(i => i.id));
+      // returns already paid (other than the closing) cannot be recalculated: leave this investor as it is
+      if (!who || T('payouts').some(p => ids.has(p.investment_id) && !p.closed && ['approved', 'processing', 'paid'].includes(p.status)) || T('admin_bonuses').some(b => ids.has(b.investment_id) && !b.closed && b.status === 'paid')) {
+        items.forEach(([x]) => skipped.push(x.code + ' (returns already paid)')); return;
+      }
+      const fixed: Row[] = [];
+      items.forEach(([x, , aed]) => {
+        const amt = round2(aed * AED_RATE);
+        if (String(x.code).startsWith('WDR')) { x.amount = amt; x.aed_amount = aed; x.updated_at = nowIso(); }
+        else {
+          x.original_principal = amt; if (!(x.principal_changes || []).length) x.principal = amt; x.aed_amount = aed; x.updated_at = nowIso();
+          ledgerFor('investments', x.id).forEach(l => Object.assign(l, { amount: amt, updated_at: nowIso() }));
+          fixed.push(x);
+        }
+        done.push(x.code + ': AED ' + aed + ' = ₹' + amt);
+      });
+      // withdrawals applied again in date order on the corrected amounts
+      if (T('withdrawals').some(w => w.investor_id === investorId && w.status !== 'cancelled')) applyInOrder(who, '0000-01-01', null);
+      fixed.forEach(i => { resetReturnsFrom(i, '0000-01-01'); i.principal = principalOn(i, '9999-12-31'); applySplit(i); runAccrualsFor(i, today()); });
+    });
+    audit('aed.fix_25', 'settings', null, 'AED entries at ₹25', done.length + ' changed' + (skipped.length ? ', ' + skipped.length + ' left unchanged' : ''), null, { changed: done, unchanged: skipped });
+  } catch (e) {
+    // something unexpected: everything goes back as it was and the reason is kept in the audit log
+    const back = JSON.parse(snap) as Row[][]; keys.forEach((k, n) => { S.tables[k] = back[n]; });
+    audit('aed.fix_25', 'settings', null, 'AED entries at ₹25', 'Not changed: ' + (e as Error).message, null, { changed: [], unchanged: AED_ENTRIES.map(x => x[0]) });
+  }
+  persist(...keys, 'audit_logs');
 }
 /** IB bonuses recorded while the person was not yet placed under their IB (or before the IB was known) belong to the IB the
  *  person is under now: they are given to that IB, so every IB sees all the bonus on the people under them. */
